@@ -4,7 +4,7 @@ Day 3 needs a repeatable way to compare four prompting strategies on exactly one
 
 ## What Changes
 
-- Add a Day 3 laboratory screen with four independently runnable strategies: direct answer, explicit step-by-step instruction, generated solver prompt followed by execution, and a group of analyst/engineer/critic experts.
+- Add a Day 3 laboratory screen with four separately presented strategies that a single run-all action executes sequentially: direct answer, explicit step-by-step instruction, generated solver prompt followed by execution, and a group of analyst/engineer/critic experts.
 - Use a four-house logic-grid puzzle with a verified unique solution as the editable shared task and explicitly disable DeepSeek native reasoning for every Day 3 request so the comparison isolates prompt-level reasoning.
 - Stream each result independently, preserve partial output and sanitized failures, expose the generated prompt used by the meta-prompt strategy, and label the real API-call cost of each strategy.
 - Add a deterministic local reference solver that exhaustively checks all resident, drink, and pet permutations and proves that the preset has exactly one assignment.

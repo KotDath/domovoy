@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'core/environment/platform_environment_reader.dart';
 import 'features/lab/presentation/lab_page.dart';
 import 'features/prompt/data/chat_completions_provider_profile.dart';
+import 'features/reasoning/presentation/reasoning_page.dart';
 import 'features/prompt/data/openai_compatible_chat_agent.dart';
 import 'features/prompt/domain/agent.dart';
 import 'features/prompt/presentation/prompt_page.dart';
@@ -134,6 +135,13 @@ class _DomovoyAppState extends State<DomovoyApp> {
               modelSettingsStore: dependencies.modelSettingsStore,
               reasoningSettings: _reasoning,
             ),
+            ReasoningPage(
+              key: const ValueKey('reasoning-destination'),
+              agent: dependencies.agent,
+              overrideStore: dependencies.overrideStore,
+              apiKeyResolver: dependencies.apiKeyResolver,
+              modelSettingsStore: dependencies.modelSettingsStore,
+            ),
           ],
         ),
         bottomNavigationBar: NavigationBar(
@@ -151,6 +159,12 @@ class _DomovoyAppState extends State<DomovoyApp> {
               icon: Icon(Icons.science_outlined),
               selectedIcon: Icon(Icons.science),
               label: 'Лаборатория · День 2',
+            ),
+            NavigationDestination(
+              key: ValueKey('nav-reasoning'),
+              icon: Icon(Icons.psychology_outlined),
+              selectedIcon: Icon(Icons.psychology),
+              label: 'Лаборатория · День 3',
             ),
           ],
         ),

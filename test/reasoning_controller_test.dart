@@ -1,0 +1,321 @@
+import 'package:domovoy/features/prompt/domain/agent.dart';
+import 'package:domovoy/features/reasoning/domain/four_house_puzzle.dart';
+import 'package:domovoy/features/reasoning/domain/reasoning_models.dart';
+import 'package:domovoy/features/reasoning/presentation/reasoning_controller.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'support/fakes.dart';
+
+Future<void> _pump() => Future<void>.delayed(Duration.zero);
+
+Future<void> _pumpUntilIdle(ReasoningController controller) async {
+  for (var i = 0; i < 80; i++) {
+    if (!controller.isRunning) {
+      return;
+    }
+    await _pump();
+  }
+}
+
+List<AgentEvent> _ok(String answer) => <AgentEvent>[
+  AgentAnswerDelta(answer),
+  const AgentCompleted(
+    finishReason: AgentFinishReason.stop,
+    usage: AgentTokenUsage(totalTokens: 3),
+  ),
+];
+
+void main() {
+  const task = fourHousePresetTask;
+
+  group('ReasoningController', () {
+    test('rejects empty task without calling the agent', () {
+      final agent = ControlledAgent();
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      expect(controller.runComparison('   '), isFalse);
+      expect(agent.inputs, isEmpty);
+      expect(controller.state.taskError, isNotNull);
+    });
+
+    test('runs five stages in order on one identical snapshot', () async {
+      final agent = QueueScriptedAgent([
+        _ok('direct'),
+        _ok('step'),
+        _ok('builder prompt'),
+        _ok('solver'),
+        _ok('experts'),
+      ]);
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      expect(controller.runComparison('  $task  '), isTrue);
+      await _pumpUntilIdle(controller);
+
+      expect(agent.inputs, hasLength(5));
+      expect(agent.inputs[0].text, task.trim());
+      expect(agent.inputs[1].text, contains(task.trim()));
+      expect(agent.inputs[1].text, contains('по шагам'));
+      expect(agent.inputs[2].text, contains(task.trim()));
+      expect(agent.inputs[2].text, contains('промпт-решатель'));
+      expect(agent.inputs[3].text, contains('builder prompt'));
+      expect(agent.inputs[3].text, contains(task.trim()));
+      expect(agent.inputs[4].text, contains(task.trim()));
+      expect(agent.inputs[4].text, contains('## Аналитик'));
+      for (final input in agent.inputs) {
+        expect(input.thinking, ThinkingMode.disabled);
+        expect(input.control, isNull);
+      }
+      expect(controller.completedApiCalls, 5);
+      expect(controller.state.direct.answer, 'direct');
+      expect(controller.state.stepByStep.answer, 'step');
+      expect(controller.state.generatedPrompt, 'builder prompt');
+      expect(controller.state.generated.answer, 'solver');
+      expect(controller.state.expertGroup.answer, 'experts');
+      expect(controller.state.direct.finishReason, AgentFinishReason.stop);
+      expect(controller.state.direct.usage?.totalTokens, 3);
+      expect(controller.state.taskSnapshot, task.trim());
+      expect(controller.isRunning, isFalse);
+    });
+
+    test(
+      'skips solver when the generated prompt is empty and continues',
+      () async {
+        final agent = QueueScriptedAgent([
+          _ok('direct'),
+          _ok('step'),
+          const [AgentCompleted()],
+          _ok('experts'),
+        ]);
+        final controller = ReasoningController(agent);
+        addTearDown(controller.dispose);
+
+        controller.runComparison(task);
+        await _pumpUntilIdle(controller);
+
+        expect(agent.inputs, hasLength(4));
+        expect(agent.inputs.last.text, contains('## Критик'));
+        expect(controller.state.generated.status, ReasoningLaneStatus.failed);
+        expect(controller.state.generated.failure?.message, contains('пуст'));
+        expect(controller.state.expertGroup.answer, 'experts');
+        expect(controller.completedApiCalls, 4);
+      },
+    );
+
+    test(
+      'keeps builder evidence after failure and still runs experts',
+      () async {
+        final agent = QueueScriptedAgent([
+          _ok('direct'),
+          _ok('step'),
+          const [
+            AgentAnswerDelta('partial builder'),
+            AgentFailed(
+              AgentFailure(kind: AgentFailureKind.network, message: 'down'),
+            ),
+          ],
+          _ok('experts'),
+        ]);
+        final controller = ReasoningController(agent);
+        addTearDown(controller.dispose);
+
+        controller.runComparison(task);
+        await _pumpUntilIdle(controller);
+
+        expect(agent.inputs, hasLength(4));
+        expect(controller.state.promptBuilder.answer, 'partial builder');
+        expect(
+          controller.state.promptBuilder.status,
+          ReasoningLaneStatus.failed,
+        );
+        expect(controller.state.generated.status, ReasoningLaneStatus.failed);
+        expect(controller.state.generated.failure?.message, 'down');
+        expect(controller.state.expertGroup.answer, 'experts');
+        expect(controller.completedApiCalls, 4);
+      },
+    );
+
+    test('continues after a non-dependent strategy failure', () async {
+      final agent = QueueScriptedAgent([
+        const [
+          AgentAnswerDelta('partial direct'),
+          AgentFailed(
+            AgentFailure(kind: AgentFailureKind.network, message: 'down'),
+          ),
+        ],
+        _ok('step'),
+        _ok('builder prompt'),
+        _ok('solver'),
+        _ok('experts'),
+      ]);
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      controller.runComparison(task);
+      await _pumpUntilIdle(controller);
+
+      expect(controller.state.direct.status, ReasoningLaneStatus.failed);
+      expect(controller.state.direct.answer, 'partial direct');
+      expect(controller.state.stepByStep.answer, 'step');
+      expect(controller.state.generated.answer, 'solver');
+      expect(controller.state.expertGroup.answer, 'experts');
+      expect(controller.completedApiCalls, 5);
+    });
+
+    test('rejects duplicate runs while active', () async {
+      final agent = ControlledAgent();
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      expect(controller.runComparison(task), isTrue);
+      expect(controller.runComparison(task), isFalse);
+      expect(agent.inputs, hasLength(1));
+      await agent.latest.close();
+    });
+
+    test('resets verdicts on a new run', () async {
+      final agent = QueueScriptedAgent([
+        _ok('d1'),
+        _ok('s1'),
+        _ok('b1'),
+        _ok('g1'),
+        _ok('e1'),
+        _ok('d2'),
+        _ok('s2'),
+        _ok('b2'),
+        _ok('g2'),
+        _ok('e2'),
+      ]);
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      controller.runComparison(task);
+      await _pumpUntilIdle(controller);
+      controller.setVerdict(ReasoningStrategy.direct, ReasoningVerdict.correct);
+      controller.setMostAccurate(ReasoningStrategy.direct);
+      expect(controller.state.direct.verdict, ReasoningVerdict.correct);
+      expect(controller.state.mostAccurate, ReasoningStrategy.direct);
+
+      controller.runComparison(task);
+      await _pumpUntilIdle(controller);
+      expect(controller.state.direct.answer, 'd2');
+      expect(controller.state.direct.verdict, ReasoningVerdict.unrated);
+      expect(controller.state.mostAccurate, isNull);
+    });
+
+    test('cancels the lane subscription after terminal events', () async {
+      final agent = ControlledAgent();
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      controller.runComparison(task);
+      await _pump();
+      agent.latest
+        ..add(const AgentAnswerDelta('first'))
+        ..add(const AgentCompleted());
+      await _pump();
+      await _pump();
+
+      expect(agent.controllers, hasLength(2));
+      expect(agent.controllers[0].hasListener, isFalse);
+
+      agent.controllers[0].add(const AgentAnswerDelta('late'));
+      await _pump();
+      expect(controller.state.direct.answer, 'first');
+    });
+
+    test('dispose during a silent stage cancels the subscription', () async {
+      final agent = ControlledAgent();
+      final controller = ReasoningController(agent);
+      controller.runComparison(task);
+      await _pump();
+
+      expect(agent.latest.hasListener, isTrue);
+      controller.dispose();
+      await _pump();
+      expect(agent.controllers.first.hasListener, isFalse);
+    });
+
+    test(
+      'sync prompt throw is sanitized, counted, and later stages continue',
+      () async {
+        final agent = _ThrowingOnNthAgent(
+          QueueScriptedAgent([
+            _ok('step'),
+            _ok('builder prompt'),
+            _ok('solver'),
+            _ok('experts'),
+          ]),
+          throwOn: 0,
+        );
+        final controller = ReasoningController(agent);
+        addTearDown(controller.dispose);
+
+        controller.runComparison(task);
+        await _pumpUntilIdle(controller);
+
+        expect(agent.inputs, hasLength(5));
+        expect(controller.isRunning, isFalse);
+        expect(controller.completedApiCalls, 5);
+        expect(controller.state.direct.status, ReasoningLaneStatus.failed);
+        expect(
+          controller.state.direct.failure?.kind,
+          AgentFailureKind.interrupted,
+        );
+        expect(
+          controller.state.direct.failure?.message,
+          'Поток ответа завершился неожиданно.',
+        );
+        expect(
+          controller.state.direct.failure?.message,
+          isNot(contains('boom')),
+        );
+        expect(controller.state.stepByStep.answer, 'step');
+        expect(controller.state.generatedPrompt, 'builder prompt');
+        expect(controller.state.generated.answer, 'solver');
+        expect(controller.state.expertGroup.answer, 'experts');
+      },
+    );
+
+    test('ignores reasoning deltas and keeps independent answers', () async {
+      final agent = QueueScriptedAgent([
+        const [
+          AgentReasoningDelta('hidden'),
+          AgentAnswerDelta('visible'),
+          AgentCompleted(),
+        ],
+        _ok('step'),
+        _ok('builder prompt'),
+        _ok('solver'),
+        _ok('experts'),
+      ]);
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      controller.runComparison(task);
+      await _pumpUntilIdle(controller);
+
+      expect(controller.state.direct.answer, 'visible');
+      expect(controller.state.stepByStep.answer, 'step');
+    });
+  });
+}
+
+final class _ThrowingOnNthAgent implements Agent {
+  _ThrowingOnNthAgent(this._inner, {required this.throwOn});
+
+  final Agent _inner;
+  final int throwOn;
+  final List<AgentInput> inputs = <AgentInput>[];
+  int _call = 0;
+
+  @override
+  Stream<AgentEvent> prompt(AgentInput input) {
+    inputs.add(input);
+    if (_call++ == throwOn) {
+      throw StateError('boom');
+    }
+    return _inner.prompt(input);
+  }
+}
