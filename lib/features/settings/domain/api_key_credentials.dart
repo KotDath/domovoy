@@ -10,7 +10,13 @@ abstract interface class ApiKeyOverrideStore {
   Future<void> delete();
 }
 
-enum ApiKeySource { applicationOverride, environment, missing }
+abstract interface class CredentialResolver {
+  Future<ResolvedApiKey> resolve();
+
+  Future<ApiKeyStatus> status();
+}
+
+enum ApiKeySource { applicationOverride, environment, missing, none }
 
 final class ResolvedApiKey {
   const ResolvedApiKey({required this.value, required this.source});
@@ -30,10 +36,14 @@ final class ApiKeyStatus {
 }
 
 final class MissingApiKeyException implements Exception {
-  const MissingApiKeyException();
+  const MissingApiKeyException({
+    this.environmentVariable = deepSeekApiKeyEnvironmentVariable,
+  });
+
+  final String environmentVariable;
 }
 
-final class ApiKeyResolver {
+final class ApiKeyResolver implements CredentialResolver {
   const ApiKeyResolver({
     required this.overrideStore,
     required this.environment,
@@ -42,6 +52,7 @@ final class ApiKeyResolver {
   final ApiKeyOverrideStore overrideStore;
   final EnvironmentReader environment;
 
+  @override
   Future<ResolvedApiKey> resolve() async {
     final override = _normalized(await overrideStore.read());
     if (override != null) {
@@ -64,6 +75,7 @@ final class ApiKeyResolver {
     throw const MissingApiKeyException();
   }
 
+  @override
   Future<ApiKeyStatus> status() async {
     final hasOverride = _normalized(await overrideStore.read()) != null;
     if (hasOverride) {

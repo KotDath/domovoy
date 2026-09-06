@@ -27,14 +27,22 @@ final class AgentTokenUsage {
     this.promptTokens,
     this.completionTokens,
     this.totalTokens,
+    this.cacheHitPromptTokens,
+    this.cacheMissPromptTokens,
   });
 
   final int? promptTokens;
   final int? completionTokens;
   final int? totalTokens;
+  final int? cacheHitPromptTokens;
+  final int? cacheMissPromptTokens;
 
   bool get isEmpty =>
-      promptTokens == null && completionTokens == null && totalTokens == null;
+      promptTokens == null &&
+      completionTokens == null &&
+      totalTokens == null &&
+      cacheHitPromptTokens == null &&
+      cacheMissPromptTokens == null;
 
   @override
   bool operator ==(Object other) =>
@@ -42,15 +50,24 @@ final class AgentTokenUsage {
       other is AgentTokenUsage &&
           other.promptTokens == promptTokens &&
           other.completionTokens == completionTokens &&
-          other.totalTokens == totalTokens;
+          other.totalTokens == totalTokens &&
+          other.cacheHitPromptTokens == cacheHitPromptTokens &&
+          other.cacheMissPromptTokens == cacheMissPromptTokens;
 
   @override
-  int get hashCode => Object.hash(promptTokens, completionTokens, totalTokens);
+  int get hashCode => Object.hash(
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    cacheHitPromptTokens,
+    cacheMissPromptTokens,
+  );
 
   @override
   String toString() =>
       'AgentTokenUsage(prompt: $promptTokens, '
-      'completion: $completionTokens, total: $totalTokens)';
+      'completion: $completionTokens, total: $totalTokens, '
+      'cacheHit: $cacheHitPromptTokens, cacheMiss: $cacheMissPromptTokens)';
 }
 
 sealed class ResponseControl {

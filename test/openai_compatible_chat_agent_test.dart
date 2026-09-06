@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:domovoy/core/environment/environment_reader.dart';
+import 'package:domovoy/features/comparison/data/profile_credential_resolver.dart';
 import 'package:domovoy/features/prompt/data/chat_completions_provider_profile.dart';
 import 'package:domovoy/features/prompt/data/openai_compatible_chat_agent.dart';
 import 'package:domovoy/features/prompt/domain/agent.dart';
@@ -379,6 +380,155 @@ void main() {
       final failure = (events.last as AgentFailed).failure;
       expect(failure.kind, AgentFailureKind.provider);
       expect(failure.message, isNot(contains(secret)));
+    });
+
+    test('parses cache-hit and cache-miss prompt counters', () async {
+      final client = RecordingClient(
+        (_) => _response(
+          'data: {"choices":[{"delta":{"content":"hi"}}],'
+          '"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,'
+          '"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":7}}\n\n'
+          'data: [DONE]\n\n',
+        ),
+      );
+      final completed =
+          (await _agent(client).prompt(AgentInput('hi')).toList()).last
+              as AgentCompleted;
+      expect(completed.usage?.cacheHitPromptTokens, 3);
+      expect(completed.usage?.cacheMissPromptTokens, 7);
+      expect(completed.usage?.promptTokens, 10);
+    });
+
+    test('keeps usage unavailable when the provider omits it', () async {
+      final client = RecordingClient(
+        (_) => _response(
+          'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+          'data: [DONE]\n\n',
+        ),
+      );
+      final completed =
+          (await _agent(client).prompt(AgentInput('hi')).toList()).last
+              as AgentCompleted;
+      expect(completed.usage, isNull);
+    });
+  });
+
+  group('dialects and unauthenticated requests', () {
+    test('generic dialect omits DeepSeek-only fields', () {
+      final profile = ChatCompletionsProviderProfile(
+        endpoint: Uri.parse('http://127.0.0.1/v1/chat/completions'),
+        model: 'custom',
+        reasoningDeltaField: 'reasoning_content',
+        dialect: ChatRequestDialect.generic,
+      );
+      final body = profile.requestBody(
+        AgentInput('hello', thinking: ThinkingMode.disabled),
+      );
+      expect(body['model'], 'custom');
+      expect(body['stream'], isTrue);
+      expect(body['stream_options'], {'include_usage': true});
+      expect(body.containsKey('thinking'), isFalse);
+      expect(body.containsKey('reasoning_effort'), isFalse);
+    });
+
+    test('ollama dialect disables reasoning without thinking', () {
+      final profile = ChatCompletionsProviderProfile(
+        endpoint: Uri.parse('http://localhost:11434/v1/chat/completions'),
+        model: 'qwen3.5:2b',
+        reasoningDeltaField: 'reasoning_content',
+        dialect: ChatRequestDialect.ollama,
+      );
+      final body = profile.requestBody(
+        AgentInput('hello', thinking: ThinkingMode.disabled),
+      );
+      expect(body['reasoning_effort'], 'none');
+      expect(body.containsKey('thinking'), isFalse);
+    });
+
+    test(
+      'DeepSeek Day 5 dialect disables thinking without reasoning_effort',
+      () {
+        final body = ChatCompletionsProviderProfile.deepSeekV4Flash()
+            .requestBody(AgentInput('hello', thinking: ThinkingMode.disabled));
+        expect(body['thinking'], {'type': 'disabled'});
+        expect(body.containsKey('reasoning_effort'), isFalse);
+      },
+    );
+
+    test('unauthenticated agent omits Authorization', () async {
+      late RecordedRequest recorded;
+      final client = RecordingClient((request) {
+        recorded = request;
+        return _response('data: [DONE]\n\n');
+      });
+      final agent = OpenAiCompatibleChatAgent(
+        client: client,
+        profile: ChatCompletionsProviderProfile(
+          endpoint: Uri.parse('http://127.0.0.1/v1/chat/completions'),
+          model: 'custom',
+          reasoningDeltaField: 'reasoning_content',
+          dialect: ChatRequestDialect.generic,
+        ),
+        providerLabel: 'Провайдер',
+      );
+
+      await agent
+          .prompt(AgentInput('exact prompt', thinking: ThinkingMode.disabled))
+          .drain<void>();
+
+      expect(recorded.header('authorization'), isNull);
+      final body = jsonDecode(recorded.body) as Map<String, dynamic>;
+      expect(body['model'], 'custom');
+      expect((body['messages'] as List).single['content'], 'exact prompt');
+      expect(body.containsKey('thinking'), isFalse);
+    });
+
+    test('generic failures do not name DeepSeek', () async {
+      final agent = OpenAiCompatibleChatAgent(
+        client: RecordingClient(
+          (_) => throw http.ClientException('secret details'),
+        ),
+        profile: ChatCompletionsProviderProfile(
+          endpoint: Uri.parse('https://example.com/chat/completions'),
+          model: 'custom',
+          reasoningDeltaField: 'reasoning_content',
+          dialect: ChatRequestDialect.generic,
+        ),
+        providerLabel: 'Провайдер',
+      );
+
+      final events = await agent.prompt(AgentInput('hello')).toList();
+      final failure = (events.single as AgentFailed).failure;
+      expect(failure.kind, AgentFailureKind.network);
+      expect(failure.message.toLowerCase(), isNot(contains('deepseek')));
+      expect(failure.message, isNot(contains('secret details')));
+    });
+
+    test('missing bearer key fails locally without HTTP', () async {
+      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+      final agent = OpenAiCompatibleChatAgent(
+        client: client,
+        apiKeyResolver: ProfileBearerCredentialResolver(
+          profileId: 'custom-model',
+          environmentVariableName: 'CUSTOM_API_KEY',
+          overrideStore: InMemoryProfileApiKeyOverrideStore(),
+          environment: const MapEnvironmentReader({}),
+        ),
+        profile: ChatCompletionsProviderProfile(
+          endpoint: Uri.parse('https://example.com/chat/completions'),
+          model: 'custom',
+          reasoningDeltaField: 'reasoning_content',
+          dialect: ChatRequestDialect.generic,
+        ),
+        providerLabel: 'Провайдер',
+      );
+
+      final events = await agent.prompt(AgentInput('hello')).toList();
+      expect(client.requests, isEmpty);
+      final failure = (events.single as AgentFailed).failure;
+      expect(failure.kind, AgentFailureKind.configuration);
+      expect(failure.message, contains('CUSTOM_API_KEY'));
+      expect(failure.message.toLowerCase(), isNot(contains('deepseek')));
     });
   });
 }
