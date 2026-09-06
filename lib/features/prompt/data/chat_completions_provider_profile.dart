@@ -1,4 +1,7 @@
 import '../domain/agent.dart';
+import '../domain/chat_request_dialect.dart';
+
+export '../domain/chat_request_dialect.dart';
 
 final class ChatCompletionsProviderProfile {
   const ChatCompletionsProviderProfile({
@@ -7,6 +10,7 @@ final class ChatCompletionsProviderProfile {
     required this.reasoningDeltaField,
     this.answerDeltaField = 'content',
     this.requestExtensions = const <String, Object?>{},
+    this.dialect = ChatRequestDialect.deepSeek,
   });
 
   factory ChatCompletionsProviderProfile.deepSeekV4Flash() {
@@ -14,6 +18,7 @@ final class ChatCompletionsProviderProfile {
       endpoint: Uri.parse('https://api.deepseek.com/chat/completions'),
       model: 'deepseek-v4-flash',
       reasoningDeltaField: 'reasoning_content',
+      dialect: ChatRequestDialect.deepSeek,
     );
   }
 
@@ -22,6 +27,7 @@ final class ChatCompletionsProviderProfile {
   final String reasoningDeltaField;
   final String answerDeltaField;
   final Map<String, Object?> requestExtensions;
+  final ChatRequestDialect dialect;
 
   Map<String, Object?> requestBody(AgentInput input) {
     final body = <String, Object?>{
@@ -32,11 +38,18 @@ final class ChatCompletionsProviderProfile {
       'stream': true,
       'stream_options': const <String, Object?>{'include_usage': true},
     };
-    if (input.thinking == ThinkingMode.enabled) {
-      body['thinking'] = const <String, String>{'type': 'enabled'};
-      body['reasoning_effort'] = 'high';
-    } else {
-      body['thinking'] = const <String, String>{'type': 'disabled'};
+    switch (dialect) {
+      case ChatRequestDialect.generic:
+        break;
+      case ChatRequestDialect.ollama:
+        body['reasoning_effort'] = 'none';
+      case ChatRequestDialect.deepSeek:
+        if (input.thinking == ThinkingMode.enabled) {
+          body['thinking'] = const <String, String>{'type': 'enabled'};
+          body['reasoning_effort'] = 'high';
+        } else {
+          body['thinking'] = const <String, String>{'type': 'disabled'};
+        }
     }
 
     final temperature = input.temperature;

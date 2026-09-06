@@ -5,6 +5,12 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'core/environment/platform_environment_reader.dart';
+import 'core/environment/environment_reader.dart';
+import 'features/comparison/data/comparison_profile_store.dart';
+import 'features/comparison/data/profile_agent_factory.dart';
+import 'features/comparison/data/profile_credential_resolver.dart';
+import 'features/comparison/presentation/comparison_page.dart';
+import 'features/comparison/presentation/comparison_profile_catalog.dart';
 import 'features/lab/presentation/lab_page.dart';
 import 'features/prompt/data/chat_completions_provider_profile.dart';
 import 'features/reasoning/presentation/reasoning_page.dart';
@@ -24,17 +30,30 @@ final class DomovoyDependencies {
     required this.overrideStore,
     required this.apiKeyResolver,
     DeepSeekModelSettingsStore? modelSettingsStore,
+    ComparisonProfileStore? comparisonProfileStore,
+    ProfileApiKeyOverrideStore? profileOverrideStore,
+    ComparisonAgentFactory? comparisonAgentFactory,
+    EnvironmentReader? environment,
     this.disposeCallback,
   }) : modelSettingsStore =
-           modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore();
+           modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
+       comparisonProfileStore =
+           comparisonProfileStore ?? InMemoryComparisonProfileStore(),
+       profileOverrideStore =
+           profileOverrideStore ?? InMemoryProfileApiKeyOverrideStore(),
+       environment = environment ?? const MapEnvironmentReader({}),
+       comparisonAgentFactory = comparisonAgentFactory ?? ((profile) => agent);
 
   factory DomovoyDependencies.production() {
     const storage = FlutterSecureStorage();
     final overrideStore = SecureApiKeyOverrideStore(storage);
     final modelSettingsStore = SecureDeepSeekModelSettingsStore(storage);
+    final comparisonProfileStore = SecureComparisonProfileStore(storage);
+    final profileOverrideStore = SecureProfileApiKeyOverrideStore(storage);
+    const environment = PlatformEnvironmentReader();
     final resolver = ApiKeyResolver(
       overrideStore: overrideStore,
-      environment: const PlatformEnvironmentReader(),
+      environment: environment,
     );
     final client = http.Client();
     final agent = OpenAiCompatibleChatAgent(
@@ -42,11 +61,21 @@ final class DomovoyDependencies {
       apiKeyResolver: resolver,
       profile: ChatCompletionsProviderProfile.deepSeekV4Flash(),
     );
+    final factory = ProfileChatAgentFactory(
+      client: client,
+      sharedDeepSeekResolver: resolver,
+      profileOverrideStore: profileOverrideStore,
+      environment: environment,
+    );
     return DomovoyDependencies(
       agent: agent,
       overrideStore: overrideStore,
       apiKeyResolver: resolver,
       modelSettingsStore: modelSettingsStore,
+      comparisonProfileStore: comparisonProfileStore,
+      profileOverrideStore: profileOverrideStore,
+      comparisonAgentFactory: factory.create,
+      environment: environment,
       disposeCallback: client.close,
     );
   }
@@ -55,6 +84,10 @@ final class DomovoyDependencies {
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore modelSettingsStore;
+  final ComparisonProfileStore comparisonProfileStore;
+  final ProfileApiKeyOverrideStore profileOverrideStore;
+  final ComparisonAgentFactory comparisonAgentFactory;
+  final EnvironmentReader environment;
   final VoidCallback? disposeCallback;
 
   void dispose() => disposeCallback?.call();
@@ -76,6 +109,7 @@ class DomovoyApp extends StatefulWidget {
 class _DomovoyAppState extends State<DomovoyApp> {
   int _index = 0;
   late final ReasoningSettings _reasoning;
+  late final ComparisonProfileCatalog _comparisonProfiles;
 
   @override
   void initState() {
@@ -83,12 +117,19 @@ class _DomovoyAppState extends State<DomovoyApp> {
     _reasoning = ReasoningSettings(
       store: widget.dependencies.modelSettingsStore,
     );
+    _comparisonProfiles = ComparisonProfileCatalog(
+      repository: ComparisonProfileRepository(
+        widget.dependencies.comparisonProfileStore,
+      ),
+    );
     unawaited(_reasoning.load());
+    unawaited(_comparisonProfiles.load());
   }
 
   @override
   void dispose() {
     _reasoning.dispose();
+    _comparisonProfiles.dispose();
     widget.dependencies.dispose();
     super.dispose();
   }
@@ -102,6 +143,9 @@ class _DomovoyAppState extends State<DomovoyApp> {
       // The laboratory stays alive inside the IndexedStack, so refresh the
       // shared reasoning state explicitly when it becomes active again.
       unawaited(_reasoning.load());
+    }
+    if (index == 4) {
+      unawaited(_comparisonProfiles.load());
     }
   }
 
@@ -150,6 +194,14 @@ class _DomovoyAppState extends State<DomovoyApp> {
               apiKeyResolver: dependencies.apiKeyResolver,
               modelSettingsStore: dependencies.modelSettingsStore,
             ),
+            ComparisonPage(
+              key: const ValueKey('comparison-destination'),
+              agentFactory: dependencies.comparisonAgentFactory,
+              catalog: _comparisonProfiles,
+              sharedDeepSeekResolver: dependencies.apiKeyResolver,
+              profileOverrideStore: dependencies.profileOverrideStore,
+              environment: dependencies.environment,
+            ),
           ],
         ),
         bottomNavigationBar: NavigationBar(
@@ -179,6 +231,12 @@ class _DomovoyAppState extends State<DomovoyApp> {
               icon: Icon(Icons.thermostat_outlined),
               selectedIcon: Icon(Icons.thermostat),
               label: 'День 4',
+            ),
+            NavigationDestination(
+              key: ValueKey('nav-comparison'),
+              icon: Icon(Icons.compare_outlined),
+              selectedIcon: Icon(Icons.compare),
+              label: 'День 5',
             ),
           ],
         ),
