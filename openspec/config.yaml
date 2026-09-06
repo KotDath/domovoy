@@ -1,0 +1,27 @@
+schema: spec-driven
+
+context: |
+  Domovoy is a personal AI assistant built as a Flutter application.
+  The Dart package name is `domovoy`, and native application identifiers use
+  the `ru.kotdath.domovoy` prefix.
+  The initial project supports Android, iOS, web, Linux, macOS, and Windows.
+  Keep the generated Flutter counter application as the baseline until a
+  product change replaces it.
+  Format Dart code with `dart format .` and verify changes with
+  `flutter analyze` and `flutter test`.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+operations:
+  apply:
+    guidance:
+      - Preserve support for all configured Flutter platforms unless a change explicitly narrows it.
+      - Run the Flutter checks relevant to the implementation before marking tasks complete.
