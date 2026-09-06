@@ -26,7 +26,31 @@ void main() {
       expect(input.text, 'hello');
       expect(input.thinking, ThinkingMode.enabled);
       expect(input.control, isNull);
+      expect(input.temperature, isNull);
       expect(input.isUnrestricted, isTrue);
+    });
+
+    test('accepts exact and boundary sampling temperatures', () {
+      for (final value in const <double>[0.0, 0.7, 1.2, 2.0]) {
+        expect(AgentInput('hi', temperature: value).temperature, value);
+      }
+    });
+
+    test('rejects non-finite and out-of-range temperatures', () {
+      expect(
+        () => AgentInput('hi', temperature: double.nan),
+        throwsArgumentError,
+      );
+      expect(
+        () => AgentInput('hi', temperature: double.infinity),
+        throwsArgumentError,
+      );
+      expect(
+        () => AgentInput('hi', temperature: double.negativeInfinity),
+        throwsArgumentError,
+      );
+      expect(() => AgentInput('hi', temperature: -0.1), throwsArgumentError);
+      expect(() => AgentInput('hi', temperature: 2.1), throwsArgumentError);
     });
 
     test('rejects blank text', () {

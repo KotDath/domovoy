@@ -39,6 +39,11 @@ final class ChatCompletionsProviderProfile {
       body['thinking'] = const <String, String>{'type': 'disabled'};
     }
 
+    final temperature = input.temperature;
+    if (temperature != null) {
+      body['temperature'] = temperature;
+    }
+
     final control = input.control;
     if (control is FormatControl) {
       if (control.useJsonModeResolved) {
