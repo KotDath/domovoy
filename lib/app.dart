@@ -11,6 +11,7 @@ import 'features/reasoning/presentation/reasoning_page.dart';
 import 'features/prompt/data/openai_compatible_chat_agent.dart';
 import 'features/prompt/domain/agent.dart';
 import 'features/prompt/presentation/prompt_page.dart';
+import 'features/temperature/presentation/temperature_page.dart';
 import 'features/settings/data/secure_api_key_override_store.dart';
 import 'features/settings/data/secure_model_settings_store.dart';
 import 'features/settings/domain/api_key_credentials.dart';
@@ -142,6 +143,13 @@ class _DomovoyAppState extends State<DomovoyApp> {
               apiKeyResolver: dependencies.apiKeyResolver,
               modelSettingsStore: dependencies.modelSettingsStore,
             ),
+            TemperaturePage(
+              key: const ValueKey('temperature-destination'),
+              agent: dependencies.agent,
+              overrideStore: dependencies.overrideStore,
+              apiKeyResolver: dependencies.apiKeyResolver,
+              modelSettingsStore: dependencies.modelSettingsStore,
+            ),
           ],
         ),
         bottomNavigationBar: NavigationBar(
@@ -158,13 +166,19 @@ class _DomovoyAppState extends State<DomovoyApp> {
               key: ValueKey('nav-lab'),
               icon: Icon(Icons.science_outlined),
               selectedIcon: Icon(Icons.science),
-              label: 'Лаборатория · День 2',
+              label: 'День 2',
             ),
             NavigationDestination(
               key: ValueKey('nav-reasoning'),
               icon: Icon(Icons.psychology_outlined),
               selectedIcon: Icon(Icons.psychology),
-              label: 'Лаборатория · День 3',
+              label: 'День 3',
+            ),
+            NavigationDestination(
+              key: ValueKey('nav-temperature'),
+              icon: Icon(Icons.thermostat_outlined),
+              selectedIcon: Icon(Icons.thermostat),
+              label: 'День 4',
             ),
           ],
         ),

@@ -254,6 +254,50 @@ void main() {
       expect(body.containsKey('response_format'), isFalse);
       expect(body.containsKey('max_tokens'), isFalse);
       expect(body.containsKey('stop'), isFalse);
+      expect(body.containsKey('temperature'), isFalse);
+      expect(body.containsKey('top_p'), isFalse);
+    });
+
+    test('serializes supplied temperatures and never adds top_p', () async {
+      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+      final agent = _agent(client);
+
+      for (final value in const <double>[0.0, 0.7, 1.2, 2.0]) {
+        await agent
+            .prompt(
+              AgentInput(
+                'hi',
+                thinking: ThinkingMode.disabled,
+                temperature: value,
+              ),
+            )
+            .drain<void>();
+      }
+
+      expect(client.requests, hasLength(4));
+      for (var i = 0; i < 4; i++) {
+        final body =
+            jsonDecode(client.requests[i].body) as Map<String, dynamic>;
+        expect(body['temperature'], <double>[0.0, 0.7, 1.2, 2.0][i]);
+        expect(body['thinking'], {'type': 'disabled'});
+        expect(body.containsKey('top_p'), isFalse);
+        expect(body.containsKey('reasoning_effort'), isFalse);
+      }
+    });
+
+    test('existing callers omit temperature from the request body', () async {
+      final profile = ChatCompletionsProviderProfile.deepSeekV4Flash();
+      final omitted = profile.requestBody(AgentInput('hello'));
+      expect(omitted.containsKey('temperature'), isFalse);
+      expect(omitted.containsKey('top_p'), isFalse);
+
+      final supplied = profile.requestBody(
+        AgentInput('hello', thinking: ThinkingMode.disabled, temperature: 0.7),
+      );
+      expect(supplied['temperature'], 0.7);
+      expect(supplied['thinking'], {'type': 'disabled'});
+      expect(supplied.containsKey('top_p'), isFalse);
+      expect(supplied.containsKey('reasoning_effort'), isFalse);
     });
   });
 

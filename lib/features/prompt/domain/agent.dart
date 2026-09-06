@@ -116,16 +116,30 @@ final class StopControl extends ResponseControl {
 }
 
 final class AgentInput {
-  AgentInput(String text, {this.thinking = ThinkingMode.enabled, this.control})
-    : text = text.trim() {
+  AgentInput(
+    String text, {
+    this.thinking = ThinkingMode.enabled,
+    this.control,
+    this.temperature,
+  }) : text = text.trim() {
     if (this.text.isEmpty) {
       throw ArgumentError.value(text, 'text', 'Prompt must not be empty.');
+    }
+    final temperature = this.temperature;
+    if (temperature != null &&
+        (!temperature.isFinite || temperature < 0.0 || temperature > 2.0)) {
+      throw ArgumentError.value(
+        temperature,
+        'temperature',
+        'Temperature must be a finite value from 0.0 through 2.0.',
+      );
     }
   }
 
   final String text;
   final ThinkingMode thinking;
   final ResponseControl? control;
+  final double? temperature;
 
   bool get isUnrestricted => control == null;
 }
