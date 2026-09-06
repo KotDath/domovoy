@@ -1,21 +1,23 @@
 ## Why
 
-Domovoy can stream a one-shot DeepSeek answer, but it does not yet demonstrate how API-level response controls change the result for the same underlying prompt. Day 2 adds a repeatable comparison between an unrestricted request and a request with an explicit output contract, length bound, and stop condition.
+Domovoy can stream a one-shot DeepSeek answer, but Day 2 needs a visible and repeatable way to demonstrate how explicit format, length, and stop controls change the same request. A response laboratory turns those API concepts into independently testable experiments and distinguishes model instructions from guarantees enforced by the application or provider.
 
 ## What Changes
 
-- Add a comparison workflow that submits the same base prompt twice: once without output constraints and once with response controls.
-- Allow the controlled request to define an explicit format instruction, a maximum completion-token count, and a stop sequence paired with an instruction telling the model when to emit it.
-- Map the hard controls directly to the OpenAI-compatible Chat Completions request using `max_tokens` and `stop`, while expressing the requested presentation format as an explicit instruction in the sole user message and retaining direct HTTP/SSE streaming.
-- Present baseline and controlled outputs as clearly labeled results so their format, length, and completion behavior can be compared.
-- Surface a provider-neutral completion reason derived from `finish_reason` without exposing provider-specific response objects to presentation code.
-- Add automated coverage and prepare a Linux desktop demonstration suitable for the required video-plus-code submission without recording or displaying the API key.
+- Add a dedicated response laboratory reachable from the existing prompt workspace, with separate Format, Length, and Stop experiments rather than one combined comparison.
+- Run each experiment as a sequential pair using the same base prompt: an unrestricted baseline followed by a controlled request, with independent streamed results and objective evidence.
+- Extend DeepSeek model settings with a persisted Reasoning switch. Enabled requests use thinking mode with high effort; disabled requests set thinking off and omit reasoning effort.
+- Let the Format experiment use editable JSON or Markdown contracts, validate the returned structure, and offer one user-triggered repair request when validation fails.
+- Use JSON response mode for the controlled JSON preset while retaining application validation of required fields and types; Markdown uses an explicit structural contract and application validation.
+- Let the Length experiment combine a visible natural-language character instruction with an API max-token ceiling, then report actual character count, available token usage, and completion reason.
+- Let the Stop experiment submit the same marker-producing prompt with and without an API stop sequence so post-marker output can be compared directly.
+- Add deterministic automated coverage and a credential-safe Linux desktop demonstration checklist for the required video-plus-code submission.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `response-control-comparison`: Configuring output format, completion length, and stop behavior for one controlled request and comparing it with an unrestricted request using the same base prompt.
+- `response-control-comparison`: A UI response laboratory for comparing unrestricted and controlled format, length, and stop behavior, including reasoning configuration, validation evidence, and one-shot format repair.
 
 ### Modified Capabilities
 
@@ -23,8 +25,8 @@ None.
 
 ## Impact
 
-- Extends the provider-neutral prompt input and terminal metadata used by the existing agent stream.
-- Extends the DeepSeek Chat Completions request profile with optional `max_tokens` and `stop` fields supported by the official API.
-- Adds comparison orchestration and responsive baseline/controlled result presentation to the prompt workspace.
-- Adds unit and widget tests for request construction, control validation, independent streams, finish reasons, and comparison rendering.
-- Adds a Linux desktop demo/recording checklist for the Day 2 video and code deliverables; no API key is stored in source code or captured in the video.
+- Extends provider-neutral agent input and terminal metadata with thinking configuration, optional response controls, completion reason, and optional token usage.
+- Extends the OpenAI-compatible DeepSeek Chat Completions request profile with conditional thinking fields, `response_format`, `max_tokens`, `stop`, and streamed usage reporting.
+- Expands application settings from credential-only configuration to DeepSeek model configuration without exposing the stored API key.
+- Adds experiment orchestration, structural validators, one-shot repair handling, and a responsive laboratory UI while preserving the Day 1 one-shot prompt workspace.
+- Adds unit and widget tests plus Linux demo documentation; no API key or recorded video is committed by default.
