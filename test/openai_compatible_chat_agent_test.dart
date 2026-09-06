@@ -12,7 +12,7 @@ import 'package:http/http.dart' as http;
 import 'support/fakes.dart';
 
 void main() {
-  group('OpenAiCompatibleChatAgent', () {
+  group('OpenAiCompatibleChatAgent baseline', () {
     test(
       'sends DeepSeek request and normalizes reasoning and answer',
       () async {
@@ -39,19 +39,17 @@ void main() {
         expect(recorded.header('accept'), 'text/event-stream');
         expect(recorded.header('content-type'), 'application/json');
         final body = jsonDecode(recorded.body) as Map<String, dynamic>;
-        expect(body, <String, Object?>{
-          'model': 'deepseek-v4-flash',
-          'messages': <Object?>[
-            <String, Object?>{'role': 'user', 'content': 'hello'},
-          ],
-          'stream': true,
-          'thinking': <String, Object?>{'type': 'enabled'},
-          'reasoning_effort': 'high',
-        });
+        expect(body['model'], 'deepseek-v4-flash');
+        expect((body['messages'] as List).single['content'], 'hello');
+        expect(body['stream'], isTrue);
+        expect(body['stream_options'], {'include_usage': true});
+        expect(body['thinking'], {'type': 'enabled'});
+        expect(body['reasoning_effort'], 'high');
         expect(events, hasLength(3));
         expect((events[0] as AgentReasoningDelta).text, 'think ');
         expect((events[1] as AgentAnswerDelta).text, 'answer');
-        expect(events[2], isA<AgentCompleted>());
+        final completed = events[2] as AgentCompleted;
+        expect(completed.finishReason, AgentFinishReason.stop);
       },
     );
 
@@ -138,6 +136,205 @@ void main() {
       final failure = (events.single as AgentFailed).failure;
       expect(failure.kind, AgentFailureKind.network);
       expect(failure.message, isNot(contains('secret details')));
+    });
+  });
+
+  group('request construction (2.4)', () {
+    test('disabled thinking omits reasoning effort', () async {
+      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+      final agent = _agent(client);
+
+      await agent
+          .prompt(AgentInput('hi', thinking: ThinkingMode.disabled))
+          .drain<void>();
+
+      final body =
+          jsonDecode(client.requests.single.body) as Map<String, dynamic>;
+      expect(body['thinking'], {'type': 'disabled'});
+      expect(body.containsKey('reasoning_effort'), isFalse);
+    });
+
+    test(
+      'JSON control enables response format and keeps base prompt',
+      () async {
+        final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+        final agent = _agent(client);
+        final control = FormatControl(
+          kind: ResponseFormatKind.json,
+          contractText: 'JSON-объект с полями: title (string).',
+          exampleText: '{"title": "пример"}',
+        );
+
+        await agent
+            .prompt(AgentInput('base task', control: control))
+            .drain<void>();
+
+        final body =
+            jsonDecode(client.requests.single.body) as Map<String, dynamic>;
+        expect(body['response_format'], {'type': 'json_object'});
+        final content = (body['messages'] as List).single['content'] as String;
+        expect(content, contains('base task'));
+        expect(content, contains('title (string)'));
+        expect(content, contains('{"title": "пример"}'));
+        expect(content, contains('JSON'));
+      },
+    );
+
+    test('Markdown control omits JSON mode but includes contract', () async {
+      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+      final agent = _agent(client);
+      final control = FormatControl(
+        kind: ResponseFormatKind.markdown,
+        contractText: 'Заголовки: "Обзор".',
+      );
+
+      await agent
+          .prompt(AgentInput('base task', control: control))
+          .drain<void>();
+
+      final body =
+          jsonDecode(client.requests.single.body) as Map<String, dynamic>;
+      expect(body.containsKey('response_format'), isFalse);
+      final content = (body['messages'] as List).single['content'] as String;
+      expect(content, contains('base task'));
+      expect(content, contains('"Обзор"'));
+    });
+
+    test('length control adds instruction and max_tokens', () async {
+      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+      final agent = _agent(client);
+
+      await agent
+          .prompt(
+            AgentInput(
+              'explain',
+              control: LengthControl(maxChars: 300, maxTokens: 250),
+            ),
+          )
+          .drain<void>();
+
+      final body =
+          jsonDecode(client.requests.single.body) as Map<String, dynamic>;
+      expect(body['max_tokens'], 250);
+      final content = (body['messages'] as List).single['content'] as String;
+      expect(content, contains('explain'));
+      expect(content, contains('300'));
+      expect(body.containsKey('stop'), isFalse);
+      expect(body.containsKey('response_format'), isFalse);
+    });
+
+    test(
+      'stop control sends one exact sequence and preserves prompt',
+      () async {
+        final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+        final agent = _agent(client);
+
+        await agent
+            .prompt(
+              AgentInput('say <END> then more', control: StopControl('<END>')),
+            )
+            .drain<void>();
+
+        final body =
+            jsonDecode(client.requests.single.body) as Map<String, dynamic>;
+        expect(body['stop'], ['<END>']);
+        final content = (body['messages'] as List).single['content'] as String;
+        expect(content, 'say <END> then more');
+      },
+    );
+
+    test('unrestricted requests omit every control field', () async {
+      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
+      final agent = _agent(client);
+
+      await agent.prompt(AgentInput('plain')).drain<void>();
+
+      final body =
+          jsonDecode(client.requests.single.body) as Map<String, dynamic>;
+      expect(body.containsKey('response_format'), isFalse);
+      expect(body.containsKey('max_tokens'), isFalse);
+      expect(body.containsKey('stop'), isFalse);
+    });
+  });
+
+  group('stream metadata (2.5)', () {
+    test('tolerates usage-only chunks and emits usage on DONE', () async {
+      final client = RecordingClient(
+        (_) => _response(
+          'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}\n\n'
+          'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+          'data: [DONE]\n\n',
+        ),
+      );
+      final events = await _agent(client).prompt(AgentInput('hi')).toList();
+
+      expect(events.whereType<AgentAnswerDelta>(), hasLength(1));
+      final completed = events.last as AgentCompleted;
+      expect(completed.usage?.promptTokens, 5);
+      expect(completed.usage?.completionTokens, 7);
+      expect(completed.usage?.totalTokens, 12);
+    });
+
+    test('normalizes stop, length, and unknown finish reasons', () async {
+      for (final entry in {
+        'stop': AgentFinishReason.stop,
+        'length': AgentFinishReason.length,
+        'content_filter': AgentFinishReason.contentFilter,
+        'tool_calls': AgentFinishReason.toolCalls,
+        'insufficient_system_resource':
+            AgentFinishReason.insufficientSystemResource,
+        'server_busy': AgentFinishReason.unknown,
+      }.entries) {
+        final client = RecordingClient(
+          (_) => _response(
+            'data: {"choices":[{"delta":{},"finish_reason":"${entry.key}"}]}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        );
+        final events = await _agent(client).prompt(AgentInput('hi')).toList();
+        expect(
+          (events.single as AgentCompleted).finishReason,
+          entry.value,
+          reason: entry.key,
+        );
+      }
+    });
+
+    test('keeps the last finish reason and tolerates malformed metadata', () async {
+      final client = RecordingClient(
+        (_) => _response(
+          'data: {"choices":[{"delta":{"content":"a"},"finish_reason":"stop"}]}\n\n'
+          'data: {"choices":[{"delta":{},"finish_reason":42}],"usage":"oops"}\n\n'
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+          'data: [DONE]\n\n',
+        ),
+      );
+      final events = await _agent(client).prompt(AgentInput('hi')).toList();
+
+      expect((events.first as AgentAnswerDelta).text, 'a');
+      expect(
+        (events.last as AgentCompleted).finishReason,
+        AgentFinishReason.length,
+      );
+    });
+
+    test('provider error after partial output stays sanitized', () async {
+      const secret = 'top-secret-key';
+      final client = RecordingClient(
+        (_) => _response(
+          'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+          'data: {"error":{"message":"$secret exploded"}}\n\n',
+        ),
+      );
+      final events = await _agent(
+        client,
+        key: secret,
+      ).prompt(AgentInput('hi')).toList();
+
+      expect((events.first as AgentAnswerDelta).text, 'partial');
+      final failure = (events.last as AgentFailed).failure;
+      expect(failure.kind, AgentFailureKind.provider);
+      expect(failure.message, isNot(contains(secret)));
     });
   });
 }

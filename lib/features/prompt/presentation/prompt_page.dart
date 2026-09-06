@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../settings/domain/api_key_credentials.dart';
+import '../../settings/domain/model_settings.dart';
 import '../../settings/presentation/api_key_settings_dialog.dart';
+import '../../settings/presentation/reasoning_settings.dart';
 import '../domain/agent.dart';
 import 'prompt_controller.dart';
 
@@ -11,6 +15,9 @@ class PromptPage extends StatefulWidget {
     required this.agent,
     required this.overrideStore,
     required this.apiKeyResolver,
+    this.modelSettingsStore,
+    this.reasoningSettings,
+    this.onOpenLab,
     this.isWeb = kIsWeb,
     super.key,
   });
@@ -18,6 +25,9 @@ class PromptPage extends StatefulWidget {
   final Agent agent;
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver apiKeyResolver;
+  final DeepSeekModelSettingsStore? modelSettingsStore;
+  final ReasoningSettings? reasoningSettings;
+  final VoidCallback? onOpenLab;
   final bool isWeb;
 
   @override
@@ -26,21 +36,49 @@ class PromptPage extends StatefulWidget {
 
 class _PromptPageState extends State<PromptPage> {
   late final PromptController _prompt;
+  late final ReasoningSettings _reasoning;
+  bool _ownsReasoning = false;
   final _inputController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _prompt = PromptController(widget.agent)..addListener(_rebuild);
+    final shared = widget.reasoningSettings;
+    if (shared != null) {
+      _reasoning = shared;
+    } else {
+      _ownsReasoning = true;
+      _reasoning = ReasoningSettings(
+        store:
+            widget.modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
+      );
+    }
+    _reasoning.addListener(_syncReasoning);
+    _syncReasoning();
+    unawaited(_reasoning.load());
   }
 
   @override
   void dispose() {
+    _reasoning.removeListener(_syncReasoning);
+    if (_ownsReasoning) {
+      _reasoning.dispose();
+    }
     _prompt
       ..removeListener(_rebuild)
       ..dispose();
     _inputController.dispose();
     super.dispose();
+  }
+
+  void _syncReasoning() {
+    _prompt.setThinkingMode(
+      _reasoning.reasoningEnabled
+          ? ThinkingMode.enabled
+          : ThinkingMode.disabled,
+    );
+    _rebuild();
   }
 
   void _rebuild() {
@@ -49,12 +87,16 @@ class _PromptPageState extends State<PromptPage> {
     }
   }
 
-  Future<void> _openSettings() => showApiKeySettingsDialog(
-    context: context,
-    overrideStore: widget.overrideStore,
-    resolver: widget.apiKeyResolver,
-    isWeb: widget.isWeb,
-  );
+  Future<void> _openSettings() async {
+    await showApiKeySettingsDialog(
+      context: context,
+      overrideStore: widget.overrideStore,
+      resolver: widget.apiKeyResolver,
+      isWeb: widget.isWeb,
+      modelSettingsStore: widget.modelSettingsStore,
+    );
+    await _reasoning.load();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +106,13 @@ class _PromptPageState extends State<PromptPage> {
       appBar: AppBar(
         title: const Text('Domovoy'),
         actions: [
+          if (widget.onOpenLab != null)
+            TextButton.icon(
+              key: const ValueKey('open-lab'),
+              onPressed: widget.onOpenLab,
+              icon: const Icon(Icons.science_outlined),
+              label: const Text('Лаборатория · День 2'),
+            ),
           IconButton(
             key: const ValueKey('open-settings'),
             tooltip: 'Настройки API',

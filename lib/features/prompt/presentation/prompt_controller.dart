@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../settings/domain/model_settings.dart';
 import '../domain/agent.dart';
 
 enum PromptRunStatus { idle, streaming, completed, failed }
@@ -49,15 +50,51 @@ final class PromptState {
 }
 
 final class PromptController extends ChangeNotifier {
-  PromptController(this._agent);
+  PromptController(
+    this._agent, {
+    DeepSeekModelSettingsStore? modelSettingsStore,
+    ThinkingMode initialThinking = ThinkingMode.enabled,
+  }) : _modelSettingsStore = modelSettingsStore,
+       _thinking = initialThinking;
 
   final Agent _agent;
+  final DeepSeekModelSettingsStore? _modelSettingsStore;
   StreamSubscription<AgentEvent>? _subscription;
   PromptState _state = const PromptState();
+  ThinkingMode _thinking;
   bool _disposed = false;
   int _generation = 0;
 
   PromptState get state => _state;
+
+  /// Reasoning mode snapshotted for the next request. Defaults to enabled.
+  ThinkingMode get thinking => _thinking;
+
+  void setThinkingMode(ThinkingMode mode) {
+    if (_thinking == mode) {
+      return;
+    }
+    _thinking = mode;
+    _notifyListeners();
+  }
+
+  /// Loads the persisted reasoning setting. Missing values and read
+  /// failures fall back to [ThinkingMode.enabled].
+  Future<void> loadThinking() async {
+    final store = _modelSettingsStore;
+    if (store == null) {
+      return;
+    }
+    try {
+      final settings = await store.read();
+      _thinking = settings == null || settings.reasoningEnabled
+          ? ThinkingMode.enabled
+          : ThinkingMode.disabled;
+    } on Object {
+      _thinking = ThinkingMode.enabled;
+    }
+    _notifyListeners();
+  }
 
   bool submit(String rawInput) {
     if (_disposed || _state.isStreaming) {
@@ -72,9 +109,10 @@ final class PromptController extends ChangeNotifier {
 
     unawaited(_subscription?.cancel());
     final generation = ++_generation;
+    final thinking = _thinking;
     _setState(const PromptState(status: PromptRunStatus.streaming));
     _subscription = _agent
-        .prompt(AgentInput(normalized))
+        .prompt(AgentInput(normalized, thinking: thinking))
         .listen(
           (event) => _onEvent(generation, event),
           onError: (_) {
@@ -160,6 +198,13 @@ final class PromptController extends ChangeNotifier {
       return;
     }
     _state = value;
+    notifyListeners();
+  }
+
+  void _notifyListeners() {
+    if (_disposed) {
+      return;
+    }
     notifyListeners();
   }
 

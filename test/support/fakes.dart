@@ -58,3 +58,20 @@ final class ScriptedAgent implements Agent {
     return Stream<AgentEvent>.fromIterable(events);
   }
 }
+
+final class QueueScriptedAgent implements Agent {
+  QueueScriptedAgent(this.scripts);
+
+  final List<List<AgentEvent>> scripts;
+  final List<AgentInput> inputs = <AgentInput>[];
+  int _index = 0;
+
+  @override
+  Stream<AgentEvent> prompt(AgentInput input) {
+    inputs.add(input);
+    final events = _index < scripts.length
+        ? scripts[_index++]
+        : const <AgentEvent>[AgentCompleted()];
+    return Stream<AgentEvent>.fromIterable(events);
+  }
+}
