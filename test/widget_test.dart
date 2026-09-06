@@ -91,9 +91,13 @@ void main() {
 
       expect(find.text('partial'), findsOneWidget);
       expect(find.byKey(const ValueKey('prompt-error')), findsOneWidget);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('error-open-settings')),
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('error-open-settings')));
       await tester.pumpAndSettle();
-      expect(find.text('API-ключ DeepSeek'), findsOneWidget);
+      expect(find.text('Настройки DeepSeek'), findsOneWidget);
     },
   );
 

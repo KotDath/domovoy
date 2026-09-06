@@ -43,9 +43,12 @@ final class OpenAiCompatibleChatAgent implements Agent {
         return;
       }
 
+      AgentFinishReason? finishReason;
+      AgentTokenUsage? usage;
+
       await for (final data in _decoder.decode(response.stream)) {
         if (data == '[DONE]') {
-          yield const AgentCompleted();
+          yield AgentCompleted(finishReason: finishReason, usage: usage);
           return;
         }
 
@@ -64,6 +67,11 @@ final class OpenAiCompatibleChatAgent implements Agent {
           return;
         }
 
+        final parsedUsage = _usageFrom(payload['usage']);
+        if (parsedUsage != null) {
+          usage = parsedUsage;
+        }
+
         final choices = payload['choices'];
         if (choices == null) {
           continue;
@@ -78,6 +86,10 @@ final class OpenAiCompatibleChatAgent implements Agent {
         final choice = choices.first;
         if (choice is! Map<String, dynamic>) {
           throw const FormatException('Expected a choice object.');
+        }
+        final parsedReason = _finishReasonFrom(choice['finish_reason']);
+        if (parsedReason != null) {
+          finishReason = parsedReason;
         }
         final delta = choice['delta'];
         if (delta == null) {
@@ -153,6 +165,58 @@ final class OpenAiCompatibleChatAgent implements Agent {
       throw FormatException('Expected $field to be text.');
     }
     return value;
+  }
+
+  static AgentFinishReason? _finishReasonFrom(Object? value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is! String) {
+      return null;
+    }
+    return switch (value) {
+      'stop' => AgentFinishReason.stop,
+      'length' => AgentFinishReason.length,
+      'content_filter' => AgentFinishReason.contentFilter,
+      'tool_calls' => AgentFinishReason.toolCalls,
+      'insufficient_system_resource' =>
+        AgentFinishReason.insufficientSystemResource,
+      _ => AgentFinishReason.unknown,
+    };
+  }
+
+  static AgentTokenUsage? _usageFrom(Object? value) {
+    if (value == null) {
+      return null;
+    }
+    if (value is! Map<String, dynamic>) {
+      return null;
+    }
+    final prompt = _intField(value, 'prompt_tokens');
+    final completion = _intField(value, 'completion_tokens');
+    final total = _intField(value, 'total_tokens');
+    if (prompt == null && completion == null && total == null) {
+      return null;
+    }
+    return AgentTokenUsage(
+      promptTokens: prompt,
+      completionTokens: completion,
+      totalTokens: total,
+    );
+  }
+
+  static int? _intField(Map<String, dynamic> map, String field) {
+    final value = map[field];
+    if (value == null) {
+      return null;
+    }
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    return null;
   }
 
   static AgentFailure _failureForHttpStatus(int statusCode) {
