@@ -9,6 +9,45 @@ import 'package:flutter_test/flutter_test.dart';
 import 'support/fakes.dart';
 
 void main() {
+  testWidgets('shows only the prompt workspace without laboratory navigation', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.app);
+
+    expect(find.byKey(const ValueKey('prompt-destination')), findsOneWidget);
+    expect(find.byKey(const ValueKey('prompt-input')), findsOneWidget);
+    expect(find.byKey(const ValueKey('output-panel')), findsOneWidget);
+    expect(find.byKey(const ValueKey('submit-prompt')), findsOneWidget);
+    expect(find.byKey(const ValueKey('open-settings')), findsOneWidget);
+    expect(find.byKey(const ValueKey('open-lab')), findsNothing);
+    expect(find.byKey(const ValueKey('nav-prompt')), findsNothing);
+    expect(find.byKey(const ValueKey('nav-lab')), findsNothing);
+    expect(find.byKey(const ValueKey('nav-reasoning')), findsNothing);
+    expect(find.byKey(const ValueKey('nav-temperature')), findsNothing);
+    expect(find.byKey(const ValueKey('nav-comparison')), findsNothing);
+    expect(find.text('День 2'), findsNothing);
+    expect(find.text('День 3'), findsNothing);
+    expect(find.text('День 4'), findsNothing);
+    expect(find.text('День 5'), findsNothing);
+  });
+
+  testWidgets('opens credential settings from the prompt workspace', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.app);
+
+    final openSettings = tester.widget<IconButton>(
+      find.byKey(const ValueKey('open-settings')),
+    );
+    openSettings.onPressed!();
+    await tester.pumpAndSettle();
+    expect(find.text('Настройки DeepSeek'), findsOneWidget);
+  });
+
   testWidgets('uses stacked and side-by-side responsive layouts', (
     tester,
   ) async {
@@ -66,6 +105,33 @@ void main() {
     expect(find.text('Отправить'), findsOneWidget);
   });
 
+  testWidgets('allows another independent submission after termination', (
+    tester,
+  ) async {
+    final agent = QueueScriptedAgent(const [
+      <AgentEvent>[AgentAnswerDelta('first answer'), AgentCompleted()],
+      <AgentEvent>[AgentAnswerDelta('second answer'), AgentCompleted()],
+    ]);
+    final harness = _Harness(agent: agent);
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.app);
+
+    await tester.enterText(find.byKey(const ValueKey('prompt-input')), 'first');
+    await tester.tap(find.byKey(const ValueKey('submit-prompt')));
+    await tester.pumpAndSettle();
+    expect(find.text('first answer'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('prompt-input')),
+      'second',
+    );
+    await tester.tap(find.byKey(const ValueKey('submit-prompt')));
+    await tester.pumpAndSettle();
+    expect(find.text('first answer'), findsNothing);
+    expect(find.text('second answer'), findsOneWidget);
+    expect(find.text('Отправить'), findsOneWidget);
+  });
+
   testWidgets(
     'retains partial output and links missing-key error to settings',
     (tester) async {
@@ -114,6 +180,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        theme: ThemeData(splashFactory: InkRipple.splashFactory),
         home: Scaffold(
           body: ApiKeySettingsDialog(
             overrideStore: store,
@@ -159,6 +226,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        theme: ThemeData(splashFactory: InkRipple.splashFactory),
         home: Scaffold(
           body: ApiKeySettingsDialog(
             overrideStore: store,

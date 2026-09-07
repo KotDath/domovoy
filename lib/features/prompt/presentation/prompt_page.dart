@@ -17,7 +17,6 @@ class PromptPage extends StatefulWidget {
     required this.apiKeyResolver,
     this.modelSettingsStore,
     this.reasoningSettings,
-    this.onOpenLab,
     this.isWeb = kIsWeb,
     super.key,
   });
@@ -27,7 +26,6 @@ class PromptPage extends StatefulWidget {
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore? modelSettingsStore;
   final ReasoningSettings? reasoningSettings;
-  final VoidCallback? onOpenLab;
   final bool isWeb;
 
   @override
@@ -106,13 +104,6 @@ class _PromptPageState extends State<PromptPage> {
       appBar: AppBar(
         title: const Text('Domovoy'),
         actions: [
-          if (widget.onOpenLab != null)
-            TextButton.icon(
-              key: const ValueKey('open-lab'),
-              onPressed: widget.onOpenLab,
-              icon: const Icon(Icons.science_outlined),
-              label: const Text('Лаборатория · День 2'),
-            ),
           IconButton(
             key: const ValueKey('open-settings'),
             tooltip: 'Настройки API',

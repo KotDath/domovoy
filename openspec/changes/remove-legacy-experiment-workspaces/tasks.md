@@ -1,8 +1,8 @@
 ## 1. Retain a single prompt application surface
 
-- [ ] 1.1 Simplify the application composition root to construct only the retained one-shot prompt workspace and remove the Day 2–5 navigation, state, factories, and lifecycle wiring.
-- [ ] 1.2 Update the prompt-level widget and dependency-injection tests so they verify the sole workspace still exposes prompt input, streaming output, settings access, responsive layout, and another independent submission after termination.
-- [ ] 1.3 Run the prompt transport, credential, controller, and widget tests that remain relevant, then create an intermediate commit containing only the coherent single-workspace transition.
+- [x] 1.1 Simplify the application composition root to construct only the retained one-shot prompt workspace and remove the Day 2–5 navigation, state, factories, and lifecycle wiring.
+- [x] 1.2 Update the prompt-level widget and dependency-injection tests so they verify the sole workspace still exposes prompt input, streaming output, settings access, responsive layout, and another independent submission after termination.
+- [x] 1.3 Run the prompt transport, credential, controller, and widget tests that remain relevant, then create an intermediate commit containing only the coherent single-workspace transition.
 
 ## 2. Remove legacy experiment slices
 

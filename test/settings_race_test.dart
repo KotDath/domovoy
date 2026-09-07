@@ -56,6 +56,7 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
+          theme: ThemeData(splashFactory: InkRipple.splashFactory),
           home: PromptPage(
             agent: agent,
             overrideStore: keyStore,
@@ -67,7 +68,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const ValueKey('open-settings')));
+      tester
+          .widget<IconButton>(find.byKey(const ValueKey('open-settings')))
+          .onPressed!();
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('reasoning-switch')), findsOneWidget);
 
