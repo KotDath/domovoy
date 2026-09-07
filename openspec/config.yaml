@@ -5,8 +5,8 @@ context: |
   The Dart package name is `domovoy`, and native application identifiers use
   the `ru.kotdath.domovoy` prefix.
   The initial project supports Android, iOS, web, Linux, macOS, and Windows.
-  Keep the generated Flutter counter application as the baseline until a
-  product change replaces it.
+  The current baseline is the one-shot prompt workspace with DeepSeek
+  credentials, progressive reasoning/answer streaming, and settings access.
   Format Dart code with `dart format .` and verify changes with
   `flutter analyze` and `flutter test`.
 

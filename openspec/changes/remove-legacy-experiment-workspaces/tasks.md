@@ -14,9 +14,9 @@
 
 ## 3. Align repository documentation
 
-- [ ] 3.1 Update README documentation to describe the retained one-shot prompt baseline and remove references that imply the deleted laboratories or profile settings remain available.
-- [ ] 3.2 Update `openspec/config.yaml` so the current baseline is the prompt workspace rather than the already-replaced generated counter application, without modifying archived change history.
-- [ ] 3.3 Create a documentation/configuration commit that stages only files owned by this change.
+- [x] 3.1 Update README documentation to describe the retained one-shot prompt baseline and remove references that imply the deleted laboratories or profile settings remain available.
+- [x] 3.2 Update `openspec/config.yaml` so the current baseline is the prompt workspace rather than the already-replaced generated counter application, without modifying archived change history.
+- [x] 3.3 Create a documentation/configuration commit that stages only files owned by this change.
 
 ## 4. Verify the cleanup
 
