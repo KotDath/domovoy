@@ -20,7 +20,7 @@
 
 ## 4. Verify the cleanup
 
-- [ ] 4.1 Run `dart format .` and confirm formatting completes successfully.
-- [ ] 4.2 Run `flutter analyze` and resolve every diagnostic introduced or exposed by the deletion.
-- [ ] 4.3 Run `flutter test` and confirm all retained tests pass on the cleaned application.
-- [ ] 4.4 Inspect `git status` and the complete implementation diff to confirm all six Flutter platform folders and unrelated modified agent-tooling files remain untouched and no generated/cache artifacts are staged.
+- [x] 4.1 Run `dart format .` and confirm formatting completes successfully.
+- [x] 4.2 Run `flutter analyze` and resolve every diagnostic introduced or exposed by the deletion.
+- [x] 4.3 Run `flutter test` and confirm all retained tests pass on the cleaned application.
+- [x] 4.4 Inspect `git status` and the complete implementation diff to confirm all six Flutter platform folders and unrelated modified agent-tooling files remain untouched and no generated/cache artifacts are staged.
