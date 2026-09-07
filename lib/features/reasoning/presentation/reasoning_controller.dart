@@ -82,8 +82,37 @@ final class ReasoningController extends ChangeNotifier {
     }
     await _runStage(
       generation,
-      ReasoningStage.expertGroup,
-      buildExpertGroupInput(task),
+      ReasoningStage.expertAnalyst,
+      buildExpertInput(task, ReasoningExpertRole.analyst),
+    );
+    if (_isStale(generation)) {
+      return;
+    }
+    await _runStage(
+      generation,
+      ReasoningStage.expertEngineer,
+      buildExpertInput(task, ReasoningExpertRole.engineer),
+    );
+    if (_isStale(generation)) {
+      return;
+    }
+    await _runStage(
+      generation,
+      ReasoningStage.expertCritic,
+      buildExpertInput(task, ReasoningExpertRole.critic),
+    );
+    if (_isStale(generation)) {
+      return;
+    }
+    await _runStage(
+      generation,
+      ReasoningStage.expertSynthesis,
+      buildExpertSynthesisInput(
+        task: task,
+        analystEvidence: _expertEvidence(_state.expertAnalyst),
+        engineerEvidence: _expertEvidence(_state.expertEngineer),
+        criticEvidence: _expertEvidence(_state.expertCritic),
+      ),
     );
     if (_isStale(generation)) {
       return;
@@ -231,6 +260,20 @@ final class ReasoningController extends ChangeNotifier {
     _notify();
   }
 
+  String _expertEvidence(ReasoningLaneState lane) {
+    final answer = lane.answer.trim();
+    final failure = lane.failure?.message.trim();
+    if (answer.isEmpty) {
+      return failure == null || failure.isEmpty
+          ? '[Ответ недоступен]'
+          : '[Ответ недоступен. Ошибка: $failure]';
+    }
+    if (failure == null || failure.isEmpty) {
+      return answer;
+    }
+    return '$answer\n[Запрос завершился ошибкой: $failure]';
+  }
+
   void setVerdict(ReasoningStrategy strategy, ReasoningVerdict verdict) {
     if (_disposed) {
       return;
@@ -261,7 +304,10 @@ final class ReasoningController extends ChangeNotifier {
     ReasoningStage.stepByStep => _state.stepByStep,
     ReasoningStage.promptBuilder => _state.promptBuilder,
     ReasoningStage.generatedSolver => _state.generated,
-    ReasoningStage.expertGroup => _state.expertGroup,
+    ReasoningStage.expertAnalyst => _state.expertAnalyst,
+    ReasoningStage.expertEngineer => _state.expertEngineer,
+    ReasoningStage.expertCritic => _state.expertCritic,
+    ReasoningStage.expertSynthesis => _state.expertGroup,
   };
 
   ReasoningExperimentState _withLane(
@@ -273,7 +319,10 @@ final class ReasoningController extends ChangeNotifier {
       ReasoningStage.stepByStep => _state.copyWith(stepByStep: lane),
       ReasoningStage.promptBuilder => _state.copyWith(promptBuilder: lane),
       ReasoningStage.generatedSolver => _state.copyWith(generated: lane),
-      ReasoningStage.expertGroup => _state.copyWith(expertGroup: lane),
+      ReasoningStage.expertAnalyst => _state.copyWith(expertAnalyst: lane),
+      ReasoningStage.expertEngineer => _state.copyWith(expertEngineer: lane),
+      ReasoningStage.expertCritic => _state.copyWith(expertCritic: lane),
+      ReasoningStage.expertSynthesis => _state.copyWith(expertGroup: lane),
     };
   }
 

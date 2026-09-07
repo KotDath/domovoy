@@ -33,6 +33,13 @@ Future<void> _pumpFrames(WidgetTester tester, [int count = 20]) async {
   }
 }
 
+List<List<AgentEvent>> _expertSuccessScripts() => const [
+  [AgentAnswerDelta('ANALYST-ANSWER'), AgentCompleted()],
+  [AgentAnswerDelta('ENGINEER-ANSWER'), AgentCompleted()],
+  [AgentAnswerDelta('CRITIC-ANSWER'), AgentCompleted()],
+  [AgentAnswerDelta('SYNTHESIS-ANSWER'), AgentCompleted()],
+];
+
 void main() {
   group('Day 3 laboratory widgets', () {
     testWidgets('navigates to Day 3 without clearing Day 1 or Day 2', (
@@ -66,7 +73,9 @@ void main() {
         find.byKey(const ValueKey('strategy-card-expertGroup')),
         findsOneWidget,
       );
-      expect(find.byKey(const ValueKey('five-call-cost')), findsOneWidget);
+      expect(find.byKey(const ValueKey('eight-call-cost')), findsOneWidget);
+      expect(find.textContaining('8 API-вызовов'), findsOneWidget);
+      expect(find.textContaining('Стоимость: 4 API-вызова'), findsOneWidget);
       expect(find.byKey(const ValueKey('run-reasoning')), findsOneWidget);
       expect(
         find.byKey(const ValueKey('reasoning-off-banner')),
@@ -179,12 +188,12 @@ void main() {
     testWidgets('shows generated prompt separately from the solver answer', (
       tester,
     ) async {
-      final agent = QueueScriptedAgent(const [
-        [AgentAnswerDelta('direct-a'), AgentCompleted()],
-        [AgentAnswerDelta('step-a'), AgentCompleted()],
-        [AgentAnswerDelta('BUILDER-PROMPT'), AgentCompleted()],
-        [AgentAnswerDelta('SOLVER-ANSWER'), AgentCompleted()],
-        [AgentAnswerDelta('expert-a'), AgentCompleted()],
+      final agent = QueueScriptedAgent([
+        const [AgentAnswerDelta('direct-a'), AgentCompleted()],
+        const [AgentAnswerDelta('step-a'), AgentCompleted()],
+        const [AgentAnswerDelta('BUILDER-PROMPT'), AgentCompleted()],
+        const [AgentAnswerDelta('SOLVER-ANSWER'), AgentCompleted()],
+        ..._expertSuccessScripts(),
       ]);
       await tester.pumpWidget(_app(agent: agent));
       await _openDay3(tester);
@@ -220,10 +229,10 @@ void main() {
     testWidgets('shows builder metadata separately from the solver stage', (
       tester,
     ) async {
-      final agent = QueueScriptedAgent(const [
-        [AgentAnswerDelta('direct-a'), AgentCompleted()],
-        [AgentAnswerDelta('step-a'), AgentCompleted()],
-        [
+      final agent = QueueScriptedAgent([
+        const [AgentAnswerDelta('direct-a'), AgentCompleted()],
+        const [AgentAnswerDelta('step-a'), AgentCompleted()],
+        const [
           AgentAnswerDelta('BUILDER-PROMPT'),
           AgentCompleted(
             finishReason: AgentFinishReason.stop,
@@ -234,14 +243,14 @@ void main() {
             ),
           ),
         ],
-        [
+        const [
           AgentAnswerDelta('SOLVER-ANSWER'),
           AgentCompleted(
             finishReason: AgentFinishReason.length,
             usage: AgentTokenUsage(totalTokens: 7),
           ),
         ],
-        [AgentAnswerDelta('expert-a'), AgentCompleted()],
+        ..._expertSuccessScripts(),
       ]);
       await tester.pumpWidget(_app(agent: agent));
       await _openDay3(tester);
@@ -276,16 +285,16 @@ void main() {
     testWidgets('shows builder failure without a solver answer', (
       tester,
     ) async {
-      final agent = QueueScriptedAgent(const [
-        [AgentAnswerDelta('direct-a'), AgentCompleted()],
-        [AgentAnswerDelta('step-a'), AgentCompleted()],
-        [
+      final agent = QueueScriptedAgent([
+        const [AgentAnswerDelta('direct-a'), AgentCompleted()],
+        const [AgentAnswerDelta('step-a'), AgentCompleted()],
+        const [
           AgentAnswerDelta('partial builder'),
           AgentFailed(
             AgentFailure(kind: AgentFailureKind.network, message: 'down'),
           ),
         ],
-        [AgentAnswerDelta('expert-a'), AgentCompleted()],
+        ..._expertSuccessScripts(),
       ]);
       await tester.pumpWidget(_app(agent: agent));
       await _openDay3(tester);
@@ -323,11 +332,11 @@ void main() {
     testWidgets('shows empty builder skip without solver output', (
       tester,
     ) async {
-      final agent = QueueScriptedAgent(const [
-        [AgentAnswerDelta('direct-a'), AgentCompleted()],
-        [AgentAnswerDelta('step-a'), AgentCompleted()],
-        [AgentCompleted()],
-        [AgentAnswerDelta('expert-a'), AgentCompleted()],
+      final agent = QueueScriptedAgent([
+        const [AgentAnswerDelta('direct-a'), AgentCompleted()],
+        const [AgentAnswerDelta('step-a'), AgentCompleted()],
+        const [AgentCompleted()],
+        ..._expertSuccessScripts(),
       ]);
       await tester.pumpWidget(_app(agent: agent));
       await _openDay3(tester);
@@ -402,6 +411,77 @@ void main() {
       await agent.latest.close();
     });
 
+    testWidgets('shows three independent expert results and final synthesis', (
+      tester,
+    ) async {
+      final agent = QueueScriptedAgent([
+        const [AgentAnswerDelta('direct-a'), AgentCompleted()],
+        const [AgentAnswerDelta('step-a'), AgentCompleted()],
+        const [AgentAnswerDelta('builder-a'), AgentCompleted()],
+        const [AgentAnswerDelta('solver-a'), AgentCompleted()],
+        ..._expertSuccessScripts(),
+      ]);
+      await tester.pumpWidget(_app(agent: agent));
+      await _openDay3(tester);
+      await tester.ensureVisible(find.byKey(const ValueKey('run-reasoning')));
+      await tester.tap(find.byKey(const ValueKey('run-reasoning')));
+      await _pumpFrames(tester, 40);
+
+      for (final entry in const <(String, String)>[
+        ('expert-analyst-evidence', 'ANALYST-ANSWER'),
+        ('expert-engineer-evidence', 'ENGINEER-ANSWER'),
+        ('expert-critic-evidence', 'CRITIC-ANSWER'),
+        ('expert-synthesis-section', 'SYNTHESIS-ANSWER'),
+      ]) {
+        final panel = find.byKey(ValueKey(entry.$1));
+        expect(panel, findsOneWidget);
+        expect(
+          find.descendant(of: panel, matching: find.text(entry.$2)),
+          findsOneWidget,
+        );
+      }
+      expect(find.text('Прогресс: 8 из 8 API-вызовов'), findsOneWidget);
+      expect(agent.inputs, hasLength(8));
+    });
+
+    testWidgets('keeps expert failure visible and still shows synthesis', (
+      tester,
+    ) async {
+      final agent = QueueScriptedAgent(const [
+        [AgentAnswerDelta('direct-a'), AgentCompleted()],
+        [AgentAnswerDelta('step-a'), AgentCompleted()],
+        [AgentAnswerDelta('builder-a'), AgentCompleted()],
+        [AgentAnswerDelta('solver-a'), AgentCompleted()],
+        [
+          AgentAnswerDelta('PARTIAL-ANALYST'),
+          AgentFailed(
+            AgentFailure(kind: AgentFailureKind.network, message: 'offline'),
+          ),
+        ],
+        [AgentAnswerDelta('ENGINEER-ANSWER'), AgentCompleted()],
+        [AgentAnswerDelta('CRITIC-ANSWER'), AgentCompleted()],
+        [AgentAnswerDelta('SYNTHESIS-ANSWER'), AgentCompleted()],
+      ]);
+      await tester.pumpWidget(_app(agent: agent));
+      await _openDay3(tester);
+      await tester.ensureVisible(find.byKey(const ValueKey('run-reasoning')));
+      await tester.tap(find.byKey(const ValueKey('run-reasoning')));
+      await _pumpFrames(tester, 40);
+
+      final analyst = find.byKey(const ValueKey('expert-analyst-evidence'));
+      expect(
+        find.descendant(of: analyst, matching: find.text('PARTIAL-ANALYST')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: analyst, matching: find.text('offline')),
+        findsOneWidget,
+      );
+      expect(find.text('SYNTHESIS-ANSWER'), findsOneWidget);
+      expect(agent.inputs.last.text, contains('PARTIAL-ANALYST'));
+      expect(agent.inputs.last.text, contains('offline'));
+    });
+
     testWidgets('shows unique reference only for the unchanged preset', (
       tester,
     ) async {
@@ -425,12 +505,12 @@ void main() {
     });
 
     testWidgets('records ratings and a user-selected summary', (tester) async {
-      final agent = QueueScriptedAgent(const [
-        [AgentAnswerDelta('direct-a'), AgentCompleted()],
-        [AgentAnswerDelta('step-a'), AgentCompleted()],
-        [AgentAnswerDelta('builder-a'), AgentCompleted()],
-        [AgentAnswerDelta('solver-a'), AgentCompleted()],
-        [AgentAnswerDelta('expert-a'), AgentCompleted()],
+      final agent = QueueScriptedAgent([
+        const [AgentAnswerDelta('direct-a'), AgentCompleted()],
+        const [AgentAnswerDelta('step-a'), AgentCompleted()],
+        const [AgentAnswerDelta('builder-a'), AgentCompleted()],
+        const [AgentAnswerDelta('solver-a'), AgentCompleted()],
+        ..._expertSuccessScripts(),
       ]);
       await tester.pumpWidget(_app(agent: agent));
       await _openDay3(tester);

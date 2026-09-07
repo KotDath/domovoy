@@ -24,10 +24,11 @@ video-plus-code submission.
 
 ## 3. Run all four strategies
 
-- [ ] Press **Запустить 4 способа** and show the five-call disclosure
-  (`N из 5`).
+- [ ] Press **Запустить 4 способа** and show the eight-call disclosure
+  (`N из 8`). Explain that Expert group alone uses four calls.
 - [ ] Keep Direct, Step by step, Generated prompt, and Expert group cards
-  visible with independent streamed answers.
+  visible. In Expert group, show the separate Analyst, Engineer, Critic,
+  and Synthesis stages.
 - [ ] Open the generated prompt separately from the generated-strategy
   solver answer.
 - [ ] If a stage fails, keep its partial output and sanitized error and
@@ -45,8 +46,9 @@ video-plus-code submission.
 
 - [ ] No API key, settings input value, or secret terminal output appears
   in any frame or log.
-- [ ] The four prompts/results, generated prompt, unique reference,
-  verdicts, and selected conclusion stay legible.
+- [ ] The four strategy results, generated prompt, three independent expert
+  outputs, synthesis, unique reference, verdicts, and selected conclusion stay
+  legible.
 - [ ] Review the video before delivery; re-record if any secret leaks.
 
 ## 6. Build / smoke (maintainer)
@@ -58,7 +60,7 @@ flutter test
 flutter build linux --release
 ```
 
-The opt-in Day 3 live smoke exercises all five stages with
+The opt-in Day 3 live smoke exercises all eight stages with
 `DEEPSEEK_API_KEY` supplied only at runtime and logs aggregate
 non-secret evidence. Manual video recording stays outside the
 repository.

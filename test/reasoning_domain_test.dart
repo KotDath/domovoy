@@ -1,6 +1,7 @@
 import 'package:domovoy/features/prompt/data/chat_completions_provider_profile.dart';
 import 'package:domovoy/features/prompt/domain/agent.dart';
 import 'package:domovoy/features/reasoning/domain/four_house_puzzle.dart';
+import 'package:domovoy/features/reasoning/domain/reasoning_models.dart';
 import 'package:domovoy/features/reasoning/domain/reasoning_prompts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -51,17 +52,54 @@ void main() {
       },
     );
 
-    test(
-      'expert group asks labeled analyst, engineer, critic, then synthesis',
-      () {
-        final prompt = buildExpertGroupPrompt(task);
-        expect(prompt, startsWith(task.trim()));
-        expect(prompt, contains('## Аналитик'));
-        expect(prompt, contains('## Инженер'));
-        expect(prompt, contains('## Критик'));
-        expect(prompt, contains('синтез'));
-      },
-    );
+    test('experts receive isolated role-specific prompts', () {
+      for (final role in ReasoningExpertRole.values) {
+        final prompt = buildExpertPrompt(task, role);
+        expect(prompt, contains(task.trim()));
+        expect(prompt, contains(reasoningExpertRoleLabel(role)));
+        expect(prompt, contains('не видите ответы других экспертов'));
+      }
+      expect(
+        buildExpertPrompt(task, ReasoningExpertRole.analyst),
+        isNot(contains('Инженер')),
+      );
+      expect(
+        buildExpertPrompt(task, ReasoningExpertRole.engineer),
+        isNot(contains('Критик')),
+      );
+      expect(
+        buildExpertPrompt(task, ReasoningExpertRole.critic),
+        isNot(contains('Аналитик')),
+      );
+    });
+
+    test('synthesis receives all labeled evidence as untrusted text', () {
+      final prompt = buildExpertSynthesisPrompt(
+        task: task,
+        analystEvidence: 'analyst-output',
+        engineerEvidence: 'engineer-output',
+        criticEvidence: '[Ответ недоступен]',
+      );
+
+      expect(prompt, contains(task.trim()));
+      expect(prompt, contains('role="Аналитик"'));
+      expect(prompt, contains('analyst-output'));
+      expect(prompt, contains('role="Инженер"'));
+      expect(prompt, contains('engineer-output'));
+      expect(prompt, contains('role="Критик"'));
+      expect(prompt, contains('[Ответ недоступен]'));
+      expect(prompt, contains('недоверенным результатом'));
+      expect(prompt, contains('одно проверенное решение'));
+    });
+
+    test('expert group and full experiment expose real call costs', () {
+      expect(reasoningStrategyPlannedCalls(ReasoningStrategy.expertGroup), 4);
+      expect(
+        reasoningStrategyCostLabel(ReasoningStrategy.expertGroup),
+        '4 API-вызова',
+      );
+      expect(kReasoningPlannedApiCalls, 8);
+    });
 
     test('every Day 3 input disables thinking and omits reasoning effort', () {
       final inputs = <AgentInput>[
@@ -72,7 +110,15 @@ void main() {
           generatedInstructions: 'solver',
           originalTask: task,
         ),
-        buildExpertGroupInput(task),
+        buildExpertInput(task, ReasoningExpertRole.analyst),
+        buildExpertInput(task, ReasoningExpertRole.engineer),
+        buildExpertInput(task, ReasoningExpertRole.critic),
+        buildExpertSynthesisInput(
+          task: task,
+          analystEvidence: 'a',
+          engineerEvidence: 'e',
+          criticEvidence: 'c',
+        ),
       ];
       final profile = ChatCompletionsProviderProfile.deepSeekV4Flash();
       for (final input in inputs) {

@@ -9,14 +9,25 @@ enum ReasoningStage {
   stepByStep,
   promptBuilder,
   generatedSolver,
-  expertGroup,
+  expertAnalyst,
+  expertEngineer,
+  expertCritic,
+  expertSynthesis,
 }
+
+enum ReasoningExpertRole { analyst, engineer, critic }
 
 enum ReasoningVerdict { unrated, correct, partial, incorrect }
 
 enum ReasoningLaneStatus { idle, streaming, completed, failed }
 
-const int kReasoningPlannedApiCalls = 5;
+const int kReasoningPlannedApiCalls = 8;
+
+String reasoningExpertRoleLabel(ReasoningExpertRole role) => switch (role) {
+  ReasoningExpertRole.analyst => 'Аналитик',
+  ReasoningExpertRole.engineer => 'Инженер',
+  ReasoningExpertRole.critic => 'Критик',
+};
 
 String reasoningStrategyLabel(ReasoningStrategy strategy) => switch (strategy) {
   ReasoningStrategy.direct => 'Прямой ответ',
@@ -35,15 +46,14 @@ String reasoningStrategyTransformation(
   ReasoningStrategy.generatedPrompt =>
     'Сначала модель пишет самодостаточный промпт-решатель, затем отдельный запрос выполняет его вместе с исходной задачей.',
   ReasoningStrategy.expertGroup =>
-    'Аналитик, инженер и критик дают отдельно подписанные решения, затем следует согласующий синтез.',
+    'Три независимых API-запроса получают роли аналитика, инженера и критика; четвёртый запрос согласует их ответы.',
 };
 
 int reasoningStrategyPlannedCalls(ReasoningStrategy strategy) =>
     switch (strategy) {
       ReasoningStrategy.generatedPrompt => 2,
-      ReasoningStrategy.direct ||
-      ReasoningStrategy.stepByStep ||
-      ReasoningStrategy.expertGroup => 1,
+      ReasoningStrategy.expertGroup => 4,
+      ReasoningStrategy.direct || ReasoningStrategy.stepByStep => 1,
     };
 
 String reasoningStrategyCostLabel(ReasoningStrategy strategy) {
@@ -117,6 +127,9 @@ final class ReasoningExperimentState {
     this.stepByStep = const ReasoningLaneState(),
     this.promptBuilder = const ReasoningLaneState(),
     this.generated = const ReasoningLaneState(),
+    this.expertAnalyst = const ReasoningLaneState(),
+    this.expertEngineer = const ReasoningLaneState(),
+    this.expertCritic = const ReasoningLaneState(),
     this.expertGroup = const ReasoningLaneState(),
     this.mostAccurate,
     this.taskError,
@@ -130,6 +143,9 @@ final class ReasoningExperimentState {
   final ReasoningLaneState stepByStep;
   final ReasoningLaneState promptBuilder;
   final ReasoningLaneState generated;
+  final ReasoningLaneState expertAnalyst;
+  final ReasoningLaneState expertEngineer;
+  final ReasoningLaneState expertCritic;
   final ReasoningLaneState expertGroup;
   final ReasoningStrategy? mostAccurate;
   final String? taskError;
@@ -152,6 +168,24 @@ final class ReasoningExperimentState {
     return promptBuilder.status;
   }
 
+  ReasoningLaneStatus get expertStrategyStatus {
+    if (expertGroup.status != ReasoningLaneStatus.idle) {
+      return expertGroup.status;
+    }
+    if (expertAnalyst.status != ReasoningLaneStatus.idle ||
+        expertEngineer.status != ReasoningLaneStatus.idle ||
+        expertCritic.status != ReasoningLaneStatus.idle) {
+      return ReasoningLaneStatus.streaming;
+    }
+    return ReasoningLaneStatus.idle;
+  }
+
+  ReasoningLaneState expertLane(ReasoningExpertRole role) => switch (role) {
+    ReasoningExpertRole.analyst => expertAnalyst,
+    ReasoningExpertRole.engineer => expertEngineer,
+    ReasoningExpertRole.critic => expertCritic,
+  };
+
   ReasoningExperimentState copyWith({
     String? taskSnapshot,
     bool? isRunning,
@@ -162,6 +196,9 @@ final class ReasoningExperimentState {
     ReasoningLaneState? stepByStep,
     ReasoningLaneState? promptBuilder,
     ReasoningLaneState? generated,
+    ReasoningLaneState? expertAnalyst,
+    ReasoningLaneState? expertEngineer,
+    ReasoningLaneState? expertCritic,
     ReasoningLaneState? expertGroup,
     ReasoningStrategy? mostAccurate,
     bool clearMostAccurate = false,
@@ -177,6 +214,9 @@ final class ReasoningExperimentState {
       stepByStep: stepByStep ?? this.stepByStep,
       promptBuilder: promptBuilder ?? this.promptBuilder,
       generated: generated ?? this.generated,
+      expertAnalyst: expertAnalyst ?? this.expertAnalyst,
+      expertEngineer: expertEngineer ?? this.expertEngineer,
+      expertCritic: expertCritic ?? this.expertCritic,
       expertGroup: expertGroup ?? this.expertGroup,
       mostAccurate: clearMostAccurate
           ? null

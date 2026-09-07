@@ -17,6 +17,16 @@ Future<void> _pumpUntilIdle(ReasoningController controller) async {
   }
 }
 
+Future<void> _completeLatest(ControlledAgent agent, String answer) async {
+  final lane = agent.latest;
+  lane
+    ..add(AgentAnswerDelta(answer))
+    ..add(const AgentCompleted());
+  await lane.close();
+  await _pump();
+  await _pump();
+}
+
 List<AgentEvent> _ok(String answer) => <AgentEvent>[
   AgentAnswerDelta(answer),
   const AgentCompleted(
@@ -39,13 +49,16 @@ void main() {
       expect(controller.state.taskError, isNotNull);
     });
 
-    test('runs five stages in order on one identical snapshot', () async {
+    test('runs eight stages in order on one identical snapshot', () async {
       final agent = QueueScriptedAgent([
         _ok('direct'),
         _ok('step'),
         _ok('builder prompt'),
         _ok('solver'),
-        _ok('experts'),
+        _ok('analyst'),
+        _ok('engineer'),
+        _ok('critic'),
+        _ok('synthesis'),
       ]);
       final controller = ReasoningController(agent);
       addTearDown(controller.dispose);
@@ -53,7 +66,7 @@ void main() {
       expect(controller.runComparison('  $task  '), isTrue);
       await _pumpUntilIdle(controller);
 
-      expect(agent.inputs, hasLength(5));
+      expect(agent.inputs, hasLength(8));
       expect(agent.inputs[0].text, task.trim());
       expect(agent.inputs[1].text, contains(task.trim()));
       expect(agent.inputs[1].text, contains('по шагам'));
@@ -61,18 +74,32 @@ void main() {
       expect(agent.inputs[2].text, contains('промпт-решатель'));
       expect(agent.inputs[3].text, contains('builder prompt'));
       expect(agent.inputs[3].text, contains(task.trim()));
-      expect(agent.inputs[4].text, contains(task.trim()));
-      expect(agent.inputs[4].text, contains('## Аналитик'));
+      expect(agent.inputs[4].text, contains('Аналитик'));
+      expect(agent.inputs[5].text, contains('Инженер'));
+      expect(agent.inputs[6].text, contains('Критик'));
+      for (final expertInput in agent.inputs.sublist(4, 7)) {
+        expect(expertInput.text, contains(task.trim()));
+        expect(expertInput.text, isNot(contains('analyst')));
+        expect(expertInput.text, isNot(contains('engineer')));
+        expect(expertInput.text, isNot(contains('critic')));
+      }
+      expect(agent.inputs[7].text, contains(task.trim()));
+      expect(agent.inputs[7].text, contains('analyst'));
+      expect(agent.inputs[7].text, contains('engineer'));
+      expect(agent.inputs[7].text, contains('critic'));
       for (final input in agent.inputs) {
         expect(input.thinking, ThinkingMode.disabled);
         expect(input.control, isNull);
       }
-      expect(controller.completedApiCalls, 5);
+      expect(controller.completedApiCalls, 8);
       expect(controller.state.direct.answer, 'direct');
       expect(controller.state.stepByStep.answer, 'step');
       expect(controller.state.generatedPrompt, 'builder prompt');
       expect(controller.state.generated.answer, 'solver');
-      expect(controller.state.expertGroup.answer, 'experts');
+      expect(controller.state.expertAnalyst.answer, 'analyst');
+      expect(controller.state.expertEngineer.answer, 'engineer');
+      expect(controller.state.expertCritic.answer, 'critic');
+      expect(controller.state.expertGroup.answer, 'synthesis');
       expect(controller.state.direct.finishReason, AgentFinishReason.stop);
       expect(controller.state.direct.usage?.totalTokens, 3);
       expect(controller.state.taskSnapshot, task.trim());
@@ -86,7 +113,10 @@ void main() {
           _ok('direct'),
           _ok('step'),
           const [AgentCompleted()],
-          _ok('experts'),
+          _ok('analyst'),
+          _ok('engineer'),
+          _ok('critic'),
+          _ok('synthesis'),
         ]);
         final controller = ReasoningController(agent);
         addTearDown(controller.dispose);
@@ -94,12 +124,12 @@ void main() {
         controller.runComparison(task);
         await _pumpUntilIdle(controller);
 
-        expect(agent.inputs, hasLength(4));
-        expect(agent.inputs.last.text, contains('## Критик'));
+        expect(agent.inputs, hasLength(7));
+        expect(agent.inputs.last.text, contains('analyst'));
         expect(controller.state.generated.status, ReasoningLaneStatus.failed);
         expect(controller.state.generated.failure?.message, contains('пуст'));
-        expect(controller.state.expertGroup.answer, 'experts');
-        expect(controller.completedApiCalls, 4);
+        expect(controller.state.expertGroup.answer, 'synthesis');
+        expect(controller.completedApiCalls, 7);
       },
     );
 
@@ -115,7 +145,10 @@ void main() {
               AgentFailure(kind: AgentFailureKind.network, message: 'down'),
             ),
           ],
-          _ok('experts'),
+          _ok('analyst'),
+          _ok('engineer'),
+          _ok('critic'),
+          _ok('synthesis'),
         ]);
         final controller = ReasoningController(agent);
         addTearDown(controller.dispose);
@@ -123,7 +156,7 @@ void main() {
         controller.runComparison(task);
         await _pumpUntilIdle(controller);
 
-        expect(agent.inputs, hasLength(4));
+        expect(agent.inputs, hasLength(7));
         expect(controller.state.promptBuilder.answer, 'partial builder');
         expect(
           controller.state.promptBuilder.status,
@@ -131,8 +164,8 @@ void main() {
         );
         expect(controller.state.generated.status, ReasoningLaneStatus.failed);
         expect(controller.state.generated.failure?.message, 'down');
-        expect(controller.state.expertGroup.answer, 'experts');
-        expect(controller.completedApiCalls, 4);
+        expect(controller.state.expertGroup.answer, 'synthesis');
+        expect(controller.completedApiCalls, 7);
       },
     );
 
@@ -147,7 +180,10 @@ void main() {
         _ok('step'),
         _ok('builder prompt'),
         _ok('solver'),
-        _ok('experts'),
+        _ok('analyst'),
+        _ok('engineer'),
+        _ok('critic'),
+        _ok('synthesis'),
       ]);
       final controller = ReasoningController(agent);
       addTearDown(controller.dispose);
@@ -159,8 +195,113 @@ void main() {
       expect(controller.state.direct.answer, 'partial direct');
       expect(controller.state.stepByStep.answer, 'step');
       expect(controller.state.generated.answer, 'solver');
-      expect(controller.state.expertGroup.answer, 'experts');
-      expect(controller.completedApiCalls, 5);
+      expect(controller.state.expertGroup.answer, 'synthesis');
+      expect(controller.completedApiCalls, 8);
+    });
+
+    test(
+      'preserves a failed expert and passes its evidence to synthesis',
+      () async {
+        final agent = QueueScriptedAgent([
+          _ok('direct'),
+          _ok('step'),
+          _ok('builder prompt'),
+          _ok('solver'),
+          const [
+            AgentAnswerDelta('partial analyst'),
+            AgentFailed(
+              AgentFailure(kind: AgentFailureKind.network, message: 'offline'),
+            ),
+          ],
+          _ok('engineer'),
+          _ok('critic'),
+          _ok('synthesis'),
+        ]);
+        final controller = ReasoningController(agent);
+        addTearDown(controller.dispose);
+
+        controller.runComparison(task);
+        await _pumpUntilIdle(controller);
+
+        expect(controller.completedApiCalls, 8);
+        expect(
+          controller.state.expertAnalyst.status,
+          ReasoningLaneStatus.failed,
+        );
+        expect(controller.state.expertAnalyst.answer, 'partial analyst');
+        expect(controller.state.expertEngineer.answer, 'engineer');
+        expect(controller.state.expertCritic.answer, 'critic');
+        expect(controller.state.expertGroup.answer, 'synthesis');
+        expect(agent.inputs.last.text, contains('partial analyst'));
+        expect(agent.inputs.last.text, contains('offline'));
+        expect(agent.inputs.last.text, contains('engineer'));
+        expect(agent.inputs.last.text, contains('critic'));
+      },
+    );
+
+    test(
+      'marks an empty expert stream unavailable and still synthesizes',
+      () async {
+        final agent = QueueScriptedAgent([
+          _ok('direct'),
+          _ok('step'),
+          _ok('builder prompt'),
+          _ok('solver'),
+          _ok('analyst'),
+          const [],
+          _ok('critic'),
+          _ok('synthesis'),
+        ]);
+        final controller = ReasoningController(agent);
+        addTearDown(controller.dispose);
+
+        controller.runComparison(task);
+        await _pumpUntilIdle(controller);
+
+        expect(controller.completedApiCalls, 8);
+        expect(
+          controller.state.expertEngineer.status,
+          ReasoningLaneStatus.failed,
+        );
+        expect(
+          controller.state.expertEngineer.failure?.kind,
+          AgentFailureKind.interrupted,
+        );
+        expect(agent.inputs.last.text, contains('Ответ недоступен'));
+        expect(agent.inputs.last.text, contains('завершился неожиданно'));
+        expect(controller.state.expertGroup.answer, 'synthesis');
+      },
+    );
+
+    test('retains expert evidence when synthesis fails', () async {
+      final agent = QueueScriptedAgent([
+        _ok('direct'),
+        _ok('step'),
+        _ok('builder prompt'),
+        _ok('solver'),
+        _ok('analyst'),
+        _ok('engineer'),
+        _ok('critic'),
+        const [
+          AgentAnswerDelta('partial synthesis'),
+          AgentFailed(
+            AgentFailure(kind: AgentFailureKind.provider, message: 'busy'),
+          ),
+        ],
+      ]);
+      final controller = ReasoningController(agent);
+      addTearDown(controller.dispose);
+
+      controller.runComparison(task);
+      await _pumpUntilIdle(controller);
+
+      expect(controller.completedApiCalls, 8);
+      expect(controller.state.expertAnalyst.answer, 'analyst');
+      expect(controller.state.expertEngineer.answer, 'engineer');
+      expect(controller.state.expertCritic.answer, 'critic');
+      expect(controller.state.expertGroup.answer, 'partial synthesis');
+      expect(controller.state.expertGroup.status, ReasoningLaneStatus.failed);
+      expect(controller.state.expertGroup.failure?.message, 'busy');
     });
 
     test('rejects duplicate runs while active', () async {
@@ -180,12 +321,18 @@ void main() {
         _ok('s1'),
         _ok('b1'),
         _ok('g1'),
+        _ok('a1'),
         _ok('e1'),
+        _ok('c1'),
+        _ok('x1'),
         _ok('d2'),
         _ok('s2'),
         _ok('b2'),
         _ok('g2'),
+        _ok('a2'),
         _ok('e2'),
+        _ok('c2'),
+        _ok('x2'),
       ]);
       final controller = ReasoningController(agent);
       addTearDown(controller.dispose);
@@ -237,6 +384,27 @@ void main() {
       expect(agent.controllers.first.hasListener, isFalse);
     });
 
+    test('dispose during an expert stage cancels the ensemble', () async {
+      final agent = ControlledAgent();
+      final controller = ReasoningController(agent);
+      controller.runComparison(task);
+      await _pump();
+
+      await _completeLatest(agent, 'direct');
+      await _completeLatest(agent, 'step');
+      await _completeLatest(agent, 'builder');
+      await _completeLatest(agent, 'solver');
+
+      expect(agent.inputs, hasLength(5));
+      expect(controller.state.activeStage, ReasoningStage.expertAnalyst);
+      expect(agent.latest.hasListener, isTrue);
+      controller.dispose();
+      await _pump();
+
+      expect(agent.controllers[4].hasListener, isFalse);
+      expect(agent.inputs, hasLength(5));
+    });
+
     test(
       'sync prompt throw is sanitized, counted, and later stages continue',
       () async {
@@ -245,7 +413,10 @@ void main() {
             _ok('step'),
             _ok('builder prompt'),
             _ok('solver'),
-            _ok('experts'),
+            _ok('analyst'),
+            _ok('engineer'),
+            _ok('critic'),
+            _ok('synthesis'),
           ]),
           throwOn: 0,
         );
@@ -255,9 +426,9 @@ void main() {
         controller.runComparison(task);
         await _pumpUntilIdle(controller);
 
-        expect(agent.inputs, hasLength(5));
+        expect(agent.inputs, hasLength(8));
         expect(controller.isRunning, isFalse);
-        expect(controller.completedApiCalls, 5);
+        expect(controller.completedApiCalls, 8);
         expect(controller.state.direct.status, ReasoningLaneStatus.failed);
         expect(
           controller.state.direct.failure?.kind,
@@ -274,7 +445,7 @@ void main() {
         expect(controller.state.stepByStep.answer, 'step');
         expect(controller.state.generatedPrompt, 'builder prompt');
         expect(controller.state.generated.answer, 'solver');
-        expect(controller.state.expertGroup.answer, 'experts');
+        expect(controller.state.expertGroup.answer, 'synthesis');
       },
     );
 
@@ -288,7 +459,10 @@ void main() {
         _ok('step'),
         _ok('builder prompt'),
         _ok('solver'),
-        _ok('experts'),
+        _ok('analyst'),
+        _ok('engineer'),
+        _ok('critic'),
+        _ok('synthesis'),
       ]);
       final controller = ReasoningController(agent);
       addTearDown(controller.dispose);

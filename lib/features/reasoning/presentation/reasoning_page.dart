@@ -99,7 +99,7 @@ class _ReasoningPageState extends State<ReasoningPage> {
                 children: [
                   const _ReasoningOffBanner(),
                   const SizedBox(height: 12),
-                  const _FiveCallDisclosure(),
+                  const _EightCallDisclosure(),
                   const SizedBox(height: 16),
                   TextField(
                     key: const ValueKey('day3-task'),
@@ -181,15 +181,15 @@ class _ReasoningOffBanner extends StatelessWidget {
   }
 }
 
-class _FiveCallDisclosure extends StatelessWidget {
-  const _FiveCallDisclosure();
+class _EightCallDisclosure extends StatelessWidget {
+  const _EightCallDisclosure();
 
   @override
   Widget build(BuildContext context) {
     return const Text(
-      'Полное сравнение выполняет 5 API-вызовов: прямой ответ, решение по шагам, '
-      'генерация промпта, выполнение промпта и группа экспертов.',
-      key: ValueKey('five-call-cost'),
+      'Полное сравнение выполняет 8 API-вызовов: прямой ответ, решение по шагам, '
+      'генерация и выполнение промпта, три независимых эксперта и отдельный синтез.',
+      key: ValueKey('eight-call-cost'),
     );
   }
 }
@@ -266,9 +266,11 @@ class _StrategyCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final lane = state.laneFor(strategy);
-    final status = strategy == ReasoningStrategy.generatedPrompt
-        ? state.generatedStrategyStatus
-        : lane.status;
+    final status = switch (strategy) {
+      ReasoningStrategy.generatedPrompt => state.generatedStrategyStatus,
+      ReasoningStrategy.expertGroup => state.expertStrategyStatus,
+      ReasoningStrategy.direct || ReasoningStrategy.stepByStep => lane.status,
+    };
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -317,6 +319,46 @@ class _StrategyCard extends StatelessWidget {
                   lane: state.generated,
                   answerKey: const ValueKey('generated-solver-answer'),
                   emptyStreamingLabel: 'Ожидаем первые токены…',
+                ),
+              ],
+            ] else if (strategy == ReasoningStrategy.expertGroup) ...[
+              const SizedBox(height: 8),
+              const Text(
+                '4 вызова: три эксперта не видят ответы друг друга; синтезатор получает все три результата.',
+                key: ValueKey('expert-call-breakdown'),
+              ),
+              if (state.expertStrategyStatus != ReasoningLaneStatus.idle) ...[
+                const SizedBox(height: 8),
+                _StagePanel(
+                  key: const ValueKey('expert-analyst-evidence'),
+                  title: 'Этап 1 · Аналитик',
+                  lane: state.expertAnalyst,
+                  answerKey: const ValueKey('expert-analyst-answer'),
+                  emptyStreamingLabel: 'Аналитик формирует решение…',
+                ),
+                const SizedBox(height: 8),
+                _StagePanel(
+                  key: const ValueKey('expert-engineer-evidence'),
+                  title: 'Этап 2 · Инженер',
+                  lane: state.expertEngineer,
+                  answerKey: const ValueKey('expert-engineer-answer'),
+                  emptyStreamingLabel: 'Инженер проверяет ограничения…',
+                ),
+                const SizedBox(height: 8),
+                _StagePanel(
+                  key: const ValueKey('expert-critic-evidence'),
+                  title: 'Этап 3 · Критик',
+                  lane: state.expertCritic,
+                  answerKey: const ValueKey('expert-critic-answer'),
+                  emptyStreamingLabel: 'Критик ищет противоречия…',
+                ),
+                const SizedBox(height: 8),
+                _StagePanel(
+                  key: const ValueKey('expert-synthesis-section'),
+                  title: 'Этап 4 · Синтез',
+                  lane: state.expertGroup,
+                  answerKey: const ValueKey('expert-synthesis-answer'),
+                  emptyStreamingLabel: 'Синтезатор согласует ответы…',
                 ),
               ],
             ] else ...[
@@ -386,48 +428,65 @@ class _StagePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: Theme.of(context).textTheme.titleSmall),
-          if (lane.answer.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            SelectableText(lane.answer, key: answerKey),
-          ],
-          if (lane.status == ReasoningLaneStatus.streaming && !lane.hasOutput)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(emptyStreamingLabel),
-            ),
-          if (lane.failure case final failure?) ...[
-            const SizedBox(height: 6),
-            Text(failure.message),
-          ],
-          if (lane.finishReason != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                'Причина завершения: ${agentFinishReasonLabel(lane.finishReason)}',
+    return Semantics(
+      container: true,
+      label: '$title. ${_laneStatusLabel(lane.status)}',
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.titleSmall),
+            Text(_laneStatusLabel(lane.status)),
+            if (lane.answer.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              SelectableText(lane.answer, key: answerKey),
+            ],
+            if (lane.status == ReasoningLaneStatus.idle)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text('Ожидает запуска'),
               ),
-            ),
-          if (lane.usage != null && !lane.usage!.isEmpty)
-            Text(
-              'Токены: prompt=${lane.usage!.promptTokens ?? '—'}, '
-              'completion=${lane.usage!.completionTokens ?? '—'}, '
-              'total=${lane.usage!.totalTokens ?? '—'}.',
-            ),
-        ],
+            if (lane.status == ReasoningLaneStatus.streaming && !lane.hasOutput)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(emptyStreamingLabel),
+              ),
+            if (lane.failure case final failure?) ...[
+              const SizedBox(height: 6),
+              Text(failure.message),
+            ],
+            if (lane.finishReason != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'Причина завершения: ${agentFinishReasonLabel(lane.finishReason)}',
+                ),
+              ),
+            if (lane.usage != null && !lane.usage!.isEmpty)
+              Text(
+                'Токены: prompt=${lane.usage!.promptTokens ?? '—'}, '
+                'completion=${lane.usage!.completionTokens ?? '—'}, '
+                'total=${lane.usage!.totalTokens ?? '—'}.',
+              ),
+          ],
+        ),
       ),
     );
   }
 }
+
+String _laneStatusLabel(ReasoningLaneStatus status) => switch (status) {
+  ReasoningLaneStatus.idle => 'Статус: ожидает запуска',
+  ReasoningLaneStatus.streaming => 'Статус: выполняется',
+  ReasoningLaneStatus.completed => 'Статус: завершено',
+  ReasoningLaneStatus.failed => 'Статус: ошибка',
+};
 
 class _ReferencePanel extends StatelessWidget {
   const _ReferencePanel({required this.task});

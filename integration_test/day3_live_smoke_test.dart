@@ -13,7 +13,7 @@ import 'package:http/http.dart' as http;
 
 void main() {
   test(
-    'live DeepSeek smoke covers all five Day 3 stages',
+    'live DeepSeek smoke covers all eight Day 3 stages',
     () async {
       final key = Platform.environment['DEEPSEEK_API_KEY']?.trim();
       if (key == null || key.isEmpty) {
@@ -42,12 +42,12 @@ void main() {
       }
 
       expect(controller.isRunning, isFalse);
-      expect(recording.inputs, hasLength(5));
+      expect(recording.inputs, hasLength(8));
       for (final input in recording.inputs) {
         expect(input.thinking, ThinkingMode.disabled);
         expect(input.control, isNull);
       }
-      expect(controller.completedApiCalls, 5);
+      expect(controller.completedApiCalls, 8);
       expect(controller.state.direct.status, ReasoningLaneStatus.completed);
       expect(controller.state.direct.answer, isNotEmpty);
       expect(controller.state.stepByStep.status, ReasoningLaneStatus.completed);
@@ -60,6 +60,21 @@ void main() {
       expect(controller.state.generated.status, ReasoningLaneStatus.completed);
       expect(controller.state.generated.answer, isNotEmpty);
       expect(
+        controller.state.expertAnalyst.status,
+        ReasoningLaneStatus.completed,
+      );
+      expect(controller.state.expertAnalyst.answer, isNotEmpty);
+      expect(
+        controller.state.expertEngineer.status,
+        ReasoningLaneStatus.completed,
+      );
+      expect(controller.state.expertEngineer.answer, isNotEmpty);
+      expect(
+        controller.state.expertCritic.status,
+        ReasoningLaneStatus.completed,
+      );
+      expect(controller.state.expertCritic.answer, isNotEmpty);
+      expect(
         controller.state.expertGroup.status,
         ReasoningLaneStatus.completed,
       );
@@ -70,7 +85,10 @@ void main() {
       _report('stepByStep', controller.state.stepByStep);
       _report('promptBuilder', controller.state.promptBuilder);
       _report('generatedSolver', controller.state.generated);
-      _report('expertGroup', controller.state.expertGroup);
+      _report('expertAnalyst', controller.state.expertAnalyst);
+      _report('expertEngineer', controller.state.expertEngineer);
+      _report('expertCritic', controller.state.expertCritic);
+      _report('expertSynthesis', controller.state.expertGroup);
       // ignore: avoid_print
       print(
         'day3-aggregate: calls=${controller.completedApiCalls}, '
