@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:domovoy/core/environment/environment_reader.dart';
-import 'package:domovoy/features/comparison/data/profile_credential_resolver.dart';
 import 'package:domovoy/features/prompt/data/chat_completions_provider_profile.dart';
 import 'package:domovoy/features/prompt/data/openai_compatible_chat_agent.dart';
 import 'package:domovoy/features/prompt/domain/agent.dart';
@@ -140,7 +139,7 @@ void main() {
     });
   });
 
-  group('request construction (2.4)', () {
+  group('request construction', () {
     test('disabled thinking omits reasoning effort', () async {
       final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
       final agent = _agent(client);
@@ -155,96 +154,7 @@ void main() {
       expect(body.containsKey('reasoning_effort'), isFalse);
     });
 
-    test(
-      'JSON control enables response format and keeps base prompt',
-      () async {
-        final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
-        final agent = _agent(client);
-        final control = FormatControl(
-          kind: ResponseFormatKind.json,
-          contractText: 'JSON-объект с полями: title (string).',
-          exampleText: '{"title": "пример"}',
-        );
-
-        await agent
-            .prompt(AgentInput('base task', control: control))
-            .drain<void>();
-
-        final body =
-            jsonDecode(client.requests.single.body) as Map<String, dynamic>;
-        expect(body['response_format'], {'type': 'json_object'});
-        final content = (body['messages'] as List).single['content'] as String;
-        expect(content, contains('base task'));
-        expect(content, contains('title (string)'));
-        expect(content, contains('{"title": "пример"}'));
-        expect(content, contains('JSON'));
-      },
-    );
-
-    test('Markdown control omits JSON mode but includes contract', () async {
-      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
-      final agent = _agent(client);
-      final control = FormatControl(
-        kind: ResponseFormatKind.markdown,
-        contractText: 'Заголовки: "Обзор".',
-      );
-
-      await agent
-          .prompt(AgentInput('base task', control: control))
-          .drain<void>();
-
-      final body =
-          jsonDecode(client.requests.single.body) as Map<String, dynamic>;
-      expect(body.containsKey('response_format'), isFalse);
-      final content = (body['messages'] as List).single['content'] as String;
-      expect(content, contains('base task'));
-      expect(content, contains('"Обзор"'));
-    });
-
-    test('length control adds instruction and max_tokens', () async {
-      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
-      final agent = _agent(client);
-
-      await agent
-          .prompt(
-            AgentInput(
-              'explain',
-              control: LengthControl(maxChars: 300, maxTokens: 250),
-            ),
-          )
-          .drain<void>();
-
-      final body =
-          jsonDecode(client.requests.single.body) as Map<String, dynamic>;
-      expect(body['max_tokens'], 250);
-      final content = (body['messages'] as List).single['content'] as String;
-      expect(content, contains('explain'));
-      expect(content, contains('300'));
-      expect(body.containsKey('stop'), isFalse);
-      expect(body.containsKey('response_format'), isFalse);
-    });
-
-    test(
-      'stop control sends one exact sequence and preserves prompt',
-      () async {
-        final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
-        final agent = _agent(client);
-
-        await agent
-            .prompt(
-              AgentInput('say <END> then more', control: StopControl('<END>')),
-            )
-            .drain<void>();
-
-        final body =
-            jsonDecode(client.requests.single.body) as Map<String, dynamic>;
-        expect(body['stop'], ['<END>']);
-        final content = (body['messages'] as List).single['content'] as String;
-        expect(content, 'say <END> then more');
-      },
-    );
-
-    test('unrestricted requests omit every control field', () async {
+    test('prompt requests omit unused sampling fields', () async {
       final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
       final agent = _agent(client);
 
@@ -302,7 +212,7 @@ void main() {
     });
   });
 
-  group('stream metadata (2.5)', () {
+  group('stream metadata', () {
     test('tolerates usage-only chunks and emits usage on DONE', () async {
       final client = RecordingClient(
         (_) => _response(
@@ -410,125 +320,6 @@ void main() {
           (await _agent(client).prompt(AgentInput('hi')).toList()).last
               as AgentCompleted;
       expect(completed.usage, isNull);
-    });
-  });
-
-  group('dialects and unauthenticated requests', () {
-    test('generic dialect omits DeepSeek-only fields', () {
-      final profile = ChatCompletionsProviderProfile(
-        endpoint: Uri.parse('http://127.0.0.1/v1/chat/completions'),
-        model: 'custom',
-        reasoningDeltaField: 'reasoning_content',
-        dialect: ChatRequestDialect.generic,
-      );
-      final body = profile.requestBody(
-        AgentInput('hello', thinking: ThinkingMode.disabled),
-      );
-      expect(body['model'], 'custom');
-      expect(body['stream'], isTrue);
-      expect(body['stream_options'], {'include_usage': true});
-      expect(body.containsKey('thinking'), isFalse);
-      expect(body.containsKey('reasoning_effort'), isFalse);
-    });
-
-    test('ollama dialect disables reasoning without thinking', () {
-      final profile = ChatCompletionsProviderProfile(
-        endpoint: Uri.parse('http://localhost:11434/v1/chat/completions'),
-        model: 'qwen3.5:2b',
-        reasoningDeltaField: 'reasoning_content',
-        dialect: ChatRequestDialect.ollama,
-      );
-      final body = profile.requestBody(
-        AgentInput('hello', thinking: ThinkingMode.disabled),
-      );
-      expect(body['reasoning_effort'], 'none');
-      expect(body.containsKey('thinking'), isFalse);
-    });
-
-    test(
-      'DeepSeek Day 5 dialect disables thinking without reasoning_effort',
-      () {
-        final body = ChatCompletionsProviderProfile.deepSeekV4Flash()
-            .requestBody(AgentInput('hello', thinking: ThinkingMode.disabled));
-        expect(body['thinking'], {'type': 'disabled'});
-        expect(body.containsKey('reasoning_effort'), isFalse);
-      },
-    );
-
-    test('unauthenticated agent omits Authorization', () async {
-      late RecordedRequest recorded;
-      final client = RecordingClient((request) {
-        recorded = request;
-        return _response('data: [DONE]\n\n');
-      });
-      final agent = OpenAiCompatibleChatAgent(
-        client: client,
-        profile: ChatCompletionsProviderProfile(
-          endpoint: Uri.parse('http://127.0.0.1/v1/chat/completions'),
-          model: 'custom',
-          reasoningDeltaField: 'reasoning_content',
-          dialect: ChatRequestDialect.generic,
-        ),
-        providerLabel: 'Провайдер',
-      );
-
-      await agent
-          .prompt(AgentInput('exact prompt', thinking: ThinkingMode.disabled))
-          .drain<void>();
-
-      expect(recorded.header('authorization'), isNull);
-      final body = jsonDecode(recorded.body) as Map<String, dynamic>;
-      expect(body['model'], 'custom');
-      expect((body['messages'] as List).single['content'], 'exact prompt');
-      expect(body.containsKey('thinking'), isFalse);
-    });
-
-    test('generic failures do not name DeepSeek', () async {
-      final agent = OpenAiCompatibleChatAgent(
-        client: RecordingClient(
-          (_) => throw http.ClientException('secret details'),
-        ),
-        profile: ChatCompletionsProviderProfile(
-          endpoint: Uri.parse('https://example.com/chat/completions'),
-          model: 'custom',
-          reasoningDeltaField: 'reasoning_content',
-          dialect: ChatRequestDialect.generic,
-        ),
-        providerLabel: 'Провайдер',
-      );
-
-      final events = await agent.prompt(AgentInput('hello')).toList();
-      final failure = (events.single as AgentFailed).failure;
-      expect(failure.kind, AgentFailureKind.network);
-      expect(failure.message.toLowerCase(), isNot(contains('deepseek')));
-      expect(failure.message, isNot(contains('secret details')));
-    });
-
-    test('missing bearer key fails locally without HTTP', () async {
-      final client = RecordingClient((_) => _response('data: [DONE]\n\n'));
-      final agent = OpenAiCompatibleChatAgent(
-        client: client,
-        apiKeyResolver: ProfileBearerCredentialResolver(
-          profileId: 'custom-model',
-          environmentVariableName: 'CUSTOM_API_KEY',
-          overrideStore: InMemoryProfileApiKeyOverrideStore(),
-          environment: const MapEnvironmentReader({}),
-        ),
-        profile: ChatCompletionsProviderProfile(
-          endpoint: Uri.parse('https://example.com/chat/completions'),
-          model: 'custom',
-          reasoningDeltaField: 'reasoning_content',
-          dialect: ChatRequestDialect.generic,
-        ),
-        providerLabel: 'Провайдер',
-      );
-
-      final events = await agent.prompt(AgentInput('hello')).toList();
-      expect(client.requests, isEmpty);
-      final failure = (events.single as AgentFailed).failure;
-      expect(failure.kind, AgentFailureKind.configuration);
-      expect(failure.message, contains('CUSTOM_API_KEY'));
-      expect(failure.message.toLowerCase(), isNot(contains('deepseek')));
     });
   });
 }

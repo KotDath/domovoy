@@ -21,13 +21,11 @@ void main() {
   });
 
   group('AgentInput', () {
-    test('Day 1 constructor stays unrestricted with thinking enabled', () {
+    test('constructor trims text and defaults thinking to enabled', () {
       final input = AgentInput('  hello  ');
       expect(input.text, 'hello');
       expect(input.thinking, ThinkingMode.enabled);
-      expect(input.control, isNull);
       expect(input.temperature, isNull);
-      expect(input.isUnrestricted, isTrue);
     });
 
     test('accepts exact and boundary sampling temperatures', () {
@@ -57,29 +55,6 @@ void main() {
       expect(() => AgentInput('   '), throwsArgumentError);
     });
 
-    test('length control requires positive values', () {
-      expect(
-        () => LengthControl(maxChars: 0, maxTokens: 10),
-        throwsArgumentError,
-      );
-      expect(
-        () => LengthControl(maxChars: 10, maxTokens: 0),
-        throwsArgumentError,
-      );
-    });
-
-    test('stop control rejects blank marker and trims', () {
-      expect(() => StopControl('   '), throwsArgumentError);
-      expect(StopControl('  <END>  ').marker, '<END>');
-    });
-
-    test('format control rejects empty contract', () {
-      expect(
-        () => FormatControl(kind: ResponseFormatKind.json, contractText: '   '),
-        throwsArgumentError,
-      );
-    });
-
     test('terminal metadata defaults to absent', () {
       const completed = AgentCompleted();
       expect(completed.finishReason, isNull);
@@ -97,9 +72,6 @@ void main() {
       );
       expect(completed.finishReason, AgentFinishReason.length);
       expect(completed.usage?.completionTokens, 20);
-      expect(agentFinishReasonLabel(AgentFinishReason.stop), 'stop');
-      expect(agentFinishReasonLabel(AgentFinishReason.length), 'length');
-      expect(agentFinishReasonLabel(AgentFinishReason.unknown), 'unknown');
     });
   });
 }

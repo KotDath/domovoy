@@ -8,7 +8,7 @@ import 'support/fakes.dart';
 
 void main() {
   group('PromptController thinking snapshot', () {
-    test('sends enabled thinking by default (Day 1 behavior)', () {
+    test('sends enabled thinking by default', () {
       final agent = ControlledAgent();
       final controller = PromptController(agent);
       addTearDown(controller.dispose);
@@ -101,24 +101,6 @@ void main() {
       expect(await settings.setEnabled(false), isTrue);
       expect(settings.reasoningEnabled, isFalse);
       expect(store.value?.reasoningEnabled, isFalse);
-    });
-  });
-
-  group('AgentFinishReason labels', () {
-    test('covers every normalized value', () {
-      expect(agentFinishReasonLabel(AgentFinishReason.stop), 'stop');
-      expect(agentFinishReasonLabel(AgentFinishReason.length), 'length');
-      expect(
-        agentFinishReasonLabel(AgentFinishReason.contentFilter),
-        'content_filter',
-      );
-      expect(agentFinishReasonLabel(AgentFinishReason.toolCalls), 'tool_calls');
-      expect(
-        agentFinishReasonLabel(AgentFinishReason.insufficientSystemResource),
-        'insufficient_system_resource',
-      );
-      expect(agentFinishReasonLabel(AgentFinishReason.unknown), 'unknown');
-      expect(agentFinishReasonLabel(null), '—');
     });
   });
 }

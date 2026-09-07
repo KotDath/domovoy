@@ -2,12 +2,10 @@ import 'package:flutter/foundation.dart';
 
 import '../domain/model_settings.dart';
 
-/// Shared observable holder for the persisted DeepSeek reasoning setting.
+/// Observable holder for the persisted DeepSeek reasoning setting.
 ///
-/// Both the Day 1 prompt workspace and the Day 2 laboratory read the same
-/// instance, so a change made in settings on one page is visible on the
-/// other without reopening the application. Missing values and read
-/// failures fall back to [DeepSeekModelSettings.defaults].
+/// Missing values and read failures fall back to
+/// [DeepSeekModelSettings.defaults].
 final class ReasoningSettings extends ChangeNotifier {
   ReasoningSettings({required DeepSeekModelSettingsStore store})
     : _store = store;

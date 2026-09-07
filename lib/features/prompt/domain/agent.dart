@@ -11,8 +11,6 @@ enum AgentFailureKind {
 
 enum ThinkingMode { enabled, disabled }
 
-enum ResponseFormatKind { json, markdown }
-
 enum AgentFinishReason {
   stop,
   length,
@@ -70,73 +68,10 @@ final class AgentTokenUsage {
       'cacheHit: $cacheHitPromptTokens, cacheMiss: $cacheMissPromptTokens)';
 }
 
-sealed class ResponseControl {
-  const ResponseControl();
-}
-
-final class FormatControl extends ResponseControl {
-  FormatControl({
-    required this.kind,
-    required this.contractText,
-    this.exampleText,
-    bool? useJsonMode,
-  }) : useJsonModeResolved = useJsonMode ?? (kind == ResponseFormatKind.json) {
-    if (contractText.trim().isEmpty) {
-      throw ArgumentError.value(
-        contractText,
-        'contractText',
-        'Format contract must not be empty.',
-      );
-    }
-  }
-
-  final ResponseFormatKind kind;
-  final String contractText;
-  final String? exampleText;
-  final bool useJsonModeResolved;
-}
-
-final class LengthControl extends ResponseControl {
-  LengthControl({required this.maxChars, required this.maxTokens}) {
-    if (maxChars <= 0) {
-      throw ArgumentError.value(
-        maxChars,
-        'maxChars',
-        'Character target must be positive.',
-      );
-    }
-    if (maxTokens <= 0) {
-      throw ArgumentError.value(
-        maxTokens,
-        'maxTokens',
-        'Maximum tokens must be positive.',
-      );
-    }
-  }
-
-  final int maxChars;
-  final int maxTokens;
-}
-
-final class StopControl extends ResponseControl {
-  StopControl(String marker) : marker = marker.trim() {
-    if (this.marker.isEmpty) {
-      throw ArgumentError.value(
-        marker,
-        'marker',
-        'Stop marker must not be empty.',
-      );
-    }
-  }
-
-  final String marker;
-}
-
 final class AgentInput {
   AgentInput(
     String text, {
     this.thinking = ThinkingMode.enabled,
-    this.control,
     this.temperature,
   }) : text = text.trim() {
     if (this.text.isEmpty) {
@@ -155,10 +90,7 @@ final class AgentInput {
 
   final String text;
   final ThinkingMode thinking;
-  final ResponseControl? control;
   final double? temperature;
-
-  bool get isUnrestricted => control == null;
 }
 
 abstract interface class Agent {
@@ -202,14 +134,3 @@ final class AgentFailure {
 
   bool get isMissingCredential => kind == AgentFailureKind.configuration;
 }
-
-String agentFinishReasonLabel(AgentFinishReason? reason) => switch (reason) {
-  AgentFinishReason.stop => 'stop',
-  AgentFinishReason.length => 'length',
-  AgentFinishReason.contentFilter => 'content_filter',
-  AgentFinishReason.toolCalls => 'tool_calls',
-  AgentFinishReason.insufficientSystemResource =>
-    'insufficient_system_resource',
-  AgentFinishReason.unknown => 'unknown',
-  null => '—',
-};

@@ -16,7 +16,7 @@ abstract interface class CredentialResolver {
   Future<ApiKeyStatus> status();
 }
 
-enum ApiKeySource { applicationOverride, environment, missing, none }
+enum ApiKeySource { applicationOverride, environment, missing }
 
 final class ResolvedApiKey {
   const ResolvedApiKey({required this.value, required this.source});

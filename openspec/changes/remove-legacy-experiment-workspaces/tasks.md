@@ -6,11 +6,11 @@
 
 ## 2. Remove legacy experiment slices
 
-- [ ] 2.1 Delete the `lab`, `reasoning`, `temperature`, and `comparison` feature trees without retaining experiment-specific profile, pricing, lane, evaluation, prompt-preset, or persistence abstractions.
-- [ ] 2.2 Delete every unit, widget, fake-stream, and opt-in live smoke test whose behavior belongs only to Days 2–5, while retaining tests for the one-shot prompt, SSE decoding, credentials, settings, and current reasoning toggle.
-- [ ] 2.3 Delete the Day 2–5 demonstration checklists and remove the now-empty integration-test setup and dependency when no retained test requires it.
-- [ ] 2.4 Remove unused direct dependencies such as `cupertino_icons`, refresh dependency metadata with `flutter pub get`, and remove or ignore the untracked Eclipse Android project artifacts without staging unrelated files.
-- [ ] 2.5 Search the repository for stale feature imports, navigation labels, experiment preset identifiers, comparison types, and `day5_*` storage access; resolve every executable or user-facing remainder, then create an intermediate removal commit.
+- [x] 2.1 Delete the `lab`, `reasoning`, `temperature`, and `comparison` feature trees without retaining experiment-specific profile, pricing, lane, evaluation, prompt-preset, or persistence abstractions.
+- [x] 2.2 Delete every unit, widget, fake-stream, and opt-in live smoke test whose behavior belongs only to Days 2–5, while retaining tests for the one-shot prompt, SSE decoding, credentials, settings, and current reasoning toggle.
+- [x] 2.3 Delete the Day 2–5 demonstration checklists and remove the now-empty integration-test setup and dependency when no retained test requires it.
+- [x] 2.4 Remove unused direct dependencies such as `cupertino_icons`, refresh dependency metadata with `flutter pub get`, and remove or ignore the untracked Eclipse Android project artifacts without staging unrelated files.
+- [x] 2.5 Search the repository for stale feature imports, navigation labels, experiment preset identifiers, comparison types, and `day5_*` storage access; resolve every executable or user-facing remainder, then create an intermediate removal commit.
 
 ## 3. Align repository documentation
 

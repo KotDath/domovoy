@@ -239,6 +239,5 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
     ApiKeySource.missing =>
       'Ключ не настроен. Добавьте его здесь или задайте '
           'DEEPSEEK_API_KEY в окружении.',
-    ApiKeySource.none => 'Аутентификация не требуется.',
   };
 }

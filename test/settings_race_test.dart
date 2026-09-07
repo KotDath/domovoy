@@ -112,7 +112,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('reasoning-switch')), findsNothing);
 
-      // The next Day 1 request snapshots the fresh (disabled) value,
+      // The next prompt request snapshots the fresh (disabled) value,
       // not the stale pre-dialog one.
       await tester.enterText(
         find.byKey(const ValueKey('prompt-input')),
