@@ -84,7 +84,6 @@ class _DomovoyAppState extends State<DomovoyApp> {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
-        splashFactory: InkRipple.splashFactory,
       ),
       home: PromptPage(
         key: const ValueKey('prompt-destination'),

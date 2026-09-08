@@ -132,6 +132,43 @@ void main() {
     expect(find.text('Отправить'), findsOneWidget);
   });
 
+  testWidgets('allows another independent submission after failure', (
+    tester,
+  ) async {
+    final agent = QueueScriptedAgent(const [
+      <AgentEvent>[
+        AgentAnswerDelta('broken'),
+        AgentFailed(
+          AgentFailure(
+            kind: AgentFailureKind.network,
+            message: 'network failed',
+          ),
+        ),
+      ],
+      <AgentEvent>[AgentAnswerDelta('recovered'), AgentCompleted()],
+    ]);
+    final harness = _Harness(agent: agent);
+    addTearDown(harness.dispose);
+    await tester.pumpWidget(harness.app);
+
+    await tester.enterText(find.byKey(const ValueKey('prompt-input')), 'first');
+    await tester.tap(find.byKey(const ValueKey('submit-prompt')));
+    await tester.pumpAndSettle();
+    expect(find.text('broken'), findsOneWidget);
+    expect(find.byKey(const ValueKey('prompt-error')), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('prompt-input')),
+      'second',
+    );
+    await tester.tap(find.byKey(const ValueKey('submit-prompt')));
+    await tester.pumpAndSettle();
+    expect(find.text('broken'), findsNothing);
+    expect(find.byKey(const ValueKey('prompt-error')), findsNothing);
+    expect(find.text('recovered'), findsOneWidget);
+    expect(find.text('Отправить'), findsOneWidget);
+  });
+
   testWidgets(
     'retains partial output and links missing-key error to settings',
     (tester) async {

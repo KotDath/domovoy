@@ -89,4 +89,40 @@ void main() {
     expect(controller.state.failure?.message, 'network failed');
     await agent.latest.close();
   });
+
+  test('new submission after failure clears prior output and error', () async {
+    final agent = ControlledAgent();
+    final controller = PromptController(agent);
+    addTearDown(controller.dispose);
+
+    controller.submit('first');
+    final first = agent.latest;
+    first.add(const AgentAnswerDelta('partial'));
+    first.add(
+      const AgentFailed(
+        AgentFailure(kind: AgentFailureKind.network, message: 'network failed'),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.state.status, PromptRunStatus.failed);
+
+    expect(controller.submit('second'), isTrue);
+    expect(controller.state.answer, isEmpty);
+    expect(controller.state.failure, isNull);
+    expect(controller.state.status, PromptRunStatus.streaming);
+
+    agent.latest.add(const AgentAnswerDelta('recovered'));
+    agent.latest.add(const AgentCompleted());
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.state.answer, 'recovered');
+    expect(controller.state.failure, isNull);
+    expect(controller.state.status, PromptRunStatus.completed);
+    expect(agent.inputs.map((input) => input.text), <String>[
+      'first',
+      'second',
+    ]);
+    await first.close();
+    await agent.latest.close();
+  });
 }

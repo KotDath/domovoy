@@ -11,37 +11,29 @@ import 'sse_decoder.dart';
 final class OpenAiCompatibleChatAgent implements Agent {
   OpenAiCompatibleChatAgent({
     required http.Client client,
-    CredentialResolver? apiKeyResolver,
+    required ApiKeyResolver apiKeyResolver,
     required ChatCompletionsProviderProfile profile,
     SseDecoder decoder = const SseDecoder(),
-    this.providerLabel = 'DeepSeek',
   }) : _client = client,
        _apiKeyResolver = apiKeyResolver,
        _profile = profile,
        _decoder = decoder;
 
   final http.Client _client;
-  final CredentialResolver? _apiKeyResolver;
+  final ApiKeyResolver _apiKeyResolver;
   final ChatCompletionsProviderProfile _profile;
   final SseDecoder _decoder;
-  final String providerLabel;
-
-  bool get _isDeepSeek => providerLabel == 'DeepSeek';
 
   @override
   Stream<AgentEvent> prompt(AgentInput input) async* {
     try {
-      final headers = <String, String>{
-        'Accept': 'text/event-stream',
-        'Content-Type': 'application/json',
-      };
-      final resolver = _apiKeyResolver;
-      if (resolver != null) {
-        final credential = await resolver.resolve();
-        headers['Authorization'] = 'Bearer ${credential.value}';
-      }
+      final credential = await _apiKeyResolver.resolve();
       final request = http.Request('POST', _profile.endpoint)
-        ..headers.addAll(headers)
+        ..headers.addAll(<String, String>{
+          'Accept': 'text/event-stream',
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${credential.value}',
+        })
         ..body = jsonEncode(_profile.requestBody(input));
 
       final response = await _client.send(request);
@@ -66,12 +58,10 @@ final class OpenAiCompatibleChatAgent implements Agent {
         }
 
         if (payload['error'] != null) {
-          yield AgentFailed(
+          yield const AgentFailed(
             AgentFailure(
               kind: AgentFailureKind.provider,
-              message: _isDeepSeek
-                  ? 'DeepSeek сообщил об ошибке во время генерации.'
-                  : 'Провайдер сообщил об ошибке во время генерации.',
+              message: 'DeepSeek сообщил об ошибке во время генерации.',
             ),
           );
           return;
@@ -126,38 +116,34 @@ final class OpenAiCompatibleChatAgent implements Agent {
           message: 'Соединение прервалось до завершения ответа.',
         ),
       );
-    } on MissingApiKeyException catch (error) {
-      yield AgentFailed(
+    } on MissingApiKeyException {
+      yield const AgentFailed(
         AgentFailure(
           kind: AgentFailureKind.configuration,
-          message: _missingKeyMessage(error.environmentVariable),
+          message:
+              'Добавьте API-ключ DeepSeek в настройках или задайте '
+              'DEEPSEEK_API_KEY в окружении.',
         ),
       );
     } on http.ClientException {
-      yield AgentFailed(
+      yield const AgentFailed(
         AgentFailure(
           kind: AgentFailureKind.network,
-          message: _isDeepSeek
-              ? 'Не удалось подключиться к DeepSeek. Проверьте сеть.'
-              : 'Не удалось подключиться к провайдеру. Проверьте сеть.',
+          message: 'Не удалось подключиться к DeepSeek. Проверьте сеть.',
         ),
       );
     } on TimeoutException {
-      yield AgentFailed(
+      yield const AgentFailed(
         AgentFailure(
           kind: AgentFailureKind.network,
-          message: _isDeepSeek
-              ? 'DeepSeek не ответил вовремя. Попробуйте ещё раз.'
-              : 'Провайдер не ответил вовремя. Попробуйте ещё раз.',
+          message: 'DeepSeek не ответил вовремя. Попробуйте ещё раз.',
         ),
       );
     } on FormatException {
-      yield AgentFailed(
+      yield const AgentFailed(
         AgentFailure(
           kind: AgentFailureKind.protocol,
-          message: _isDeepSeek
-              ? 'DeepSeek вернул поток в неожиданном формате.'
-              : 'Провайдер вернул поток в неожиданном формате.',
+          message: 'DeepSeek вернул поток в неожиданном формате.',
         ),
       );
     } on Object {
@@ -253,38 +239,20 @@ final class OpenAiCompatibleChatAgent implements Agent {
 
   AgentFailure _failureForHttpStatus(int statusCode) {
     if (statusCode == 401 || statusCode == 403) {
-      return AgentFailure(
+      return const AgentFailure(
         kind: AgentFailureKind.authentication,
-        message: _isDeepSeek
-            ? 'DeepSeek отклонил API-ключ. Проверьте его в настройках.'
-            : 'Провайдер отклонил API-ключ. Проверьте его в настройках.',
+        message: 'DeepSeek отклонил API-ключ. Проверьте его в настройках.',
       );
     }
     if (statusCode == 429) {
-      return AgentFailure(
+      return const AgentFailure(
         kind: AgentFailureKind.rateLimit,
-        message: _isDeepSeek
-            ? 'Лимит запросов DeepSeek исчерпан. Попробуйте позже.'
-            : 'Лимит запросов провайдера исчерпан. Попробуйте позже.',
+        message: 'Лимит запросов DeepSeek исчерпан. Попробуйте позже.',
       );
     }
     return AgentFailure(
       kind: AgentFailureKind.provider,
-      message: _isDeepSeek
-          ? 'DeepSeek вернул ошибку HTTP $statusCode.'
-          : 'Провайдер вернул ошибку HTTP $statusCode.',
+      message: 'DeepSeek вернул ошибку HTTP $statusCode.',
     );
-  }
-
-  String _missingKeyMessage(String? environmentVariable) {
-    if (_isDeepSeek) {
-      return 'Добавьте API-ключ DeepSeek в настройках или задайте '
-          'DEEPSEEK_API_KEY в окружении.';
-    }
-    final variable = environmentVariable?.trim();
-    if (variable == null || variable.isEmpty) {
-      return 'Добавьте API-ключ в настройках профиля.';
-    }
-    return 'Добавьте API-ключ в настройках или задайте $variable в окружении.';
   }
 }
