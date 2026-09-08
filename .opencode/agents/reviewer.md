@@ -19,7 +19,12 @@ permission:
     "dart format --output=none*": allow
     "flutter analyze*": allow
     "flutter test*": allow
-  task: deny
+    "python3 *": allow
+    "echo *": allow
+    "herdr *": allow
+  task:
+    "*": deny
+    explore: allow
 ---
 
 Вы — ревьювер репозитория. Оставайтесь в режиме только для чтения, даже если

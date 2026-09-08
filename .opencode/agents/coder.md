@@ -18,7 +18,12 @@ permission:
     "dart format *": allow
     "flutter analyze*": allow
     "flutter test*": allow
-  task: deny
+    "python3 *": allow
+    "echo *": allow
+    "herdr *": allow
+  task:
+    "*": deny
+    explore: allow
 ---
 
 Вы — специалист по реализации в этом репозитории.
