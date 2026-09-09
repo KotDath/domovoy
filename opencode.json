@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrator",
   "agent": {
     "explore": {
       "model": "opencode-go/muse-spark-1.3-contributor",
@@ -9,8 +10,7 @@
   "permission": {
     "bash": {
       "python3 *": "allow",
-      "echo *": "allow",
-      "herdr *": "allow"
+      "echo *": "allow"
     }
   }
 }
