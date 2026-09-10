@@ -1,7 +1,8 @@
 import 'dart:async';
 
 import 'package:domovoy/core/environment/environment_reader.dart';
-import 'package:domovoy/features/prompt/domain/agent.dart';
+import 'package:domovoy/core/llm/generation.dart';
+import 'package:domovoy/features/prompt/domain/prompt_workspace.dart';
 import 'package:domovoy/features/prompt/presentation/prompt_page.dart';
 import 'package:domovoy/features/settings/domain/api_key_credentials.dart';
 import 'package:domovoy/features/settings/domain/model_settings.dart';
@@ -42,7 +43,7 @@ void main() {
   group('settings persistence race', () {
     testWidgets('dialog cannot be dismissed while reasoning is saving, '
         'and the next request uses the fresh value', (tester) async {
-      final agent = ControlledAgent();
+      final runtime = ControlledAgentRuntime();
       final keyStore = MemoryApiKeyOverrideStore();
       final resolver = ApiKeyResolver(
         overrideStore: keyStore,
@@ -58,7 +59,8 @@ void main() {
         MaterialApp(
           theme: ThemeData(splashFactory: InkRipple.splashFactory),
           home: PromptPage(
-            agent: agent,
+            runtime: runtime,
+            promptDefinition: PromptWorkspace.definition(),
             overrideStore: keyStore,
             apiKeyResolver: resolver,
             modelSettingsStore: modelStore,
@@ -121,12 +123,15 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('submit-prompt')));
       await tester.pump();
 
-      expect(agent.inputs, hasLength(1));
-      expect(agent.inputs.single.thinking, ThinkingMode.disabled);
+      expect(runtime.inputs, hasLength(1));
+      expect(
+        runtime.definitions.single.generation.reasoningMode,
+        ReasoningMode.disabled,
+      );
 
-      for (final controller in agent.controllers) {
-        if (!controller.isClosed) {
-          await controller.close();
+      for (final run in runtime.runs) {
+        if (!run.controller.isClosed) {
+          await run.controller.close();
         }
       }
     });

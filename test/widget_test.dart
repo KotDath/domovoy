@@ -1,6 +1,7 @@
 import 'package:domovoy/app.dart';
+import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/environment/environment_reader.dart';
-import 'package:domovoy/features/prompt/domain/agent.dart';
+import 'package:domovoy/features/prompt/domain/prompt_workspace.dart';
 import 'package:domovoy/features/settings/domain/api_key_credentials.dart';
 import 'package:domovoy/features/settings/presentation/api_key_settings_dialog.dart';
 import 'package:flutter/material.dart';
@@ -81,8 +82,8 @@ void main() {
     await tester.pump();
     expect(find.text('Генерация…'), findsOneWidget);
 
-    harness.agent.latest.add(const AgentReasoningDelta('reasoning'));
-    harness.agent.latest.add(const AgentAnswerDelta('answer'));
+    harness.runtime.latest.add(const AgentReasoningDelta('reasoning'));
+    harness.runtime.latest.add(const AgentAnswerDelta('answer'));
     await tester.pump();
     expect(find.byKey(const ValueKey('reasoning-text')), findsOneWidget);
     expect(find.text('reasoning'), findsOneWidget);
@@ -93,14 +94,14 @@ void main() {
     expect(find.byKey(const ValueKey('reasoning-text')), findsNothing);
     expect(find.text('answer'), findsOneWidget);
 
-    harness.agent.latest.add(const AgentReasoningDelta(' hidden'));
+    harness.runtime.latest.add(const AgentReasoningDelta(' hidden'));
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('reasoning-toggle')));
     await tester.pump();
     expect(find.text('reasoning hidden'), findsOneWidget);
 
-    harness.agent.latest.add(const AgentCompleted());
-    await harness.agent.latest.close();
+    harness.runtime.latest.add(const AgentRunCompleted());
+    await harness.runtime.latest.close();
     await tester.pumpAndSettle();
     expect(find.text('Отправить'), findsOneWidget);
   });
@@ -108,11 +109,11 @@ void main() {
   testWidgets('allows another independent submission after termination', (
     tester,
   ) async {
-    final agent = QueueScriptedAgent(const [
-      <AgentEvent>[AgentAnswerDelta('first answer'), AgentCompleted()],
-      <AgentEvent>[AgentAnswerDelta('second answer'), AgentCompleted()],
+    final runtime = QueueScriptedAgentRuntime(const [
+      <AgentRunEvent>[AgentAnswerDelta('first answer'), AgentRunCompleted()],
+      <AgentRunEvent>[AgentAnswerDelta('second answer'), AgentRunCompleted()],
     ]);
-    final harness = _Harness(agent: agent);
+    final harness = _Harness(runtime: runtime);
     addTearDown(harness.dispose);
     await tester.pumpWidget(harness.app);
 
@@ -135,19 +136,16 @@ void main() {
   testWidgets('allows another independent submission after failure', (
     tester,
   ) async {
-    final agent = QueueScriptedAgent(const [
-      <AgentEvent>[
-        AgentAnswerDelta('broken'),
-        AgentFailed(
-          AgentFailure(
-            kind: AgentFailureKind.network,
-            message: 'network failed',
-          ),
+    final runtime = QueueScriptedAgentRuntime([
+      <AgentRunEvent>[
+        const AgentAnswerDelta('broken'),
+        AgentRunFailed(
+          AgentError(kind: AgentErrorKind.provider, message: 'network failed'),
         ),
       ],
-      <AgentEvent>[AgentAnswerDelta('recovered'), AgentCompleted()],
+      const <AgentRunEvent>[AgentAnswerDelta('recovered'), AgentRunCompleted()],
     ]);
-    final harness = _Harness(agent: agent);
+    final harness = _Harness(runtime: runtime);
     addTearDown(harness.dispose);
     await tester.pumpWidget(harness.app);
 
@@ -172,16 +170,16 @@ void main() {
   testWidgets(
     'retains partial output and links missing-key error to settings',
     (tester) async {
-      final failureAgent = ScriptedAgent(const <AgentEvent>[
-        AgentAnswerDelta('partial'),
-        AgentFailed(
-          AgentFailure(
-            kind: AgentFailureKind.configuration,
+      final failureRuntime = ScriptedAgentRuntime(<AgentRunEvent>[
+        const AgentAnswerDelta('partial'),
+        AgentRunFailed(
+          AgentError(
+            kind: AgentErrorKind.configuration,
             message: 'Configure DEEPSEEK_API_KEY.',
           ),
         ),
       ]);
-      final harness = _Harness(agent: failureAgent);
+      final harness = _Harness(runtime: failureRuntime);
       addTearDown(harness.dispose);
       await tester.pumpWidget(harness.app);
 
@@ -284,23 +282,26 @@ void main() {
 }
 
 final class _Harness {
-  _Harness({Agent? agent})
-    : agent = agent is ControlledAgent ? agent : ControlledAgent(),
-      _providedAgent = agent {
+  _Harness({AgentRuntime? runtime})
+    : runtime = runtime is ControlledAgentRuntime
+          ? runtime
+          : ControlledAgentRuntime(),
+      _providedRuntime = runtime {
     store = MemoryApiKeyOverrideStore();
     resolver = ApiKeyResolver(
       overrideStore: store,
       environment: const MapEnvironmentReader({}),
     );
     dependencies = DomovoyDependencies(
-      agent: _providedAgent ?? this.agent,
+      runtime: _providedRuntime ?? this.runtime,
+      promptDefinition: PromptWorkspace.definition(),
       overrideStore: store,
       apiKeyResolver: resolver,
     );
   }
 
-  final ControlledAgent agent;
-  final Agent? _providedAgent;
+  final ControlledAgentRuntime runtime;
+  final AgentRuntime? _providedRuntime;
   late final MemoryApiKeyOverrideStore store;
   late final ApiKeyResolver resolver;
   late final DomovoyDependencies dependencies;
@@ -308,9 +309,9 @@ final class _Harness {
   Widget get app => DomovoyApp(dependencies: dependencies);
 
   void dispose() {
-    for (final controller in agent.controllers) {
-      if (!controller.isClosed) {
-        controller.close();
+    for (final run in runtime.runs) {
+      if (!run.controller.isClosed) {
+        run.controller.close();
       }
     }
   }

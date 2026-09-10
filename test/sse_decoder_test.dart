@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:domovoy/features/prompt/data/sse_decoder.dart';
+import 'package:domovoy/infrastructure/llm/openai_compatible/sse_decoder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

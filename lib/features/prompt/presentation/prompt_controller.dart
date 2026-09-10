@@ -2,10 +2,23 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/agents/agents.dart';
+import '../../../core/llm/generation.dart';
 import '../../settings/domain/model_settings.dart';
-import '../domain/agent.dart';
+import '../domain/prompt_workspace.dart';
 
 enum PromptRunStatus { idle, streaming, completed, failed }
+
+@immutable
+final class PromptFailure {
+  const PromptFailure({
+    required this.message,
+    this.isMissingCredential = false,
+  });
+
+  final String message;
+  final bool isMissingCredential;
+}
 
 @immutable
 final class PromptState {
@@ -21,7 +34,7 @@ final class PromptState {
   final PromptRunStatus status;
   final String reasoning;
   final String answer;
-  final AgentFailure? failure;
+  final PromptFailure? failure;
   final bool reasoningExpanded;
   final String? inputError;
 
@@ -32,7 +45,7 @@ final class PromptState {
     PromptRunStatus? status,
     String? reasoning,
     String? answer,
-    AgentFailure? failure,
+    PromptFailure? failure,
     bool clearFailure = false,
     bool? reasoningExpanded,
     String? inputError,
@@ -51,26 +64,30 @@ final class PromptState {
 
 final class PromptController extends ChangeNotifier {
   PromptController(
-    this._agent, {
+    this._runtime, {
+    required AgentDefinition definition,
     DeepSeekModelSettingsStore? modelSettingsStore,
-    ThinkingMode initialThinking = ThinkingMode.enabled,
-  }) : _modelSettingsStore = modelSettingsStore,
+    ReasoningMode initialThinking = ReasoningMode.enabled,
+  }) : _definition = definition,
+       _modelSettingsStore = modelSettingsStore,
        _thinking = initialThinking;
 
-  final Agent _agent;
+  final AgentRuntime _runtime;
+  final AgentDefinition _definition;
   final DeepSeekModelSettingsStore? _modelSettingsStore;
-  StreamSubscription<AgentEvent>? _subscription;
+  StreamSubscription<AgentRunEvent>? _subscription;
+  AgentRun? _run;
   PromptState _state = const PromptState();
-  ThinkingMode _thinking;
+  ReasoningMode _thinking;
   bool _disposed = false;
   int _generation = 0;
 
   PromptState get state => _state;
 
   /// Reasoning mode snapshotted for the next request. Defaults to enabled.
-  ThinkingMode get thinking => _thinking;
+  ReasoningMode get thinking => _thinking;
 
-  void setThinkingMode(ThinkingMode mode) {
+  void setThinkingMode(ReasoningMode mode) {
     if (_thinking == mode) {
       return;
     }
@@ -79,7 +96,7 @@ final class PromptController extends ChangeNotifier {
   }
 
   /// Loads the persisted reasoning setting. Missing values and read
-  /// failures fall back to [ThinkingMode.enabled].
+  /// failures fall back to [ReasoningMode.enabled].
   Future<void> loadThinking() async {
     final store = _modelSettingsStore;
     if (store == null) {
@@ -88,10 +105,10 @@ final class PromptController extends ChangeNotifier {
     try {
       final settings = await store.read();
       _thinking = settings == null || settings.reasoningEnabled
-          ? ThinkingMode.enabled
-          : ThinkingMode.disabled;
+          ? ReasoningMode.enabled
+          : ReasoningMode.disabled;
     } on Object {
-      _thinking = ThinkingMode.enabled;
+      _thinking = ReasoningMode.enabled;
     }
     _notifyListeners();
   }
@@ -107,36 +124,40 @@ final class PromptController extends ChangeNotifier {
       return false;
     }
 
-    unawaited(_subscription?.cancel());
     final generation = ++_generation;
+    final previousRun = _run;
+    final previousSubscription = _subscription;
+    _run = null;
+    _subscription = null;
+    unawaited(previousRun?.cancel());
+    unawaited(previousSubscription?.cancel());
     final thinking = _thinking;
     _setState(const PromptState(status: PromptRunStatus.streaming));
-    _subscription = _agent
-        .prompt(AgentInput(normalized, thinking: thinking))
-        .listen(
-          (event) => _onEvent(generation, event),
-          onError: (_) {
-            if (generation == _generation) {
-              _finishWithFailure(
-                const AgentFailure(
-                  kind: AgentFailureKind.unknown,
-                  message: 'Не удалось получить ответ. Попробуйте ещё раз.',
-                ),
-              );
-            }
-          },
-          onDone: () {
-            if (generation == _generation && _state.isStreaming) {
-              _finishWithFailure(
-                const AgentFailure(
-                  kind: AgentFailureKind.interrupted,
-                  message: 'Поток ответа завершился неожиданно.',
-                ),
-              );
-            }
-          },
-          cancelOnError: false,
-        );
+    try {
+      _run = _runtime
+          .agent(PromptWorkspace.snapshotReasoning(_definition, thinking))
+          .run(normalized);
+    } on AgentException catch (error) {
+      _finishWithFailure(_failureFrom(error.error));
+      return true;
+    } on Object {
+      _finishWithFailure(_unknownFailure);
+      return true;
+    }
+    _subscription = _run!.events.listen(
+      (event) => _onEvent(generation, event),
+      onError: (_) {
+        if (generation == _generation) {
+          _finishWithFailure(_unknownFailure);
+        }
+      },
+      onDone: () {
+        if (generation == _generation && _state.isStreaming) {
+          _finishWithFailure(_interruptedFailure);
+        }
+      },
+      cancelOnError: false,
+    );
     return true;
   }
 
@@ -153,7 +174,7 @@ final class PromptController extends ChangeNotifier {
     _setState(_state.copyWith(reasoningExpanded: !_state.reasoningExpanded));
   }
 
-  void _onEvent(int generation, AgentEvent event) {
+  void _onEvent(int generation, AgentRunEvent event) {
     if (generation != _generation || !_state.isStreaming) {
       return;
     }
@@ -170,7 +191,8 @@ final class PromptController extends ChangeNotifier {
         );
       case AgentAnswerDelta(:final text):
         _setState(_state.copyWith(answer: '${_state.answer}$text'));
-      case AgentCompleted():
+      case AgentRunCompleted():
+      case AgentRunStopped():
         _setState(
           _state.copyWith(
             status: PromptRunStatus.completed,
@@ -178,13 +200,26 @@ final class PromptController extends ChangeNotifier {
           ),
         );
         unawaited(_subscription?.cancel());
-      case AgentFailed(:final failure):
-        _finishWithFailure(failure);
+      case AgentRunFailed(:final error):
+        _finishWithFailure(_failureFrom(error));
         unawaited(_subscription?.cancel());
+      case AgentRunCancelled():
+        _finishWithFailure(_interruptedFailure);
+        unawaited(_subscription?.cancel());
+      case AgentRunStarted():
+      case AgentInboundMessageConsumed():
+      case AgentToolAssembled():
+      case AgentPermissionDecision():
+      case AgentToolStarted():
+      case AgentToolProgress():
+      case AgentToolFinished():
+      case AgentUsageUpdated():
+      case AgentNoProgressWarning():
+        break;
     }
   }
 
-  void _finishWithFailure(AgentFailure failure) {
+  void _finishWithFailure(PromptFailure failure) {
     if (!_state.isStreaming) {
       return;
     }
@@ -212,7 +247,27 @@ final class PromptController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _generation++;
-    unawaited(_subscription?.cancel());
+    final run = _run;
+    final subscription = _subscription;
+    _run = null;
+    _subscription = null;
+    unawaited(run?.cancel());
+    unawaited(subscription?.cancel());
     super.dispose();
   }
+}
+
+const _interruptedFailure = PromptFailure(
+  message: 'Поток ответа завершился неожиданно.',
+);
+
+const _unknownFailure = PromptFailure(
+  message: 'Не удалось получить ответ. Попробуйте ещё раз.',
+);
+
+PromptFailure _failureFrom(AgentError error) {
+  return PromptFailure(
+    message: error.message,
+    isMissingCredential: error.kind == AgentErrorKind.configuration,
+  );
 }

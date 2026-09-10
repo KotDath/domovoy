@@ -1,4 +1,5 @@
-import 'package:domovoy/features/prompt/domain/agent.dart';
+import 'package:domovoy/core/llm/generation.dart';
+import 'package:domovoy/features/prompt/domain/prompt_workspace.dart';
 import 'package:domovoy/features/prompt/presentation/prompt_controller.dart';
 import 'package:domovoy/features/settings/domain/model_settings.dart';
 import 'package:domovoy/features/settings/presentation/reasoning_settings.dart';
@@ -9,19 +10,26 @@ import 'support/fakes.dart';
 void main() {
   group('PromptController thinking snapshot', () {
     test('sends enabled thinking by default', () {
-      final agent = ControlledAgent();
-      final controller = PromptController(agent);
+      final runtime = ControlledAgentRuntime();
+      final controller = PromptController(
+        runtime,
+        definition: PromptWorkspace.definition(),
+      );
       addTearDown(controller.dispose);
 
-      expect(controller.thinking, ThinkingMode.enabled);
+      expect(controller.thinking, ReasoningMode.enabled);
       expect(controller.submit('hello'), isTrue);
-      expect(agent.inputs.single.thinking, ThinkingMode.enabled);
+      expect(
+        runtime.definitions.single.generation.reasoningMode,
+        ReasoningMode.enabled,
+      );
     });
 
     test('snapshots disabled reasoning from the persisted store', () async {
-      final agent = ControlledAgent();
+      final runtime = ControlledAgentRuntime();
       final controller = PromptController(
-        agent,
+        runtime,
+        definition: PromptWorkspace.definition(),
         modelSettingsStore: InMemoryDeepSeekModelSettingsStore(
           const DeepSeekModelSettings(reasoningEnabled: false),
         ),
@@ -29,40 +37,54 @@ void main() {
       addTearDown(controller.dispose);
 
       await controller.loadThinking();
-      expect(controller.thinking, ThinkingMode.disabled);
+      expect(controller.thinking, ReasoningMode.disabled);
       expect(controller.submit('hello'), isTrue);
-      expect(agent.inputs.single.thinking, ThinkingMode.disabled);
+      expect(
+        runtime.definitions.single.generation.reasoningMode,
+        ReasoningMode.disabled,
+      );
     });
 
     test('falls back to enabled on missing values and read failures', () async {
-      final agent = ControlledAgent();
+      final runtime = ControlledAgentRuntime();
       final missing = PromptController(
-        agent,
+        runtime,
+        definition: PromptWorkspace.definition(),
         modelSettingsStore: InMemoryDeepSeekModelSettingsStore(),
       );
       addTearDown(missing.dispose);
       await missing.loadThinking();
-      expect(missing.thinking, ThinkingMode.enabled);
+      expect(missing.thinking, ReasoningMode.enabled);
 
       final failing = PromptController(
-        agent,
+        runtime,
+        definition: PromptWorkspace.definition(),
         modelSettingsStore: _FailingModelStore(),
       );
       addTearDown(failing.dispose);
       await failing.loadThinking();
-      expect(failing.thinking, ThinkingMode.enabled);
+      expect(failing.thinking, ReasoningMode.enabled);
       expect(failing.submit('hello'), isTrue);
-      expect(agent.inputs.single.thinking, ThinkingMode.enabled);
+      expect(
+        runtime.definitions.single.generation.reasoningMode,
+        ReasoningMode.enabled,
+      );
     });
 
     test('setThinkingMode applies to subsequent requests only', () {
-      final agent = ControlledAgent();
-      final controller = PromptController(agent);
+      final runtime = ControlledAgentRuntime();
+      final controller = PromptController(
+        runtime,
+        definition: PromptWorkspace.definition(),
+      );
       addTearDown(controller.dispose);
 
-      controller.setThinkingMode(ThinkingMode.disabled);
+      controller.setThinkingMode(ReasoningMode.disabled);
       expect(controller.submit('one'), isTrue);
-      expect(agent.inputs.single.thinking, ThinkingMode.disabled);
+      expect(
+        runtime.definitions.single.generation.reasoningMode,
+        ReasoningMode.disabled,
+      );
     });
   });
 

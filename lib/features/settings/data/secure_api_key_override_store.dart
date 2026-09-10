@@ -1,16 +1,17 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../../../infrastructure/credentials/credentials.dart';
 import '../domain/api_key_credentials.dart';
 
 final class SecureApiKeyOverrideStore implements ApiKeyOverrideStore {
-  SecureApiKeyOverrideStore(this._storage);
+  SecureApiKeyOverrideStore(FlutterSecureStorage storage)
+    : _strings = FlutterSecureStringStore(storage);
 
-  static const _storageKey = 'deepseek_api_key_override';
-
-  final FlutterSecureStorage _storage;
+  final SecureStringStore _strings;
 
   @override
-  Future<String?> read() => _storage.read(key: _storageKey);
+  Future<String?> read() =>
+      NamespacedProviderCredentialStore.readDeepSeekOverride(_strings);
 
   @override
   Future<void> write(String value) async {
@@ -18,9 +19,13 @@ final class SecureApiKeyOverrideStore implements ApiKeyOverrideStore {
     if (normalized.isEmpty) {
       throw ArgumentError.value(value, 'value', 'API key must not be empty.');
     }
-    await _storage.write(key: _storageKey, value: normalized);
+    await NamespacedProviderCredentialStore.writeDeepSeekOverride(
+      _strings,
+      normalized,
+    );
   }
 
   @override
-  Future<void> delete() => _storage.delete(key: _storageKey);
+  Future<void> delete() =>
+      NamespacedProviderCredentialStore.deleteDeepSeekOverride(_strings);
 }

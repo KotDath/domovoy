@@ -3,16 +3,18 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/agents/agents.dart';
+import '../../../core/llm/generation.dart';
 import '../../settings/domain/api_key_credentials.dart';
 import '../../settings/domain/model_settings.dart';
 import '../../settings/presentation/api_key_settings_dialog.dart';
 import '../../settings/presentation/reasoning_settings.dart';
-import '../domain/agent.dart';
 import 'prompt_controller.dart';
 
 class PromptPage extends StatefulWidget {
   const PromptPage({
-    required this.agent,
+    required this.runtime,
+    required this.promptDefinition,
     required this.overrideStore,
     required this.apiKeyResolver,
     this.modelSettingsStore,
@@ -21,7 +23,8 @@ class PromptPage extends StatefulWidget {
     super.key,
   });
 
-  final Agent agent;
+  final AgentRuntime runtime;
+  final AgentDefinition promptDefinition;
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore? modelSettingsStore;
@@ -41,7 +44,10 @@ class _PromptPageState extends State<PromptPage> {
   @override
   void initState() {
     super.initState();
-    _prompt = PromptController(widget.agent)..addListener(_rebuild);
+    _prompt = PromptController(
+      widget.runtime,
+      definition: widget.promptDefinition,
+    )..addListener(_rebuild);
     final shared = widget.reasoningSettings;
     if (shared != null) {
       _reasoning = shared;
@@ -73,8 +79,8 @@ class _PromptPageState extends State<PromptPage> {
   void _syncReasoning() {
     _prompt.setThinkingMode(
       _reasoning.reasoningEnabled
-          ? ThinkingMode.enabled
-          : ThinkingMode.disabled,
+          ? ReasoningMode.enabled
+          : ReasoningMode.disabled,
     );
     _rebuild();
   }

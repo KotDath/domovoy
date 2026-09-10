@@ -1,26 +1,97 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import 'core/agents/agents.dart';
 import 'core/environment/platform_environment_reader.dart';
-import 'features/prompt/data/chat_completions_provider_profile.dart';
-import 'features/prompt/data/openai_compatible_chat_agent.dart';
-import 'features/prompt/domain/agent.dart';
+import 'core/llm/llm.dart';
+import 'features/prompt/domain/prompt_workspace.dart';
 import 'features/prompt/presentation/prompt_page.dart';
 import 'features/settings/data/secure_api_key_override_store.dart';
 import 'features/settings/data/secure_model_settings_store.dart';
 import 'features/settings/domain/api_key_credentials.dart';
 import 'features/settings/domain/model_settings.dart';
+import 'infrastructure/credentials/credentials.dart';
+import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
+import 'infrastructure/llm/openai_responses/openai_responses.dart';
+
+final class ProductionAgentStack {
+  ProductionAgentStack({
+    required this.registry,
+    required this.runtime,
+    required this.promptDefinition,
+    required this.credentials,
+  });
+
+  final LlmProviderRegistry registry;
+  final InMemoryAgentRuntime runtime;
+  final AgentDefinition promptDefinition;
+  final ProviderCredentialResolver credentials;
+}
+
+ProductionAgentStack buildProductionAgentStack({
+  required http.Client httpClient,
+  required ProviderCredentialResolver credentials,
+}) {
+  final deepSeek = OpenAiCompatibleProfile.deepSeek();
+  final moonshot = OpenAiCompatibleProfile.moonshotAi();
+  final openAi = OpenAiResponsesProfile.builtIn();
+  final registry = LlmProviderRegistry();
+  BuiltInLlmCatalog.registerInto(registry);
+  registry.registerProvider(
+    OpenAiChatCompletionsLlmProvider(
+      profile: deepSeek,
+      client: httpClient,
+      credentials: credentials,
+    ),
+  );
+  registry.registerProvider(
+    OpenAiChatCompletionsLlmProvider(
+      profile: moonshot,
+      client: httpClient,
+      credentials: credentials,
+    ),
+  );
+  registry.registerProvider(
+    OpenAiResponsesLlmProvider(
+      profile: openAi,
+      client: httpClient,
+      credentials: credentials,
+    ),
+  );
+  final runtime = InMemoryAgentRuntime(
+    registry: registry,
+    tools: AgentToolRegistry(),
+    policies: <String, ToolPermissionPolicy>{
+      'deny': const DenyAllPolicy(),
+      'allow': const AllowAllPolicy(),
+    },
+    repository: InMemoryAgentSessionRepository(),
+    router: InMemorySessionRouter(),
+    profile: AgentRuntimeProfile(),
+  );
+  return ProductionAgentStack(
+    registry: registry,
+    runtime: runtime,
+    promptDefinition: PromptWorkspace.definition(),
+    credentials: credentials,
+  );
+}
 
 final class DomovoyDependencies {
   DomovoyDependencies({
-    required this.agent,
+    required this.runtime,
+    required this.promptDefinition,
     required this.overrideStore,
     required this.apiKeyResolver,
     DeepSeekModelSettingsStore? modelSettingsStore,
+    http.Client? httpClient,
     this.disposeCallback,
   }) : modelSettingsStore =
-           modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore();
+           modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
+       _httpClient = httpClient;
 
   factory DomovoyDependencies.production() {
     const storage = FlutterSecureStorage();
@@ -32,27 +103,66 @@ final class DomovoyDependencies {
       environment: environment,
     );
     final client = http.Client();
-    final agent = OpenAiCompatibleChatAgent(
-      client: client,
-      apiKeyResolver: resolver,
-      profile: ChatCompletionsProviderProfile.deepSeekV4Flash(),
+    final credentials = DefaultProviderCredentialResolver(
+      store: NamespacedProviderCredentialStore(
+        FlutterSecureStringStore(storage),
+      ),
+      readEnvironment: environment.read,
+    );
+    final stack = buildProductionAgentStack(
+      httpClient: client,
+      credentials: credentials,
     );
     return DomovoyDependencies(
-      agent: agent,
+      runtime: stack.runtime,
+      promptDefinition: stack.promptDefinition,
       overrideStore: overrideStore,
       apiKeyResolver: resolver,
       modelSettingsStore: modelSettingsStore,
-      disposeCallback: client.close,
+      httpClient: client,
     );
   }
 
-  final Agent agent;
+  final AgentRuntime runtime;
+  final AgentDefinition promptDefinition;
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore modelSettingsStore;
   final VoidCallback? disposeCallback;
+  final http.Client? _httpClient;
+  Future<void>? _closeFuture;
 
-  void dispose() => disposeCallback?.call();
+  Future<void> close() => _closeFuture ??= _close();
+
+  Future<void> _close() async {
+    AgentError? firstError;
+    try {
+      await runtime.close();
+    } on Object catch (error) {
+      firstError = sanitizeCloseFailure(error);
+    }
+    try {
+      _httpClient?.close();
+    } on Object catch (error) {
+      firstError ??= sanitizeCloseFailure(error);
+    }
+    try {
+      disposeCallback?.call();
+    } on Object catch (error) {
+      firstError ??= sanitizeCloseFailure(error);
+    }
+    if (firstError != null) {
+      throw AgentException(firstError);
+    }
+  }
+
+  void dispose() {
+    unawaited(
+      close().catchError((Object error, StackTrace stackTrace) {
+        return;
+      }),
+    );
+  }
 }
 
 class DomovoyApp extends StatefulWidget {
@@ -71,7 +181,14 @@ class DomovoyApp extends StatefulWidget {
 class _DomovoyAppState extends State<DomovoyApp> {
   @override
   void dispose() {
-    widget.dependencies.dispose();
+    unawaited(
+      widget.dependencies.close().catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        return;
+      }),
+    );
     super.dispose();
   }
 
@@ -87,7 +204,8 @@ class _DomovoyAppState extends State<DomovoyApp> {
       ),
       home: PromptPage(
         key: const ValueKey('prompt-destination'),
-        agent: dependencies.agent,
+        runtime: dependencies.runtime,
+        promptDefinition: dependencies.promptDefinition,
         overrideStore: dependencies.overrideStore,
         apiKeyResolver: dependencies.apiKeyResolver,
         modelSettingsStore: dependencies.modelSettingsStore,
