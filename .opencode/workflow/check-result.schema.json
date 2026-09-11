@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ru.kotdath.domovoy/schemas/opencode/check-result.schema.json",
+  "title": "Domovoy pipeline check result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result_id",
+    "scope_id",
+    "attempt_id",
+    "initial_tier",
+    "current_tier",
+    "base_revision",
+    "head_revision",
+    "contract_revision",
+    "implementation_revision",
+    "status",
+    "generated_at",
+    "changed_files",
+    "out_of_scope_files",
+    "allowed_paths",
+    "openspec_change",
+    "check_configuration",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "result_id": { "type": "string", "pattern": "^check-[0-9a-f]{64}$" },
+    "scope_id": { "type": "string", "minLength": 1 },
+    "attempt_id": { "type": "string", "minLength": 1 },
+    "initial_tier": { "enum": ["T0", "T1", "T2"] },
+    "current_tier": { "enum": ["T0", "T1", "T2"] },
+    "base_revision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "head_revision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "contract_revision": { "type": "string", "minLength": 1 },
+    "implementation_revision": {
+      "type": "string",
+      "pattern": "^worktree-sha256:[0-9a-f]{64}$"
+    },
+    "status": { "enum": ["CHECKS_PASS", "CHECKS_FAIL", "INCOMPLETE"] },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "changed_files": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "out_of_scope_files": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "allowed_paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "openspec_change": { "type": ["string", "null"] },
+    "check_configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "flutter_checks",
+        "openspec_required",
+        "runner_sha256",
+        "schema_sha256"
+      ],
+      "properties": {
+        "flutter_checks": { "type": "boolean" },
+        "openspec_required": { "type": "boolean" },
+        "runner_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "schema_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "command", "status", "exit_code", "duration_ms", "output_tail"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "command": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["PASS", "FAIL", "INCOMPLETE", "SKIPPED"] },
+          "exit_code": { "type": ["integer", "null"] },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "output_tail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

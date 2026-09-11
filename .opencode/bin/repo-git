@@ -1,0 +1,1052 @@
+#!/usr/bin/env python3
+"""Run Git through an exact, default-deny repo-local argument grammar."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+from typing import NoReturn
+
+
+class GuardError(ValueError):
+    """The requested argv is outside the wrapper contract."""
+
+
+class ValueType(Enum):
+    FLAG = "flag"
+    STRING_VALUE = "string"
+    INTEGER_VALUE = "integer"
+    ENUM_VALUE = "enum"
+    REPO_FILE = "repo-file"
+    REPO_PATH = "repo-path"
+
+
+@dataclass(frozen=True)
+class OptionSpec:
+    value_type: ValueType
+    choices: frozenset[str] = frozenset()
+    allow_attached: bool = False
+    minimum: int = 0
+    maximum: int = 10000
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    long_options: Mapping[str, OptionSpec] = field(default_factory=dict)
+    short_options: Mapping[str, OptionSpec] = field(default_factory=dict)
+    operand_kind: str = "none"
+    min_operands: int = 0
+    max_operands: int = 0
+    paths: str = "none"
+    writer: bool = False
+    required_any: frozenset[str] = frozenset()
+
+
+FLAG = OptionSpec(ValueType.FLAG)
+STRING = OptionSpec(ValueType.STRING_VALUE)
+INTEGER = OptionSpec(ValueType.INTEGER_VALUE, minimum=1)
+REPO_FILE = OptionSpec(ValueType.REPO_FILE)
+MESSAGE_SHORT = OptionSpec(ValueType.STRING_VALUE, allow_attached=True)
+INTEGER_SHORT = OptionSpec(ValueType.INTEGER_VALUE, allow_attached=True, minimum=1)
+REPO_FILE_SHORT = OptionSpec(ValueType.REPO_FILE, allow_attached=True)
+
+
+DIFF_LONG = {
+    "--binary": FLAG,
+    "--cached": FLAG,
+    "--check": FLAG,
+    "--compact-summary": FLAG,
+    "--exit-code": FLAG,
+    "--ignore-revs-file": REPO_FILE,
+    "--name-only": FLAG,
+    "--name-status": FLAG,
+    "--no-renames": FLAG,
+    "--numstat": FLAG,
+    "--patch": FLAG,
+    "--quiet": FLAG,
+    "--shortstat": FLAG,
+    "--staged": FLAG,
+    "--stat": FLAG,
+    "--summary": FLAG,
+    "--unified": INTEGER,
+}
+DIFF_SHORT = {"-p": FLAG, "-U": INTEGER_SHORT}
+LOG_LONG = {
+    "--all": FLAG,
+    "--date-order": FLAG,
+    "--decorate": FLAG,
+    "--first-parent": FLAG,
+    "--follow": FLAG,
+    "--format": STRING,
+    "--graph": FLAG,
+    "--ignore-revs-file": REPO_FILE,
+    "--max-count": INTEGER,
+    "--merges": FLAG,
+    "--name-only": FLAG,
+    "--name-status": FLAG,
+    "--no-decorate": FLAG,
+    "--no-merges": FLAG,
+    "--oneline": FLAG,
+    "--patch": FLAG,
+    "--pretty": STRING,
+    "--reverse": FLAG,
+    "--stat": FLAG,
+    "--topo-order": FLAG,
+}
+LOG_SHORT = {"-n": INTEGER_SHORT, "-p": FLAG}
+
+
+COMMAND_SPECS: dict[str, CommandSpec] = {
+    "status": CommandSpec(
+        long_options={
+            "--ahead-behind": FLAG,
+            "--branch": FLAG,
+            "--no-ahead-behind": FLAG,
+            "--no-renames": FLAG,
+            "--porcelain": FLAG,
+            "--short": FLAG,
+            "--show-stash": FLAG,
+            "--untracked-files": OptionSpec(
+                ValueType.ENUM_VALUE, frozenset({"no", "normal", "all"})
+            ),
+        },
+        short_options={"-b": FLAG, "-s": FLAG},
+        paths="optional",
+    ),
+    "diff": CommandSpec(
+        long_options=DIFF_LONG,
+        short_options=DIFF_SHORT,
+        operand_kind="revision",
+        max_operands=2,
+        paths="optional",
+    ),
+    "log": CommandSpec(
+        long_options=LOG_LONG,
+        short_options=LOG_SHORT,
+        operand_kind="revision",
+        max_operands=8,
+        paths="optional",
+    ),
+    "show": CommandSpec(
+        long_options={
+            **DIFF_LONG,
+            "--format": STRING,
+            "--no-patch": FLAG,
+            "--oneline": FLAG,
+            "--pretty": STRING,
+        },
+        short_options={"-p": FLAG, "-s": FLAG, "-U": INTEGER_SHORT},
+        operand_kind="revision",
+        max_operands=8,
+        paths="optional",
+    ),
+    "add": CommandSpec(paths="required-files", writer=True),
+    "commit": CommandSpec(
+        long_options={
+            "--allow-empty": FLAG,
+            "--allow-empty-message": FLAG,
+            "--message": STRING,
+            "--quiet": FLAG,
+        },
+        short_options={"-m": MESSAGE_SHORT, "-q": FLAG},
+        writer=True,
+        required_any=frozenset({"--message", "-m"}),
+    ),
+    "mv": CommandSpec(paths="exact-two", writer=True),
+    "branch": CommandSpec(
+        long_options={
+            "--all": FLAG,
+            "--format": STRING,
+            "--list": FLAG,
+            "--no-color": FLAG,
+            "--remotes": FLAG,
+            "--show-current": FLAG,
+            "--sort": STRING,
+            "--verbose": FLAG,
+        },
+        short_options={"-a": FLAG, "-r": FLAG, "-v": FLAG, "-vv": FLAG},
+    ),
+    "tag": CommandSpec(
+        long_options={
+            "--format": STRING,
+            "--list": FLAG,
+            "--no-column": FLAG,
+            "--no-color": FLAG,
+            "--sort": STRING,
+        },
+        short_options={"-l": FLAG},
+    ),
+    "ls-files": CommandSpec(
+        long_options={
+            "--cached": FLAG,
+            "--deleted": FLAG,
+            "--error-unmatch": FLAG,
+            "--exclude-from": REPO_FILE,
+            "--exclude-standard": FLAG,
+            "--full-name": FLAG,
+            "--ignored": FLAG,
+            "--modified": FLAG,
+            "--others": FLAG,
+            "--stage": FLAG,
+            "--unmerged": FLAG,
+        },
+        short_options={
+            "-c": FLAG,
+            "-d": FLAG,
+            "-i": FLAG,
+            "-m": FLAG,
+            "-o": FLAG,
+            "-s": FLAG,
+            "-u": FLAG,
+            "-X": REPO_FILE_SHORT,
+        },
+        paths="optional",
+    ),
+    "grep": CommandSpec(
+        long_options={
+            "--cached": FLAG,
+            "--count": FLAG,
+            "--extended-regexp": FLAG,
+            "--file": REPO_FILE,
+            "--files-with-matches": FLAG,
+            "--fixed-strings": FLAG,
+            "--ignore-case": FLAG,
+            "--line-number": FLAG,
+            "--max-count": INTEGER,
+            "--regexp": STRING,
+            "--word-regexp": FLAG,
+        },
+        short_options={
+            "-E": FLAG,
+            "-F": FLAG,
+            "-e": MESSAGE_SHORT,
+            "-f": REPO_FILE_SHORT,
+            "-i": FLAG,
+            "-l": FLAG,
+            "-n": FLAG,
+            "-w": FLAG,
+        },
+        paths="optional",
+        required_any=frozenset({"--regexp", "--file", "-e", "-f"}),
+    ),
+    "blame": CommandSpec(
+        long_options={
+            "--contents": REPO_FILE,
+            "--ignore-revs-file": REPO_FILE,
+            "--line-porcelain": FLAG,
+            "--porcelain": FLAG,
+            "--show-stats": FLAG,
+        },
+        short_options={"-L": MESSAGE_SHORT, "-w": FLAG},
+        operand_kind="revision",
+        max_operands=1,
+        paths="exact-one",
+    ),
+    "rev-parse": CommandSpec(
+        long_options={
+            "--is-bare-repository": FLAG,
+            "--is-inside-work-tree": FLAG,
+            "--short": FLAG,
+            "--show-cdup": FLAG,
+            "--show-prefix": FLAG,
+            "--show-toplevel": FLAG,
+            "--verify": FLAG,
+        },
+        operand_kind="revision",
+        max_operands=8,
+    ),
+    "describe": CommandSpec(
+        long_options={"--all": FLAG, "--always": FLAG, "--long": FLAG, "--tags": FLAG},
+        operand_kind="revision",
+        max_operands=1,
+    ),
+    "cat-file": CommandSpec(
+        short_options={"-e": STRING, "-p": STRING, "-s": STRING, "-t": STRING},
+        required_any=frozenset({"-e", "-p", "-s", "-t"}),
+    ),
+    "check-ignore": CommandSpec(
+        long_options={"--quiet": FLAG, "--verbose": FLAG},
+        short_options={"-q": FLAG, "-v": FLAG},
+        paths="required",
+    ),
+    "for-each-ref": CommandSpec(
+        long_options={"--count": INTEGER, "--format": STRING, "--sort": STRING},
+    ),
+    "show-ref": CommandSpec(
+        long_options={"--heads": FLAG, "--tags": FLAG},
+    ),
+    "merge-base": CommandSpec(
+        long_options={"--all": FLAG, "--is-ancestor": FLAG},
+        operand_kind="revision",
+        min_operands=2,
+        max_operands=8,
+    ),
+    "name-rev": CommandSpec(
+        long_options={"--always": FLAG, "--name-only": FLAG, "--tags": FLAG},
+        operand_kind="revision",
+        min_operands=1,
+        max_operands=8,
+    ),
+    "rev-list": CommandSpec(
+        long_options={
+            "--all": FLAG,
+            "--count": FLAG,
+            "--first-parent": FLAG,
+            "--max-count": INTEGER,
+            "--objects": FLAG,
+            "--reverse": FLAG,
+        },
+        short_options={"-n": INTEGER_SHORT},
+        operand_kind="revision",
+        min_operands=1,
+        max_operands=8,
+        paths="optional",
+    ),
+    "shortlog": CommandSpec(
+        long_options={"--email": FLAG, "--numbered": FLAG, "--summary": FLAG},
+        short_options={"-e": FLAG, "-n": FLAG, "-s": FLAG},
+        operand_kind="revision",
+        max_operands=8,
+        paths="optional",
+    ),
+    "diff-files": CommandSpec(
+        long_options=DIFF_LONG,
+        short_options=DIFF_SHORT,
+        paths="optional",
+    ),
+    "diff-index": CommandSpec(
+        long_options=DIFF_LONG,
+        short_options=DIFF_SHORT,
+        operand_kind="revision",
+        min_operands=1,
+        max_operands=1,
+        paths="optional",
+    ),
+    "diff-tree": CommandSpec(
+        long_options={**DIFF_LONG, "--root": FLAG},
+        short_options=DIFF_SHORT,
+        operand_kind="revision",
+        min_operands=1,
+        max_operands=2,
+        paths="optional",
+    ),
+}
+
+
+def fail(message: str) -> NoReturn:
+    raise GuardError(message)
+
+
+def safe_environment(
+    read_only: bool, source: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    environment = dict(os.environ if source is None else source)
+    for name in list(environment):
+        if name.startswith(("GIT_CONFIG_", "GIT_TRACE")) or name in {
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_CONFIG",
+            "GIT_DIFF_OPTS",
+            "GIT_DIR",
+            "GIT_EXTERNAL_DIFF",
+            "GIT_GRAFT_FILE",
+            "GIT_INDEX_FILE",
+            "GIT_NAMESPACE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_QUARANTINE_PATH",
+            "GIT_SHALLOW_FILE",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+            "GIT_WORK_TREE",
+        }:
+            environment.pop(name, None)
+    environment.update(
+        {
+            "EDITOR": "/bin/false",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_EDITOR": "/bin/false",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_PAGER": "cat",
+            "GIT_SEQUENCE_EDITOR": "/bin/false",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PAGER": "cat",
+            "VISUAL": "/bin/false",
+        }
+    )
+    if read_only:
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+    return environment
+
+
+def run_git_probe(arguments: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=cwd,
+        env=safe_environment(True),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def repository_root(cwd: Path | None = None) -> Path:
+    start = Path.cwd() if cwd is None else cwd
+    completed = run_git_probe(["rev-parse", "--show-toplevel"], start)
+    if completed.returncode != 0:
+        fail("repo-git must run inside a Git worktree")
+    return Path(completed.stdout.strip()).resolve(strict=True)
+
+
+def inside(root: Path, candidate: Path) -> bool:
+    return candidate == root or root in candidate.parents
+
+
+def validate_worktree_directory(root: Path, base: Path, raw_path: str) -> Path:
+    if Path(raw_path).is_absolute() or ".." in Path(raw_path).parts:
+        fail(f"git -C must be a non-escaping repo-relative directory: {raw_path}")
+    candidate = (base / raw_path).resolve(strict=True)
+    if not candidate.is_dir() or not inside(root, candidate):
+        fail(f"git -C leaves the current worktree: {raw_path}")
+    completed = run_git_probe(["rev-parse", "--show-toplevel"], candidate)
+    if completed.returncode != 0 or Path(completed.stdout.strip()).resolve() != root:
+        fail(f"git -C selects a different/non-worktree repository: {raw_path}")
+    return candidate
+
+
+def parse_global_arguments(
+    root: Path, argv: list[str], invocation_cwd: Path
+) -> tuple[list[str], str, list[str], Path]:
+    options: list[str] = []
+    effective_cwd = invocation_cwd.resolve(strict=True)
+    index = 0
+    while index < len(argv):
+        value = argv[index]
+        if value == "--":
+            index += 1
+            break
+        if not value.startswith("-") or value == "-":
+            break
+        if value == "-C":
+            if index + 1 >= len(argv):
+                fail("git -C requires a directory")
+            effective_cwd = validate_worktree_directory(
+                root, effective_cwd, argv[index + 1]
+            )
+            options.extend(["-C", str(effective_cwd)])
+            index += 2
+            continue
+        if value in {"--literal-pathspecs", "--no-pager"}:
+            options.append(value)
+            index += 1
+            continue
+        fail(f"Git global option is not exactly allowlisted: {value}")
+    if index >= len(argv):
+        fail("a Git subcommand is required")
+    command = argv[index]
+    if command.startswith("-"):
+        fail(f"invalid Git subcommand: {command}")
+    return options, command, argv[index + 1 :], effective_cwd
+
+
+def validate_string(value: str, label: str) -> str:
+    if not value or "\x00" in value:
+        fail(f"{label} must be a non-empty string without NUL")
+    return value
+
+
+def validate_revision(value: str) -> str:
+    validate_string(value, "revision")
+    if value.startswith("-") or Path(value).is_absolute() or value.startswith("../"):
+        fail(f"unsafe revision operand: {value}")
+    if "\n" in value or "\r" in value:
+        fail("revision operands may not contain newlines")
+    return value
+
+
+def validate_ref(value: str) -> str:
+    validate_string(value, "ref")
+    if value.startswith("-") or Path(value).is_absolute() or ".." in Path(value).parts:
+        fail(f"unsafe ref operand: {value}")
+    return value
+
+
+def repo_path(
+    root: Path,
+    cwd: Path,
+    raw_path: str,
+    *,
+    regular_file: bool = False,
+    reject_directory: bool = False,
+) -> str:
+    validate_string(raw_path, "repo path")
+    path = Path(raw_path)
+    if path.is_absolute() or ".." in path.parts or raw_path in {".", "-"}:
+        fail(f"path must be explicit and repo-relative: {raw_path}")
+    if raw_path.startswith(":") or any(char in raw_path for char in "*?[]"):
+        fail(f"pathspec magic/globs are forbidden: {raw_path}")
+    lexical = Path(os.path.abspath(cwd / path))
+    try:
+        relative = lexical.relative_to(root)
+    except ValueError:
+        fail(f"path leaves the current worktree: {raw_path}")
+    if not relative.parts or relative.parts[0] == ".git":
+        fail(f"Git metadata/root paths are forbidden: {raw_path}")
+    resolved = lexical.resolve(strict=False)
+    if not inside(root, resolved):
+        fail(f"path resolves outside the current worktree: {raw_path}")
+    if regular_file and (not lexical.is_file() or not lexical.exists()):
+        fail(f"option requires an existing repo-local regular file: {raw_path}")
+    if reject_directory and lexical.exists() and lexical.is_dir():
+        fail(f"broad directory operands are forbidden: {raw_path}")
+    return str(lexical) if regular_file else raw_path
+
+
+def consume_option_value(
+    option: str,
+    spec: OptionSpec,
+    value: str,
+    root: Path,
+    cwd: Path,
+) -> str:
+    if spec.value_type is ValueType.STRING_VALUE:
+        return validate_string(value, option)
+    if spec.value_type is ValueType.INTEGER_VALUE:
+        if not value.isascii() or not value.isdigit():
+            fail(f"{option} requires an integer")
+        parsed = int(value)
+        if not spec.minimum <= parsed <= spec.maximum:
+            fail(f"{option} integer is out of range")
+        return value
+    if spec.value_type is ValueType.ENUM_VALUE:
+        if value not in spec.choices:
+            fail(f"{option} must be one of: {', '.join(sorted(spec.choices))}")
+        return value
+    if spec.value_type is ValueType.REPO_FILE:
+        return repo_path(root, cwd, value, regular_file=True)
+    if spec.value_type is ValueType.REPO_PATH:
+        return repo_path(root, cwd, value)
+    raise AssertionError(spec.value_type)
+
+
+def parse_standard_command(
+    root: Path,
+    cwd: Path,
+    command: str,
+    arguments: list[str],
+    spec: CommandSpec,
+) -> list[str]:
+    compiled: list[str] = []
+    operands: list[str] = []
+    seen_options: set[str] = set()
+    paths: list[str] | None = None
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        if value == "--":
+            paths = arguments[index + 1 :]
+            break
+        if value.startswith("--"):
+            name, separator, attached = value.partition("=")
+            option = spec.long_options.get(name)
+            if option is None:
+                fail(f"{command}: long option is not exactly allowlisted: {name}")
+            seen_options.add(name)
+            if option.value_type is ValueType.FLAG:
+                if separator:
+                    fail(f"{command}: flag does not take a value: {name}")
+                compiled.append(name)
+                index += 1
+                continue
+            if separator:
+                raw_value = attached
+                index += 1
+            else:
+                if index + 1 >= len(arguments):
+                    fail(f"{command}: option requires a value: {name}")
+                raw_value = arguments[index + 1]
+                index += 2
+            parsed = consume_option_value(name, option, raw_value, root, cwd)
+            compiled.append(f"{name}={parsed}")
+            continue
+        if value.startswith("-") and value != "-":
+            option = spec.short_options.get(value)
+            option_name = value
+            attached = ""
+            if option is None:
+                matches = [
+                    (name, candidate)
+                    for name, candidate in spec.short_options.items()
+                    if candidate.allow_attached
+                    and value.startswith(name)
+                    and value != name
+                ]
+                if len(matches) != 1:
+                    fail(f"{command}: short option/cluster is not allowlisted: {value}")
+                option_name, option = matches[0]
+                attached = value[len(option_name) :]
+            seen_options.add(option_name)
+            if option.value_type is ValueType.FLAG:
+                compiled.append(option_name)
+                index += 1
+                continue
+            if attached:
+                raw_value = attached
+                index += 1
+            else:
+                if index + 1 >= len(arguments):
+                    fail(f"{command}: option requires a value: {option_name}")
+                # Atomic consumption is deliberate: '-m --amend' means that
+                # '--amend' is the message, not a second option.
+                raw_value = arguments[index + 1]
+                index += 2
+            parsed = consume_option_value(option_name, option, raw_value, root, cwd)
+            compiled.extend([option_name, parsed])
+            continue
+        if spec.operand_kind == "revision":
+            operands.append(validate_revision(value))
+        elif spec.operand_kind == "ref":
+            operands.append(validate_ref(value))
+        else:
+            fail(f"{command}: positional operands require an explicit -- path boundary")
+        index += 1
+
+    if not spec.min_operands <= len(operands) <= spec.max_operands:
+        fail(f"{command}: invalid number of positional operands")
+    if spec.required_any and not spec.required_any.intersection(seen_options):
+        fail(f"{command}: one of these options is required: {sorted(spec.required_any)}")
+    if paths is None:
+        if spec.paths in {"required", "required-files", "exact-one", "exact-two"}:
+            fail(f"{command}: explicit -- path boundary is required")
+        parsed_paths: list[str] = []
+    else:
+        if spec.paths == "none":
+            fail(f"{command}: path operands are not allowed")
+        if not paths:
+            fail(f"{command}: -- must be followed by explicit paths")
+        parsed_paths = [
+            repo_path(
+                root,
+                cwd,
+                item,
+                reject_directory=spec.paths == "required-files",
+            )
+            for item in paths
+        ]
+        if spec.paths == "exact-one" and len(parsed_paths) != 1:
+            fail(f"{command}: exactly one path is required")
+        if spec.paths == "exact-two" and len(parsed_paths) != 2:
+            fail(f"{command}: exactly source and destination paths are required")
+    result = [command, *compiled, *operands]
+    if parsed_paths:
+        result.extend(["--", *parsed_paths])
+    if command in {"diff", "diff-files", "diff-index", "diff-tree", "log", "show"}:
+        result[1:1] = ["--no-ext-diff", "--no-textconv"]
+    if command == "commit":
+        result[1:1] = ["--no-verify", "--no-gpg-sign"]
+    return result
+
+
+def parse_config(arguments: list[str]) -> list[str]:
+    display_flags = {
+        "--local",
+        "--name-only",
+        "--no-includes",
+        "--null",
+        "--show-origin",
+        "--show-scope",
+        "-z",
+    }
+    value_options = {
+        "--default": "string",
+        "--type": "type",
+    }
+    actions = {"--get", "--get-all", "--get-regexp"}
+    compiled_flags: list[str] = []
+    action: str | None = None
+    action_value: str | None = None
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        if value in display_flags:
+            if value not in {"--local", "--no-includes"}:
+                compiled_flags.append(value)
+            index += 1
+            continue
+        if value in {"--list", "-l"}:
+            if action is not None:
+                fail("config accepts exactly one read action")
+            action = "--list"
+            index += 1
+            continue
+        if value in actions:
+            if action is not None or index + 1 >= len(arguments):
+                fail("config accepts exactly one complete read action")
+            action = value
+            action_value = validate_string(arguments[index + 1], "config key")
+            if action_value.startswith("-") or "\n" in action_value:
+                fail("config key/pattern may not be parsed as an option")
+            index += 2
+            continue
+        name, separator, attached = value.partition("=")
+        if name in value_options:
+            if not separator:
+                if index + 1 >= len(arguments):
+                    fail(f"config option requires a value: {name}")
+                attached = arguments[index + 1]
+                index += 2
+            else:
+                index += 1
+            if value_options[name] == "type" and attached not in {
+                "bool",
+                "bool-or-int",
+                "bool-or-str",
+                "color",
+                "expiry-date",
+                "int",
+                "path",
+                "string",
+            }:
+                fail("config --type has an unsupported value")
+            compiled_flags.append(f"{name}={validate_string(attached, name)}")
+            continue
+        fail(f"config option is not exactly allowlisted: {value}")
+    if action is None:
+        fail("config requires --list/-l or an exact read action")
+    result = ["config", "--local", "--no-includes", *compiled_flags, action]
+    if action_value is not None:
+        result.append(action_value)
+    return result
+
+
+def parse_remote(arguments: list[str]) -> list[str]:
+    if not arguments:
+        return ["remote"]
+    if arguments in (["-v"], ["--verbose"]):
+        return ["remote", *arguments]
+    if len(arguments) == 2 and arguments[0] == "get-url":
+        name = validate_ref(arguments[1])
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", name):
+            fail("remote name contains unsupported characters")
+        return ["remote", "get-url", name]
+    fail("remote permits only listing or 'get-url <name>'")
+
+
+def validate(
+    root: Path,
+    argv: list[str],
+    read_only: bool,
+    invocation_cwd: Path | None = None,
+) -> list[str]:
+    start = Path.cwd() if invocation_cwd is None else invocation_cwd
+    globals_, command, arguments, effective_cwd = parse_global_arguments(
+        root, argv, start
+    )
+    if command == "config":
+        parsed = parse_config(arguments)
+        writer = False
+    elif command == "remote":
+        parsed = parse_remote(arguments)
+        writer = False
+    else:
+        spec = COMMAND_SPECS.get(command)
+        if spec is None:
+            fail(f"Git command is not allowlisted: {command}")
+        parsed = parse_standard_command(
+            root, effective_cwd, command, arguments, spec
+        )
+        writer = spec.writer
+    if read_only and writer:
+        fail(f"Git command is not read-only: {command}")
+    return [
+        "git",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "tag.gpgSign=false",
+        "--literal-pathspecs",
+        *globals_,
+        *parsed,
+    ]
+
+
+def git_dir(root: Path) -> Path:
+    completed = run_git_probe(["rev-parse", "--absolute-git-dir"], root)
+    if completed.returncode != 0:
+        fail("cannot resolve Git metadata directory")
+    return Path(completed.stdout.strip()).resolve(strict=True)
+
+
+def metadata_snapshot(root: Path) -> str:
+    metadata = git_dir(root)
+    digest = hashlib.sha256()
+    for relative in (Path("config"), Path("index"), Path("refs")):
+        path = metadata / relative
+        if path.is_dir():
+            entries = sorted(item for item in path.rglob("*") if item.is_file())
+        else:
+            entries = [path]
+        for item in entries:
+            label = str(item.relative_to(metadata)).encode()
+            digest.update(len(label).to_bytes(4, "big"))
+            digest.update(label)
+            if item.exists():
+                content = item.read_bytes()
+                digest.update(len(content).to_bytes(8, "big"))
+                digest.update(content)
+            else:
+                digest.update(b"MISSING")
+    return digest.hexdigest()
+
+
+def expect(
+    root: Path,
+    argv: list[str],
+    read_only: bool,
+    allowed: bool,
+    cwd: Path | None = None,
+) -> None:
+    try:
+        validate(root, argv, read_only, cwd)
+    except (GuardError, OSError):
+        if allowed:
+            raise AssertionError(f"expected allow: {argv}")
+    else:
+        if not allowed:
+            raise AssertionError(f"expected reject: {argv}")
+
+
+def self_test(root: Path) -> None:
+    before = metadata_snapshot(root)
+    allowed = [
+        (["-C", ".", "status", "--short"], True),
+        (["status", "--short"], True),
+        (["diff", "--stat", "HEAD"], True),
+        (["log", "--oneline", "-n", "5", "HEAD"], True),
+        (["show", "--stat", "HEAD"], True),
+        (["add", "--", "AGENTS.md"], False),
+        (["commit", "-m", "local message"], False),
+        (["commit", "-m", "--amend"], False),
+        (["mv", "--", "AGENTS.md", "AGENTS-renamed.md"], False),
+        (["branch", "--list"], True),
+        (["tag", "--list"], True),
+        (["config", "--get", "core.repositoryformatversion"], True),
+        (["config", "--show-origin", "--list"], True),
+        (["remote"], True),
+        (["remote", "get-url", "origin"], True),
+        (["grep", "-e", "TODO", "--", "lib"], True),
+        (["blame", "--contents", "AGENTS.md", "HEAD", "--", "AGENTS.md"], True),
+        (["ls-files", "--exclude-from", "AGENTS.md"], True),
+    ]
+    rejected = [
+        ["-C", "..", "status"],
+        ["-C", "/tmp", "status"],
+        ["--config-env=x=y", "status"],
+        ["--no-pag", "status"],
+        ["status", "--sho"],
+        ["status", "--shor"],
+        ["status", "--short-extra"],
+        ["status", "--unknown"],
+        ["status", "-sb"],
+        ["log", "--max-cou=5"],
+        ["diff", "--no-index", "/etc/hosts", "/etc/passwd"],
+        ["diff", "--out=/tmp/diff"],
+        ["diff", "--output=/tmp/diff"],
+        ["config", "--incl", "--list"],
+        ["config", "--global", "--get", "user.name"],
+        ["config", "--file=/etc/hosts", "--list"],
+        ["blame", "--cont=/etc/hosts", "HEAD", "--", "AGENTS.md"],
+        ["blame", "--contents", "/etc/hosts", "HEAD", "--", "AGENTS.md"],
+        ["ls-files", "--exclude-f=/etc/hosts"],
+        ["ls-files", "--exclude-from=/etc/hosts"],
+        ["commit", "-F", "/etc/hosts"],
+        ["commit", "--file=/etc/hosts"],
+        ["commit", "--template=AGENTS.md"],
+        ["commit", "--fixup=HEAD"],
+        ["commit", "--amend", "-m", "x"],
+        ["commit", "--gpg-sign", "-m", "x"],
+        ["commit"],
+        ["add", "AGENTS.md"],
+        ["add", "--pathspec-from-file=/tmp/paths"],
+        ["add", "--", "."],
+        ["add", "--", "../outside"],
+        ["add", "--", "/etc/hosts"],
+        ["add", "--", "*.md"],
+        ["mv", "-f", "--", "AGENTS.md", "other"],
+        ["mv", "--force", "--", "AGENTS.md", "other"],
+        ["branch", "new-branch"],
+        ["branch", "feature"],
+        ["branch", "--del", "old"],
+        ["branch", "--delete", "old"],
+        ["branch", "--mov", "old", "new"],
+        ["branch", "--move", "old", "new"],
+        ["branch", "--cop", "old", "new"],
+        ["branch", "--unset-up"],
+        ["branch", "--set-upstream-to=origin/main"],
+        ["branch", "--unset-upstream"],
+        ["branch", "-d", "old"],
+        ["tag", "v1"],
+        ["tag", "--forc", "v1"],
+        ["tag", "--force", "v1"],
+        ["remote", "update"],
+        ["fetch", "origin"],
+        ["clone", "https://example.invalid/repo"],
+        ["-c", "alias.status=!command", "status"],
+        ["--git-dir=/tmp/repo", "status"],
+        ["--work-tree=/tmp", "status"],
+        ["worktree", "remove", "../other"],
+        ["stash", "drop"],
+        ["reset", "--hard"],
+    ]
+    cases = 0
+    for argv, read_only in allowed:
+        expect(root, argv, read_only, True)
+        cases += 1
+    for argv in rejected:
+        expect(root, argv, False, False)
+        cases += 1
+    for command, spec in COMMAND_SPECS.items():
+        for option in spec.long_options:
+            for end in range(3, len(option)):
+                prefix = option[:end]
+                if prefix not in spec.long_options:
+                    expect(root, [command, prefix], False, False)
+                    cases += 1
+            expect(root, [command, f"{option}-unknown"], False, False)
+            cases += 1
+    protected_config_options = {
+        "--default",
+        "--get",
+        "--get-all",
+        "--get-regexp",
+        "--list",
+        "--local",
+        "--name-only",
+        "--no-includes",
+        "--null",
+        "--show-origin",
+        "--show-scope",
+        "--type",
+    }
+    for option in protected_config_options:
+        for end in range(3, len(option)):
+            prefix = option[:end]
+            if prefix not in protected_config_options:
+                expect(root, ["config", prefix], False, False)
+                cases += 1
+        expect(root, ["config", f"{option}-unknown"], False, False)
+        cases += 1
+    for option in ("--verbose",):
+        for end in range(3, len(option)):
+            expect(root, ["remote", option[:end]], False, False)
+            cases += 1
+        expect(root, ["remote", f"{option}-unknown"], False, False)
+        cases += 1
+    for read_only in (False, True):
+        environment = safe_environment(
+            read_only,
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_EXTERNAL_DIFF": "command",
+                "GIT_NO_LAZY_FETCH": "0",
+                "GIT_TRACE2_EVENT": "/tmp/repo-git-trace",
+                "PATH": os.environ["PATH"],
+            },
+        )
+        if environment["GIT_NO_LAZY_FETCH"] != "1":
+            raise AssertionError("GIT_NO_LAZY_FETCH must override inherited values")
+        if any(
+            name in environment
+            for name in ("GIT_CONFIG_COUNT", "GIT_EXTERNAL_DIFF", "GIT_TRACE2_EVENT")
+        ):
+            raise AssertionError("unsafe Git environment was not removed")
+        cases += 1
+    if metadata_snapshot(root) != before:
+        raise AssertionError("pure parser tests changed current Git metadata")
+
+    with tempfile.TemporaryDirectory(prefix="repo-git-self-test-") as directory:
+        temp_root = Path(directory).resolve()
+        completed = subprocess.run(
+            ["git", "init", "--quiet", str(temp_root)],
+            env=safe_environment(False),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(f"cannot initialize temporary test repo: {completed.stderr}")
+        temp_before = metadata_snapshot(temp_root)
+        for argv in (
+            ["branch", "topic"],
+            ["branch", "--set-upstream-to=origin/main"],
+            ["branch", "--unset-upstream"],
+            ["tag", "v1"],
+        ):
+            expect(temp_root, argv, False, False, temp_root)
+            cases += 1
+        outside_link = temp_root / "outside-link"
+        outside_link.symlink_to("/etc/hosts")
+        expect(temp_root, ["add", "--", "outside-link"], False, False, temp_root)
+        cases += 1
+        if metadata_snapshot(temp_root) != temp_before:
+            raise AssertionError("upstream/path parser tests changed temporary Git metadata")
+    print(
+        json.dumps(
+            {
+                "status": "PASS",
+                "cases": cases,
+                "current_git_metadata_unchanged": True,
+                "upstream_tests": "temporary-repo-pure-validation",
+            }
+        )
+    )
+
+
+def main() -> int:
+    arguments = sys.argv[1:]
+    if arguments == ["--self-test"]:
+        self_test(repository_root())
+        return 0
+    read_only = False
+    dry_run = False
+    while arguments and arguments[0] in {"--read-only", "--dry-run"}:
+        option = arguments.pop(0)
+        read_only = read_only or option == "--read-only"
+        dry_run = dry_run or option == "--dry-run"
+    if arguments and arguments[0] == "--":
+        arguments.pop(0)
+    root = repository_root()
+    command = validate(root, arguments, read_only)
+    if dry_run:
+        print(
+            json.dumps(
+                {"status": "ALLOW", "command": command, "read_only": read_only}
+            )
+        )
+        return 0
+    return subprocess.run(
+        command, env=safe_environment(read_only), check=False
+    ).returncode
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (GuardError, OSError) as error:
+        print(json.dumps({"status": "REJECT", "error": str(error)}), file=sys.stderr)
+        raise SystemExit(64)

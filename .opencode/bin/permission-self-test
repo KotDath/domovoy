@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Assert effective OpenCode bash permissions for every pipeline role."""
+
+from __future__ import annotations
+
+import fnmatch
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROLES = (
+    "orchestrator",
+    "architect",
+    "coder",
+    "coder-fast",
+    "coder-strong",
+    "verifier",
+    "reviewer",
+    "reviewer-light",
+    "explore",
+)
+READ_ONLY_ROLES = ("reviewer", "reviewer-light", "explore")
+WRITER_ROLES = ("architect", "coder", "coder-fast", "coder-strong")
+
+
+def repo_root() -> Path:
+    completed = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    return Path(completed.stdout.strip()).resolve(strict=True)
+
+
+def resolved_agent(root: Path, role: str) -> dict[str, object]:
+    completed = subprocess.run(
+        ["opencode", "debug", "agent", role],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"opencode debug agent {role} failed: {completed.stderr}")
+    return json.loads(completed.stdout)
+
+
+def bash_action(agent: dict[str, object], command: str) -> str:
+    action = None
+    for rule in agent["permission"]:  # type: ignore[index]
+        if rule["permission"] not in {"*", "bash"}:
+            continue
+        if fnmatch.fnmatchcase(command, rule["pattern"]):
+            action = rule["action"]
+    if action is None:
+        raise AssertionError(f"no permission matched: {command}")
+    return action
+
+
+def assert_action(agent: dict[str, object], role: str, command: str, expected: str) -> None:
+    actual = bash_action(agent, command)
+    if actual != expected:
+        raise AssertionError(f"{role}: {command!r}: expected {expected}, got {actual}")
+
+
+def main() -> int:
+    root = repo_root()
+    agents = {role: resolved_agent(root, role) for role in ROLES}
+    cases = 0
+
+    for role in READ_ONLY_ROLES:
+        agent = agents[role]
+        for command in (
+            "cat AGENTS.md",
+            "cat AGENTS.md > /tmp/leak",
+            "rg TODO .",
+            "rg --pre 'touch /tmp/x' TODO .",
+            "git diff",
+            "git diff --output=/tmp/diff",
+            "openspec status --json",
+            "python3 -c 'open(\"/tmp/x\",\"w\").close()'",
+            "dart format --output=write .",
+            "flutter test",
+            ".opencode/bin/pipeline-check --self-test",
+            ".opencode/bin/repo-git status",
+            ".opencode/bin/read-check json opencode.json > /tmp/out",
+            ".opencode/bin/repo-git --read-only status | tee /tmp/out",
+            ".opencode/bin/repo-openspec list && touch /tmp/out",
+            ".opencode/bin/read-check json $(touch /tmp/out)",
+        ):
+            assert_action(agent, role, command, "deny")
+            cases += 1
+        for command in (
+            ".opencode/bin/read-check json opencode.json",
+            ".opencode/bin/repo-git --read-only status --short",
+            ".opencode/bin/repo-git --read-only diff --stat",
+            ".opencode/bin/repo-openspec status --json",
+            ".opencode/bin/repo-openspec instructions apply --change example --json",
+            ".opencode/bin/repo-openspec store list --json",
+        ):
+            assert_action(agent, role, command, "allow")
+            cases += 1
+
+    verifier = agents["verifier"]
+    assert_action(verifier, "verifier", ".opencode/bin/pipeline-check --self-test", "allow")
+    cases += 1
+    for command in ("flutter test", "git status", ".opencode/bin/repo-git status", "python3 -V"):
+        assert_action(verifier, "verifier", command, "deny")
+        cases += 1
+
+    for role in WRITER_ROLES:
+        agent = agents[role]
+        for command in (
+            ".opencode/bin/repo-git status --short",
+            ".opencode/bin/repo-git diff --stat",
+            ".opencode/bin/repo-git add -- AGENTS.md",
+            ".opencode/bin/repo-git commit -m local",
+            "openspec status --json",
+            "python3 -V",
+            "flutter test",
+        ):
+            assert_action(agent, role, command, "allow")
+            cases += 1
+        for command in (
+            "git status",
+            "git -C /tmp status",
+            "git clone https://example.invalid/repo",
+            "git ls-remote origin",
+            "git send-pack origin",
+            "git remote update",
+            "git branch -D old",
+            "git worktree remove ../other",
+            "git stash drop",
+            "git config alias.status '!touch /tmp/x'",
+            "git diff --no-index /etc/hosts /etc/passwd",
+            "git config --global --get user.name",
+            "git blame --contents /etc/hosts -- AGENTS.md",
+        ):
+            assert_action(agent, role, command, "ask")
+            cases += 1
+        assert_action(agent, role, "git clean -fd", "deny")
+        cases += 1
+
+    assert_action(agents["orchestrator"], "orchestrator", "git status", "deny")
+    cases += 1
+    print(json.dumps({"status": "PASS", "roles": len(agents), "cases": cases}))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (AssertionError, KeyError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        print(json.dumps({"status": "FAIL", "error": str(error)}), file=sys.stderr)
+        raise SystemExit(1)

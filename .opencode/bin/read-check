@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Fixed, read-only JSON/YAML/schema/source checks for reviewer roles."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+from pathlib import Path
+import subprocess
+import sys
+from typing import Any
+
+
+def git_root() -> Path:
+    completed = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ValueError("read-check must run inside a Git worktree")
+    return Path(completed.stdout.strip()).resolve()
+
+
+def repo_file(root: Path, value: str) -> Path:
+    candidate = (Path.cwd() / value).resolve(strict=True)
+    if candidate != root and root not in candidate.parents:
+        raise ValueError(f"path is outside the Git worktree: {value}")
+    if not candidate.is_file():
+        raise ValueError(f"path is not a regular file: {value}")
+    return candidate
+
+
+def load_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def check_json(root: Path, paths: list[str]) -> None:
+    for value in paths:
+        load_json(repo_file(root, value))
+
+
+def check_json_schema(root: Path, schema_value: str, instances: list[str]) -> None:
+    try:
+        import jsonschema
+    except ImportError as error:
+        raise ValueError("jsonschema is required for json-schema checks") from error
+    schema_path = repo_file(root, schema_value)
+    schema = load_json(schema_path)
+    validator_class = jsonschema.validators.validator_for(schema)
+    validator_class.check_schema(schema)
+    format_checker = jsonschema.FormatChecker()
+
+    @format_checker.checks("date-time", raises=ValueError)
+    def is_timezone_aware_datetime(value: object) -> bool:
+        if not isinstance(value, str):
+            return True
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.tzinfo is not None
+
+    validator = validator_class(schema, format_checker=format_checker)
+    for value in instances:
+        validator.validate(load_json(repo_file(root, value)))
+
+
+def check_frontmatter(root: Path, paths: list[str]) -> None:
+    try:
+        import yaml
+    except ImportError as error:
+        raise ValueError("PyYAML is required for frontmatter checks") from error
+    for value in paths:
+        path = repo_file(root, value)
+        source = path.read_text(encoding="utf-8")
+        if not source.startswith("---\n"):
+            raise ValueError(f"missing YAML frontmatter: {value}")
+        parts = source.split("---", 2)
+        if len(parts) != 3:
+            raise ValueError(f"unterminated YAML frontmatter: {value}")
+        parsed = yaml.safe_load(parts[1])
+        if not isinstance(parsed, dict):
+            raise ValueError(f"frontmatter must be an object: {value}")
+
+
+def check_python_syntax(root: Path, paths: list[str]) -> None:
+    for value in paths:
+        path = repo_file(root, value)
+        compile(path.read_text(encoding="utf-8"), str(path), "exec")
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    commands = result.add_subparsers(dest="command", required=True)
+    json_parser = commands.add_parser("json")
+    json_parser.add_argument("paths", nargs="+")
+    schema_parser = commands.add_parser("json-schema")
+    schema_parser.add_argument("schema")
+    schema_parser.add_argument("instances", nargs="+")
+    frontmatter_parser = commands.add_parser("frontmatter")
+    frontmatter_parser.add_argument("paths", nargs="+")
+    python_parser = commands.add_parser("python-syntax")
+    python_parser.add_argument("paths", nargs="+")
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    root = git_root()
+    if args.command == "json":
+        check_json(root, args.paths)
+    elif args.command == "json-schema":
+        check_json_schema(root, args.schema, args.instances)
+    elif args.command == "frontmatter":
+        check_frontmatter(root, args.paths)
+    elif args.command == "python-syntax":
+        check_python_syntax(root, args.paths)
+    else:
+        raise AssertionError(args.command)
+    print(json.dumps({"status": "PASS", "check": args.command}))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError) as error:
+        print(json.dumps({"status": "FAIL", "error": str(error)}), file=sys.stderr)
+        raise SystemExit(1)
