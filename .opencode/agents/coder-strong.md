@@ -1,8 +1,8 @@
 ---
 description: Реализует только T2 scope после тяжёлого contract review, добавляет тесты и возвращает доказательства оркестратору.
 mode: subagent
-model: xai/grok-4.6
-variant: xhigh
+model: openai/gpt-5.6-sol
+variant: high
 color: success
 permission:
   question: deny

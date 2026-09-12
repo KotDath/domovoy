@@ -114,13 +114,14 @@ transcript.
 
 Профили описывают назначение, а не обещанную цену провайдера:
 
-- `fast`: `opencode-go/muse-spark-1.3-contributor` — orchestrator,
-  `coder-fast`, verifier и light reviewer;
-- `balanced`: `openai/gpt-5.6-sol` — architect и T1 `coder`;
-- `strong`: `xai/grok-4.6` для T2 `coder-strong` и
-  `openai/gpt-5.6-sol` для heavy reviewer.
+- `fast`: `opencode-go/muse-spark-1.3-contributor` — `coder-fast`, verifier
+  и light reviewer;
+- `balanced`: `xai/grok-4.6` — T1 `coder`;
+- `strong`: `openai/gpt-5.6-sol` — orchestrator для всех tier'ов,
+  architect, T2 `coder-strong` и heavy reviewer.
 
-Сильная модель не вызывается на T0. Недоступность strong-профиля не понижает T2:
+На T0 Sol используется оркестратором, но не кодером и не reviewer.
+Недоступность strong-профиля не понижает T2:
 scope остаётся незавершённым до требуемого review.
 
 ## Исполнение команд по ролям

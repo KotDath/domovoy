@@ -1,8 +1,8 @@
 ---
 description: Реализует обычные T1 OpenSpec changes, добавляет тесты, запускает проверки и эскалирует T2-сигналы.
 mode: subagent
-model: openai/gpt-5.6-sol
-variant: high
+model: xai/grok-4.6
+variant: xhigh
 color: success
 permission:
   question: deny
@@ -51,7 +51,7 @@ permission:
   task: deny
 ---
 
-Вы — balanced-кодер T1 в этом репозитории. Получайте задания от
+Вы — T1-кодер в этом репозитории. Получайте задания от
 `orchestrator` и возвращайте ему результаты, вопросы и блокировки.
 
 ## Обязанности

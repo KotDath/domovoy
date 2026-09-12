@@ -1,7 +1,8 @@
 ---
 description: Маршрутизирует T0/T1/T2 между профильными ролями через task, но сам не планирует, не реализует, не проверяет и не ревьюит.
 mode: primary
-model: opencode-go/muse-spark-1.3-contributor
+model: openai/gpt-5.6-sol
+variant: high
 color: info
 permission:
   question: allow
