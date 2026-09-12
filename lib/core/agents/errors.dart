@@ -5,6 +5,8 @@ enum AgentErrorKind {
   configuration,
   persistence,
   conflict,
+  busy,
+  compaction,
   protocol,
   provider,
   runtime,
@@ -86,6 +88,13 @@ AgentError sanitizedPersistenceError() {
   return AgentError(
     kind: AgentErrorKind.persistence,
     message: 'Не удалось сохранить состояние сессии.',
+  );
+}
+
+AgentError sanitizedCompactionError() {
+  return AgentError(
+    kind: AgentErrorKind.compaction,
+    message: 'Не удалось безопасно сжать контекст сессии.',
   );
 }
 

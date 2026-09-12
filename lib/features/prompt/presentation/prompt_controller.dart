@@ -215,6 +215,7 @@ final class PromptController extends ChangeNotifier {
       case AgentToolFinished():
       case AgentUsageUpdated():
       case AgentNoProgressWarning():
+      case AgentAutomaticCompactionEvent():
         break;
     }
   }

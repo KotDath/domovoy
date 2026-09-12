@@ -4,6 +4,7 @@ enum LlmErrorKind {
   configuration,
   authentication,
   rateLimit,
+  contextOverflow,
   provider,
   network,
   protocol,

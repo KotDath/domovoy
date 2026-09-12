@@ -593,6 +593,55 @@ void main() {
       },
     );
 
+    test('maps only confirmed context overflow codes', () async {
+      final httpOverflow = await _deepSeek(
+        RecordingClient(
+          (_) => sseResponse(
+            '{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"secret raw detail"}}',
+            status: 400,
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect(
+        (httpOverflow.single as LlmFailed).error.kind,
+        LlmErrorKind.contextOverflow,
+      );
+      expect(
+        (httpOverflow.single as LlmFailed).error.message,
+        isNot(contains('secret raw detail')),
+      );
+
+      final streamOverflow = await _deepSeek(
+        RecordingClient(
+          (_) => sseResponse(
+            'data: {"error":{"code":"context_length_exceeded","message":"raw"}}\n\n',
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect(
+        (streamOverflow.single as LlmFailed).error.kind,
+        LlmErrorKind.contextOverflow,
+      );
+
+      final generic400 = await _deepSeek(
+        RecordingClient(
+          (_) => sseResponse(
+            '{"error":{"type":"invalid_request_error","message":"too long maybe"}}',
+            status: 400,
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect(
+        (generic400.single as LlmFailed).error.kind,
+        LlmErrorKind.provider,
+      );
+
+      final protocol = await _deepSeek(
+        RecordingClient((_) => sseResponse('data: not-json\n\n')),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect((protocol.single as LlmFailed).error.kind, LlmErrorKind.protocol);
+    });
+
     test('rejects negative usage counters as protocol failures', () async {
       final events = await _deepSeek(
         RecordingClient(

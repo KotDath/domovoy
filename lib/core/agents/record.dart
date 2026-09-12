@@ -4,6 +4,7 @@ import '../llm/errors.dart';
 import '../llm/identifiers.dart';
 import '../llm/json.dart';
 import '../llm/usage.dart';
+import 'compaction.dart';
 import 'definition.dart';
 import 'errors.dart';
 import 'ids.dart';
@@ -22,6 +23,7 @@ final class AgentSessionRecord {
     required this.updatedAtMicros,
     List<LlmContinuationEntry> continuationEntries =
         const <LlmContinuationEntry>[],
+    this.compactionState,
   }) : continuationEntries = List<LlmContinuationEntry>.unmodifiable(
          List<LlmContinuationEntry>.from(continuationEntries),
        ) {
@@ -37,18 +39,25 @@ final class AgentSessionRecord {
         'Session counters must be non-negative.',
       );
     }
-    if (this.continuationEntries.isEmpty) {
-      return;
+    if (this.continuationEntries.isNotEmpty) {
+      try {
+        validateContinuationEntries(
+          messages: transcript.messages,
+          entries: this.continuationEntries,
+          origin: definition.model,
+          wireFamily: _wireFamilyFor(definition, this.continuationEntries),
+        );
+      } on LlmException catch (error) {
+        throwAgent(AgentErrorKind.configuration, error.error.message);
+      }
     }
-    try {
-      validateContinuationEntries(
+    if (compactionState != null) {
+      validateAgentCompactionState(
         messages: transcript.messages,
-        entries: this.continuationEntries,
-        origin: definition.model,
-        wireFamily: _wireFamilyFor(definition, this.continuationEntries),
+        protectedSeed: definition.initialMessages,
+        state: compactionState!,
+        continuationEntries: this.continuationEntries,
       );
-    } on LlmException catch (error) {
-      throwAgent(AgentErrorKind.configuration, error.error.message);
     }
   }
 
@@ -70,6 +79,9 @@ final class AgentSessionRecord {
               map,
               'continuationEntries',
             ).map(LlmContinuationEntry.fromJson).toList(),
+      compactionState: map['compactionState'] == null
+          ? null
+          : AgentCompactionState.fromJson(map['compactionState']),
     );
   }
 
@@ -85,6 +97,9 @@ final class AgentSessionRecord {
   final int createdAtMicros;
   final int updatedAtMicros;
   final List<LlmContinuationEntry> continuationEntries;
+  final AgentCompactionState? compactionState;
+
+  int get compactionGeneration => compactionState?.generation ?? 0;
 
   AgentSessionRecord copyWith({
     int? revision,
@@ -94,6 +109,8 @@ final class AgentSessionRecord {
     int? toolAttempts,
     int? updatedAtMicros,
     List<LlmContinuationEntry>? continuationEntries,
+    AgentCompactionState? compactionState,
+    bool clearCompactionState = false,
   }) {
     return AgentSessionRecord(
       id: id,
@@ -106,12 +123,14 @@ final class AgentSessionRecord {
       createdAtMicros: createdAtMicros,
       updatedAtMicros: updatedAtMicros ?? this.updatedAtMicros,
       continuationEntries: continuationEntries ?? this.continuationEntries,
+      compactionState: clearCompactionState
+          ? null
+          : (compactionState ?? this.compactionState),
     );
   }
 
-  Map<String, Object?> toJson() => typedJson(
-    type: jsonType,
-    fields: <String, Object?>{
+  Map<String, Object?> toJson() {
+    final fields = <String, Object?>{
       'id': id.toJson(),
       'revision': revision,
       'definition': definition.toJson(),
@@ -124,8 +143,12 @@ final class AgentSessionRecord {
       'continuationEntries': continuationEntries
           .map((entry) => entry.toJson())
           .toList(),
-    },
-  );
+    };
+    if (compactionState != null) {
+      fields['compactionState'] = compactionState!.toJson();
+    }
+    return typedJson(type: jsonType, fields: fields);
+  }
 
   @override
   bool operator ==(Object other) =>
@@ -140,7 +163,8 @@ final class AgentSessionRecord {
           other.toolAttempts == toolAttempts &&
           other.createdAtMicros == createdAtMicros &&
           other.updatedAtMicros == updatedAtMicros &&
-          listEquals(other.continuationEntries, continuationEntries);
+          listEquals(other.continuationEntries, continuationEntries) &&
+          other.compactionState == compactionState;
 
   @override
   int get hashCode => Object.hash(
@@ -154,12 +178,14 @@ final class AgentSessionRecord {
     createdAtMicros,
     updatedAtMicros,
     Object.hashAll(continuationEntries),
+    compactionState,
   );
 
   @override
   String toString() =>
       'AgentSessionRecord(${id.value}, rev=$revision, '
-      'continuations: ${continuationEntries.length})';
+      'continuations: ${continuationEntries.length}, '
+      'compaction: ${compactionState?.generation ?? 0})';
 }
 
 LlmWireFamily _wireFamilyFor(

@@ -276,6 +276,55 @@ void main() {
       },
     );
 
+    test('maps only confirmed Responses context overflow codes', () async {
+      final failed = await _openAi(
+        RecordingClient(
+          (_) => sseResponse(
+            'data: {"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"secret raw detail"}}}\n\n',
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect(
+        (failed.single as LlmFailed).error.kind,
+        LlmErrorKind.contextOverflow,
+      );
+      expect(
+        (failed.single as LlmFailed).error.message,
+        isNot(contains('secret raw detail')),
+      );
+
+      final httpOverflow = await _openAi(
+        RecordingClient(
+          (_) => sseResponse(
+            '{"error":{"code":"context_length_exceeded","message":"raw"}}',
+            status: 400,
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect(
+        (httpOverflow.single as LlmFailed).error.kind,
+        LlmErrorKind.contextOverflow,
+      );
+
+      final generic400 = await _openAi(
+        RecordingClient(
+          (_) => sseResponse(
+            '{"error":{"type":"invalid_request_error","message":"too long maybe"}}',
+            status: 400,
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect(
+        (generic400.single as LlmFailed).error.kind,
+        LlmErrorKind.provider,
+      );
+
+      final protocol = await _openAi(
+        RecordingClient((_) => sseResponse('data: {"no":"type"}\n\n')),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect((protocol.single as LlmFailed).error.kind, LlmErrorKind.protocol);
+    });
+
     test('collects output_item.done by index order and rejects extras', () async {
       final events =
           await _openAi(

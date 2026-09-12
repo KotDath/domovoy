@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
@@ -1048,6 +1049,503 @@ void main() {
       },
     );
 
+    group('context overflow recovery', () {
+      test('custom trigger can decline the single overflow offer', () async {
+        final trigger = _OverflowRecoveryTrigger(recover: false);
+        final compactor = _CountingCompactor(
+          RecentInteractionGroupsCompactor(0),
+        );
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[_overflowTurn()],
+        );
+        final events = await testRuntime(
+          provider: provider,
+          compactionTrigger: trigger,
+          historyCompactor: compactor,
+        ).agent(testDefinition()).run('go').events.toList();
+        expect(provider.requests, hasLength(1));
+        expect(compactor.calls, 0);
+        expect(trigger.reasons, <AgentCompactionReason>[
+          AgentCompactionReason.preRequest,
+          AgentCompactionReason.providerOverflow,
+        ]);
+        expect(
+          (events.last as AgentRunFailed).error.kind,
+          AgentErrorKind.provider,
+        );
+      });
+
+      test(
+        'effective commit retries once with ordered sanitized events',
+        () async {
+          final trigger = _OverflowRecoveryTrigger(recover: true, target: 100);
+          final estimator = _LoopMessageEstimator();
+          final compactor = _CountingCompactor(
+            RecentInteractionGroupsCompactor(1),
+          );
+          final provider = QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: <List<LlmEvent>>[
+              textTurn('old answer'),
+              _overflowTurn(),
+              textTurn('recovered'),
+            ],
+          );
+          final session = await testRuntime(
+            provider: provider,
+            contextEstimator: estimator,
+            compactionTrigger: trigger,
+            historyCompactor: compactor,
+          ).agent(testDefinition()).createSession();
+          await session.run('old').events.drain<void>();
+          final events = await session.run('new').events.toList();
+          final automatic = events
+              .whereType<AgentAutomaticCompactionEvent>()
+              .map((event) => event.compaction)
+              .toList();
+          expect(automatic, hasLength(2));
+          expect(automatic.first, isA<AgentCompactionStarted>());
+          expect(automatic.last, isA<AgentCompactionSucceeded>());
+          expect(automatic.first.operationId, automatic.last.operationId);
+          expect(
+            automatic.first.reason,
+            AgentCompactionReason.providerOverflow,
+          );
+          expect(automatic.first.runId, isNotNull);
+          expect(automatic.first.triggerId, trigger.id);
+          expect(automatic.first.strategyId, compactor.id);
+          expect(automatic.first.estimatorId, estimator.id);
+          expect(automatic.first.targetEstimate, 100);
+          final succeeded = automatic.last as AgentCompactionSucceeded;
+          expect(succeeded.beforeEstimate, 300);
+          expect(succeeded.afterEstimate, 100);
+          expect(succeeded.generation, 1);
+          expect(
+            events.indexOf(
+              events.whereType<AgentAutomaticCompactionEvent>().last,
+            ),
+            lessThan(
+              events.indexOf(events.whereType<AgentAnswerDelta>().single),
+            ),
+          );
+          expect(provider.requests, hasLength(3));
+          expect(provider.requests.last.context.messages, <LlmMessage>[
+            LlmMessage(
+              role: LlmMessageRole.user,
+              parts: <LlmContentPart>[LlmTextPart('new')],
+            ),
+          ]);
+          expect(compactor.calls, 1);
+          expect(events.last, isA<AgentRunCompleted>());
+          expect(events.where((event) => event.isTerminal), hasLength(1));
+          expect(automatic.toString(), isNot(contains('old answer')));
+          await session.close();
+        },
+      );
+
+      test('second overflow cannot compact or request a third time', () async {
+        final trigger = _OverflowRecoveryTrigger(recover: true, target: 100);
+        final compactor = _CountingCompactor(
+          RecentInteractionGroupsCompactor(1),
+        );
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[
+            textTurn('old'),
+            _overflowTurn(),
+            _overflowTurn(),
+          ],
+        );
+        final session = await testRuntime(
+          provider: provider,
+          contextEstimator: _LoopMessageEstimator(),
+          compactionTrigger: trigger,
+          historyCompactor: compactor,
+        ).agent(testDefinition()).createSession();
+        await session.run('old').events.drain<void>();
+        final events = await session.run('new').events.toList();
+        expect(provider.requests, hasLength(3));
+        expect(compactor.calls, 1);
+        expect(
+          trigger.reasons.where(
+            (reason) => reason == AgentCompactionReason.providerOverflow,
+          ),
+          hasLength(1),
+        );
+        expect(
+          (events.last as AgentRunFailed).error.kind,
+          AgentErrorKind.provider,
+        );
+        await session.close();
+      });
+
+      test(
+        'text or tool-call delta forbids recovery and side effects',
+        () async {
+          for (final progress in <LlmEvent>[
+            const LlmReasoningDelta('thinking'),
+            const LlmTextDelta('partial'),
+            LlmToolCallDelta(
+              callId: ToolCallId('call_1'),
+              index: 0,
+              name: 'lookup',
+              argumentsFragment: '{}',
+            ),
+          ]) {
+            final trigger = _OverflowRecoveryTrigger(recover: true);
+            final compactor = _CountingCompactor(
+              RecentInteractionGroupsCompactor(0),
+            );
+            final provider = QueueScriptedLlmProvider(
+              id: BuiltInLlmCatalog.deepSeek,
+              wireFamily: LlmWireFamily.openaiChatCompletions,
+              turns: <List<LlmEvent>>[
+                <LlmEvent>[progress, ..._overflowTurn()],
+              ],
+            );
+            final events = await testRuntime(
+              provider: provider,
+              compactionTrigger: trigger,
+              historyCompactor: compactor,
+            ).agent(testDefinition()).run('go').events.toList();
+            expect(provider.requests, hasLength(1));
+            expect(compactor.calls, 0);
+            expect(trigger.reasons, <AgentCompactionReason>[
+              AgentCompactionReason.preRequest,
+            ]);
+            expect(events.whereType<AgentToolStarted>(), isEmpty);
+            expect(events.last, isA<AgentRunFailed>());
+          }
+        },
+      );
+
+      test('no-change and compactor failure terminate without retry', () async {
+        Future<(List<AgentRunEvent>, int)> runWith(
+          AgentHistoryCompactor compactor,
+        ) async {
+          final provider = QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: <List<LlmEvent>>[_overflowTurn()],
+          );
+          final events = await testRuntime(
+            provider: provider,
+            compactionTrigger: _OverflowRecoveryTrigger(recover: true),
+            historyCompactor: compactor,
+          ).agent(testDefinition()).run('go').events.toList();
+          return (events, provider.requests.length);
+        }
+
+        final noChange = await runWith(_NoChangeCompactor());
+        final noChangeEvents = noChange.$1
+            .whereType<AgentAutomaticCompactionEvent>()
+            .map((event) => event.compaction)
+            .toList();
+        expect(noChange.$2, 1);
+        expect(noChangeEvents, hasLength(2));
+        expect(noChangeEvents.last, isA<AgentCompactionNoChangeEvent>());
+        expect(noChange.$1.last, isA<AgentRunFailed>());
+
+        final failed = await runWith(_FailingCompactor());
+        final failedEvents = failed.$1
+            .whereType<AgentAutomaticCompactionEvent>()
+            .map((event) => event.compaction)
+            .toList();
+        expect(failed.$2, 1);
+        expect(failedEvents, hasLength(2));
+        final failure = failedEvents.last as AgentCompactionFailed;
+        expect(failure.error.kind, AgentErrorKind.compaction);
+        expect(failure.error.message, isNot(contains('sk-secret')));
+        expect(
+          (failed.$1.last as AgentRunFailed).error.kind,
+          AgentErrorKind.compaction,
+        );
+      });
+
+      test(
+        'cancellation during recovery emits cancelled before run terminal',
+        () async {
+          final compactor = _CancellableOverflowCompactor();
+          final provider = QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: <List<LlmEvent>>[_overflowTurn()],
+          );
+          final session = await testRuntime(
+            provider: provider,
+            compactionTrigger: _OverflowRecoveryTrigger(recover: true),
+            historyCompactor: compactor,
+          ).agent(testDefinition()).createSession();
+          final run = session.run('go');
+          final eventsFuture = run.events.toList();
+          await compactor.started.future;
+          await run.cancel();
+          final events = await eventsFuture;
+          final automatic = events
+              .whereType<AgentAutomaticCompactionEvent>()
+              .map((event) => event.compaction)
+              .toList();
+          expect(provider.requests, hasLength(1));
+          expect(automatic, hasLength(2));
+          expect(automatic.last, isA<AgentCompactionCancelled>());
+          expect(events.last, isA<AgentRunCancelled>());
+          expect(events.where((event) => event.isTerminal), hasLength(1));
+          await session.close();
+        },
+      );
+    });
+
+    group('summary compaction usage', () {
+      test(
+        'automatic summary usage aggregates all token and cache fields once',
+        () async {
+          final firstUsage = LlmUsage(
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            cacheHitTokens: 1,
+            cacheMissTokens: 2,
+          );
+          final summaryUsage = LlmUsage(
+            inputTokens: 3,
+            outputTokens: 4,
+            totalTokens: 7,
+            cacheHitTokens: 5,
+            cacheMissTokens: 6,
+          );
+          final finalUsage = LlmUsage(
+            inputTokens: 2,
+            outputTokens: 3,
+            totalTokens: 5,
+            cacheHitTokens: 7,
+            cacheMissTokens: 8,
+          );
+          final provider = QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: <List<LlmEvent>>[
+              textTurn('old answer', usage: firstUsage),
+              textTurn(
+                _summaryJson('private generated summary'),
+                usage: summaryUsage,
+              ),
+              textTurn('final answer', usage: finalUsage),
+            ],
+          );
+          final registry = _summaryRegistry(provider);
+          final compactor = OpenCodeSummaryCompactor(
+            llm: RegistryAgentSummaryLlmInvocation(registry),
+          );
+          final session = await InMemoryAgentRuntime(
+            registry: registry,
+            contextEstimator: _LoopMessageEstimator(),
+            compactionTrigger: _CompactTwoGroupsTrigger(),
+            historyCompactor: compactor,
+          ).agent(testDefinition()).createSession();
+          await session.run('old').events.drain<void>();
+
+          final events = await session.run('new').events.toList();
+          final automatic = events
+              .whereType<AgentAutomaticCompactionEvent>()
+              .map((event) => event.compaction)
+              .toList();
+          expect(automatic, hasLength(2));
+          final succeeded = automatic.last as AgentCompactionSucceeded;
+          expect(succeeded.usage, summaryUsage);
+          expect(session.snapshot.usage.inputTokens, 6);
+          expect(session.snapshot.usage.outputTokens, 8);
+          expect(session.snapshot.usage.totalTokens, 14);
+          expect(session.snapshot.usage.cacheHitTokens, 13);
+          expect(session.snapshot.usage.cacheMissTokens, 16);
+          expect(session.snapshot.modelTurns, 2);
+          expect(provider.requests, hasLength(3));
+          expect(
+            events.whereType<AgentUsageUpdated>().any(
+              (event) => event.usage.totalTokens == 9,
+            ),
+            isTrue,
+          );
+          expect(
+            events.toString(),
+            isNot(contains('private generated summary')),
+          );
+          await session.close();
+        },
+      );
+
+      test(
+        'summary usage stops the run quota before candidate commit',
+        () async {
+          final summaryUsage = LlmUsage(totalTokens: 5, cacheMissTokens: 5);
+          final provider = QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: <List<LlmEvent>>[
+              textTurn('old answer', usage: LlmUsage(totalTokens: 1)),
+              textTurn(
+                _summaryJson('must-not-be-committed'),
+                usage: summaryUsage,
+              ),
+              textTurn('must-not-run'),
+            ],
+          );
+          final registry = _summaryRegistry(provider);
+          final session =
+              await InMemoryAgentRuntime(
+                    registry: registry,
+                    contextEstimator: _LoopMessageEstimator(),
+                    compactionTrigger: _CompactTwoGroupsTrigger(),
+                    historyCompactor: OpenCodeSummaryCompactor(
+                      llm: RegistryAgentSummaryLlmInvocation(registry),
+                    ),
+                  )
+                  .agent(
+                    testDefinition(budget: AgentTokenBudget(totalTokens: 5)),
+                  )
+                  .createSession();
+          await session.run('old').events.drain<void>();
+          final before = session.snapshot.transcript;
+
+          final events = await session.run('new').events.toList();
+          final automatic = events
+              .whereType<AgentAutomaticCompactionEvent>()
+              .map((event) => event.compaction)
+              .toList();
+          expect(automatic, hasLength(2));
+          final failed = automatic.last as AgentCompactionFailed;
+          expect(failed.usage, summaryUsage);
+          expect(
+            failed.error.message,
+            isNot(contains('must-not-be-committed')),
+          );
+          expect(
+            (events.last as AgentRunStopped).reason,
+            AgentStopReason.totalBudget,
+          );
+          expect(provider.requests, hasLength(2));
+          expect(session.snapshot.usage.totalTokens, 6);
+          expect(session.snapshot.compactionState, isNull);
+          expect(
+            session.snapshot.transcript.messages.take(2).toList(),
+            before.messages,
+          );
+          expect(
+            session.snapshot.transcript.messages.last,
+            LlmMessage(
+              role: LlmMessageRole.user,
+              parts: <LlmContentPart>[LlmTextPart('new')],
+            ),
+          );
+          await session.close();
+        },
+      );
+
+      test(
+        'missing compactor usage field makes the matching quota unverifiable',
+        () async {
+          final provider = QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: <List<LlmEvent>>[
+              textTurn('old answer', usage: LlmUsage(totalTokens: 1)),
+              textTurn(
+                _summaryJson('unverifiable'),
+                usage: LlmUsage(inputTokens: 4),
+              ),
+              textTurn('must-not-run'),
+            ],
+          );
+          final registry = _summaryRegistry(provider);
+          final session =
+              await InMemoryAgentRuntime(
+                    registry: registry,
+                    contextEstimator: _LoopMessageEstimator(),
+                    compactionTrigger: _CompactTwoGroupsTrigger(),
+                    historyCompactor: OpenCodeSummaryCompactor(
+                      llm: RegistryAgentSummaryLlmInvocation(registry),
+                    ),
+                  )
+                  .agent(
+                    testDefinition(budget: AgentTokenBudget(totalTokens: 10)),
+                  )
+                  .createSession();
+          await session.run('old').events.drain<void>();
+
+          final events = await session.run('new').events.toList();
+          final failed = events
+              .whereType<AgentAutomaticCompactionEvent>()
+              .map((event) => event.compaction)
+              .whereType<AgentCompactionFailed>()
+              .single;
+          expect(failed.usage?.inputTokens, 4);
+          expect(
+            (events.last as AgentRunFailed).error.kind,
+            AgentErrorKind.budgetUnverifiable,
+          );
+          expect(provider.requests, hasLength(2));
+          expect(session.snapshot.compactionState, isNull);
+          await session.close();
+        },
+      );
+
+      test(
+        'failed summary charges reported usage without leaking details',
+        () async {
+          final failedUsage = LlmUsage(
+            inputTokens: 4,
+            totalTokens: 4,
+            cacheHitTokens: 2,
+          );
+          final provider = QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: <List<LlmEvent>>[
+              textTurn('old answer', usage: LlmUsage(totalTokens: 1)),
+              <LlmEvent>[
+                LlmUsageUpdate(failedUsage),
+                LlmFailed(
+                  LlmError(
+                    kind: LlmErrorKind.provider,
+                    message: 'provider-secret-summary-failure',
+                  ),
+                ),
+              ],
+            ],
+          );
+          final registry = _summaryRegistry(provider);
+          final session = await InMemoryAgentRuntime(
+            registry: registry,
+            contextEstimator: _LoopMessageEstimator(),
+            compactionTrigger: _CompactTwoGroupsTrigger(),
+            historyCompactor: OpenCodeSummaryCompactor(
+              llm: RegistryAgentSummaryLlmInvocation(registry),
+            ),
+          ).agent(testDefinition()).createSession();
+          await session.run('old').events.drain<void>();
+
+          final events = await session.run('new').events.toList();
+          final failed = events
+              .whereType<AgentAutomaticCompactionEvent>()
+              .map((event) => event.compaction)
+              .whereType<AgentCompactionFailed>()
+              .single;
+          expect(failed.usage, failedUsage);
+          expect(failed.error.kind, AgentErrorKind.compaction);
+          expect(failed.error.message, isNot(contains('provider-secret')));
+          expect(session.snapshot.usage.totalTokens, 5);
+          expect(session.snapshot.usage.inputTokens, 4);
+          expect(session.snapshot.usage.cacheHitTokens, 2);
+          expect(events.last, isA<AgentRunFailed>());
+          expect(events.toString(), isNot(contains('provider-secret')));
+          await session.close();
+        },
+      );
+    });
+
     test('cancellation during model output is terminal once', () async {
       final gate = Completer<void>();
       final provider = ScriptedLlmProvider(
@@ -1102,5 +1600,149 @@ final class _ElapsingHook extends AgentLifecycleHookBase {
     if (afterToolDelay != null) {
       clock.elapse(afterToolDelay!);
     }
+  }
+}
+
+List<LlmEvent> _overflowTurn() => <LlmEvent>[
+  LlmFailed(
+    LlmError(kind: LlmErrorKind.contextOverflow, message: 'confirmed overflow'),
+  ),
+];
+
+LlmProviderRegistry _summaryRegistry(LlmProvider provider) {
+  final registry = LlmProviderRegistry();
+  BuiltInLlmCatalog.registerInto(registry);
+  registry.registerProvider(provider);
+  return registry;
+}
+
+String _summaryJson(String objective) => jsonEncode(<String, Object?>{
+  'objective': objective,
+  'constraintsAndDecisions': <String>[],
+  'facts': <String>[],
+  'relevantToolOutcomes': <String>[],
+  'pendingWork': <String>[],
+});
+
+final class _CompactTwoGroupsTrigger implements AgentCompactionTrigger {
+  @override
+  AgentCompactionDecision evaluate(AgentCompactionContext context) {
+    if (context.interactionGroups.length >= 2) {
+      return AgentCompactionDecision.compact(
+        triggerId: 'compact-two-groups',
+        triggerVersion: 1,
+      );
+    }
+    return AgentCompactionDecision.skip(
+      triggerId: 'compact-two-groups',
+      triggerVersion: 1,
+    );
+  }
+}
+
+final class _OverflowRecoveryTrigger implements AgentCompactionTrigger {
+  _OverflowRecoveryTrigger({required this.recover, this.target});
+
+  final bool recover;
+  final int? target;
+  final String id = 'overflow-recovery-test';
+  final List<AgentCompactionReason> reasons = <AgentCompactionReason>[];
+
+  @override
+  AgentCompactionDecision evaluate(AgentCompactionContext context) {
+    reasons.add(context.reason);
+    if (recover && context.reason == AgentCompactionReason.providerOverflow) {
+      return AgentCompactionDecision.compact(
+        triggerId: id,
+        triggerVersion: 1,
+        targetEstimate: target,
+      );
+    }
+    return AgentCompactionDecision.skip(triggerId: id, triggerVersion: 1);
+  }
+}
+
+final class _LoopMessageEstimator implements AgentContextEstimator {
+  final String id = 'loop-message-count';
+
+  @override
+  AgentContextEstimate estimate(AgentContextEstimateInput input) {
+    return AgentContextEstimate(
+      value: input.request.context.messages.length * 100,
+      estimatorId: id,
+      estimatorVersion: 1,
+    );
+  }
+}
+
+final class _CountingCompactor implements AgentHistoryCompactor {
+  _CountingCompactor(this.delegate);
+
+  final AgentHistoryCompactor delegate;
+  var calls = 0;
+
+  @override
+  String get id => delegate.id;
+
+  @override
+  int get version => delegate.version;
+
+  @override
+  Future<AgentCompactionStrategyResult> compact(
+    AgentCompactionContext context,
+    AgentCompactionDecision decision,
+  ) {
+    calls += 1;
+    return delegate.compact(context, decision);
+  }
+}
+
+final class _NoChangeCompactor implements AgentHistoryCompactor {
+  @override
+  String get id => 'no-change-test';
+
+  @override
+  int get version => 1;
+
+  @override
+  Future<AgentCompactionStrategyResult> compact(
+    AgentCompactionContext context,
+    AgentCompactionDecision decision,
+  ) async => AgentCompactionNoChange(strategyId: id, strategyVersion: version);
+}
+
+final class _FailingCompactor implements AgentHistoryCompactor {
+  @override
+  String get id => 'failing-test';
+
+  @override
+  int get version => 1;
+
+  @override
+  Future<AgentCompactionStrategyResult> compact(
+    AgentCompactionContext context,
+    AgentCompactionDecision decision,
+  ) async {
+    throwAgent(AgentErrorKind.compaction, 'sk-secret removed history');
+  }
+}
+
+final class _CancellableOverflowCompactor implements AgentHistoryCompactor {
+  final Completer<void> started = Completer<void>();
+
+  @override
+  String get id => 'cancellable-overflow-test';
+
+  @override
+  int get version => 1;
+
+  @override
+  Future<AgentCompactionStrategyResult> compact(
+    AgentCompactionContext context,
+    AgentCompactionDecision decision,
+  ) async {
+    started.complete();
+    await context.cancellation.whenCancelled;
+    throwAgent(AgentErrorKind.cancelled, 'cancelled');
   }
 }

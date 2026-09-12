@@ -12,6 +12,7 @@ import '../llm/registry.dart';
 import '../llm/request.dart';
 import '../llm/usage.dart';
 import 'clock.dart';
+import 'compaction.dart';
 import 'definition.dart';
 import 'errors.dart';
 import 'events.dart';
@@ -61,7 +62,19 @@ abstract interface class AgentSession {
 
   AgentRun runTyped(LlmMessage input, {AgentRunOptions? options});
 
+  AgentCompactionOperation compact();
+
   Future<void> close();
+}
+
+abstract interface class AgentCompactionOperation {
+  AgentCompactionOperationId get id;
+
+  Stream<AgentCompactionEvent> get events;
+
+  Future<AgentCompactionOutcome> get result;
+
+  Future<void> cancel();
 }
 
 abstract interface class AgentRun {
@@ -87,6 +100,9 @@ final class InMemoryAgentRuntime implements AgentRuntime {
     AgentRunLimits? profileLimits,
     AgentRuntimeProfile? profile,
     AgentPersistencePolicy? persistencePolicy,
+    AgentContextEstimator? contextEstimator,
+    AgentCompactionTrigger? compactionTrigger,
+    this.historyCompactor,
   }) : tools = tools ?? AgentToolRegistry(),
        policies =
            policies ??
@@ -100,7 +116,27 @@ final class InMemoryAgentRuntime implements AgentRuntime {
        clock = clock ?? SystemAgentClock(),
        ids = ids ?? AgentIdFactory(),
        profile = profile ?? AgentRuntimeProfile(limits: profileLimits),
-       persistencePolicy = persistencePolicy ?? AgentPersistencePolicy();
+       persistencePolicy = persistencePolicy ?? AgentPersistencePolicy(),
+       contextEstimator =
+           contextEstimator ?? const Utf8FramingAgentContextEstimator(),
+       compactionTrigger = historyCompactor == null
+           ? compactionTrigger
+           : compactionTrigger ?? OpenCodeCompactionTrigger() {
+    if (compactionTrigger != null && historyCompactor == null) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'An automatic compaction trigger requires a history compactor.',
+      );
+    }
+    final compactor = historyCompactor;
+    if (compactor != null &&
+        (compactor.id.trim().isEmpty || compactor.version <= 0)) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Configured compactor identity is invalid.',
+      );
+    }
+  }
 
   final LlmProviderRegistry registry;
   final AgentToolRegistry tools;
@@ -114,6 +150,9 @@ final class InMemoryAgentRuntime implements AgentRuntime {
   final List<AgentLifecycleHook> hooks;
   final AgentRuntimeProfile profile;
   final AgentPersistencePolicy persistencePolicy;
+  final AgentContextEstimator contextEstimator;
+  final AgentCompactionTrigger? compactionTrigger;
+  final AgentHistoryCompactor? historyCompactor;
   AgentRunLimits? get profileLimits => profile.limits;
   AgentLivenessPolicy get profileLiveness => profile.liveness;
   AgentNoProgressPolicy get profileNoProgress => profile.noProgress;
@@ -403,7 +442,13 @@ final class _BoundAgent implements Agent {
           );
         }
         record = _runtime.codec.decode(_runtime.codec.encode(stored));
-      } on AgentException {
+      } on AgentException catch (error) {
+        if (error.error.kind == AgentErrorKind.compaction) {
+          throwAgent(
+            AgentErrorKind.configuration,
+            'Stored session compaction state is invalid.',
+          );
+        }
         rethrow;
       } on LlmException catch (error) {
         throw AgentException(
@@ -444,6 +489,7 @@ final class _BoundAgent implements Agent {
         modelTurns: record.modelTurns,
         toolAttempts: record.toolAttempts,
         continuationEntries: record.continuationEntries,
+        compactionState: record.compactionState,
         revision: record.revision,
         createdAtMicros: record.createdAtMicros,
         persisted: true,
@@ -482,6 +528,7 @@ final class _BoundAgent implements Agent {
         id: sessionId,
         persistence: persistence,
         transcript: AgentTranscript(messages: definition.initialMessages),
+        compactionState: null,
         createdAtMicros: now,
       );
       _runtime._registerLive(session);
@@ -638,6 +685,7 @@ final class _LiveSession implements AgentSession {
     this.toolAttempts = 0,
     List<LlmContinuationEntry> continuationEntries =
         const <LlmContinuationEntry>[],
+    this.compactionState,
     this.revision = 0,
     required this.createdAtMicros,
     this.persisted = false,
@@ -658,11 +706,13 @@ final class _LiveSession implements AgentSession {
   int modelTurns;
   int toolAttempts;
   List<LlmContinuationEntry> continuationEntries;
+  AgentCompactionState? compactionState;
   int revision;
   var persisted = false;
   final int createdAtMicros;
   AgentSessionLifecycle _lifecycle = AgentSessionLifecycle.idle;
   _LiveRun? _active;
+  _LiveCompaction? _activeCompaction;
   var _closed = false;
   Future<void>? _closeFuture;
   Future<void> _checkpointChain = Future<void>.value();
@@ -707,6 +757,7 @@ final class _LiveSession implements AgentSession {
     modelTurns: modelTurns,
     toolAttempts: toolAttempts,
     revision: revision,
+    compactionState: compactionState,
   );
 
   @override
@@ -729,11 +780,10 @@ final class _LiveSession implements AgentSession {
         'Session ${id.value} is closed.',
       );
     }
-    if (_lifecycle == AgentSessionLifecycle.running || _active != null) {
-      throwAgent(
-        AgentErrorKind.configuration,
-        'Session ${id.value} already has an active run.',
-      );
+    if (_lifecycle != AgentSessionLifecycle.idle ||
+        _active != null ||
+        _activeCompaction != null) {
+      throwAgent(AgentErrorKind.busy, 'Session ${id.value} is busy.');
     }
     _lifecycle = AgentSessionLifecycle.running;
     final run = _LiveRun(
@@ -754,17 +804,64 @@ final class _LiveSession implements AgentSession {
     }
   }
 
-  AgentSessionRecord _recordForSave({required int nextRevision}) {
+  @override
+  AgentCompactionOperation compact() {
+    runtime._ensureOpen();
+    if (_lifecycle == AgentSessionLifecycle.closed ||
+        _lifecycle == AgentSessionLifecycle.closing ||
+        _closed) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Session ${id.value} is closed.',
+      );
+    }
+    if (_lifecycle != AgentSessionLifecycle.idle ||
+        _active != null ||
+        _activeCompaction != null) {
+      throwAgent(AgentErrorKind.busy, 'Session ${id.value} is busy.');
+    }
+    if (runtime.historyCompactor == null) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Session ${id.value} has no configured history compactor.',
+      );
+    }
+    _lifecycle = AgentSessionLifecycle.compacting;
+    final operation = _LiveCompaction(
+      session: this,
+      id: AgentCompactionOperationId(runtime.ids.next('compaction')),
+    );
+    _activeCompaction = operation;
+    operation.start();
+    return operation;
+  }
+
+  void detachCompaction(_LiveCompaction operation) {
+    if (identical(_activeCompaction, operation)) {
+      _activeCompaction = null;
+    }
+    if (!_closed && _lifecycle == AgentSessionLifecycle.compacting) {
+      _lifecycle = AgentSessionLifecycle.idle;
+    }
+  }
+
+  AgentSessionRecord _recordForSave({
+    required int nextRevision,
+    AgentTranscript? transcript,
+    List<LlmContinuationEntry>? continuationEntries,
+    AgentCompactionState? compactionState,
+  }) {
     return AgentSessionRecord(
       id: id,
       revision: nextRevision,
       definition: definition,
-      transcript: transcript,
+      transcript: transcript ?? this.transcript,
       usage: usage,
       modelTurns: modelTurns,
       toolAttempts: toolAttempts,
       createdAtMicros: createdAtMicros,
-      continuationEntries: continuationEntries,
+      continuationEntries: continuationEntries ?? this.continuationEntries,
+      compactionState: compactionState ?? this.compactionState,
       updatedAtMicros: runtime.clock.nowMicros(),
     );
   }
@@ -816,13 +913,17 @@ final class _LiveSession implements AgentSession {
   Future<void> _saveRecord(
     AgentSessionRecord record, {
     required int expectedRevision,
+    CancellationToken? operationCancellation,
+    bool adoptRevision = true,
   }) async {
     final persist = CancellationSource();
     _activePersistCancel = persist;
-    final future = runtime.repository.save(
-      record,
-      expectedRevision: expectedRevision,
-      cancellation: persist.token,
+    final future = Future<void>.sync(
+      () => runtime.repository.save(
+        record,
+        expectedRevision: expectedRevision,
+        cancellation: persist.token,
+      ),
     );
     _activePersistFuture = future;
     final settled = Completer<void>();
@@ -839,6 +940,7 @@ final class _LiveSession implements AgentSession {
       ),
     );
     CancellationRegistration? deadlineReg;
+    final operationReg = operationCancellation?.register(persist.cancel);
     void armDeadline() {
       deadlineReg ??= _deadlineSignal.token.register(trip);
       _notePersistenceWaiters();
@@ -859,8 +961,10 @@ final class _LiveSession implements AgentSession {
         _markUnreliable(future);
         throw AgentException(sanitizedPersistenceError());
       }
-      revision = record.revision;
-      persisted = true;
+      if (adoptRevision) {
+        revision = record.revision;
+        persisted = true;
+      }
     } on AgentException {
       rethrow;
     } on Object {
@@ -868,12 +972,447 @@ final class _LiveSession implements AgentSession {
     } finally {
       shutdownReg.dispose();
       deadlineReg?.dispose();
+      operationReg?.dispose();
       if (identical(_activePersistCancel, persist)) {
         _activePersistCancel = null;
         if (identical(_activePersistFuture, future)) {
           _activePersistFuture = null;
         }
       }
+    }
+  }
+
+  AgentCompactionContext buildCompactionContext({
+    required AgentCompactionOperationId operationId,
+    RunId? runId,
+    required AgentCompactionReason reason,
+    required LlmRequestSnapshot request,
+    required CancellationToken cancellation,
+    int? targetEstimate,
+  }) {
+    final state = compactionState;
+    final generatedStart =
+        state?.generatedPrefixStart ?? definition.initialMessages.length;
+    final generatedEnd = state?.generatedPrefixEnd ?? generatedStart;
+    final estimate = runtime.contextEstimator.estimate(
+      AgentContextEstimateInput(request: request, cancellation: cancellation),
+    );
+    final groups = partitionAgentInteractionGroups(
+      messages: request.context.messages,
+      startMessageIndex: generatedEnd,
+    );
+    final selected = runtime.registry.resolve(definition.model).model;
+    return AgentCompactionContext(
+      operationId: operationId,
+      sessionId: id,
+      runId: runId,
+      reason: reason,
+      selectedModel: selected,
+      request: request,
+      protectedSeed: definition.initialMessages,
+      generatedPrefix: request.context.messages.sublist(
+        generatedStart,
+        generatedEnd,
+      ),
+      interactionGroups: groups,
+      continuationEntries: request.context.continuationEntries,
+      priorState: state,
+      currentEstimate: estimate,
+      targetEstimate: targetEstimate,
+      cancellation: cancellation,
+    );
+  }
+
+  void chargeManualCompactionUsage(LlmUsage incoming) {
+    usage = _addUsage(usage, incoming);
+    final budget = definition.budget ?? runtime.profile.budget;
+    void requireVerifiable(int? used, int? limit) {
+      if (limit != null && used == null) {
+        throwAgent(
+          AgentErrorKind.budgetUnverifiable,
+          'Configured token budget cannot be verified from provider usage.',
+        );
+      }
+    }
+
+    requireVerifiable(incoming.inputTokens, budget.inputTokens);
+    requireVerifiable(incoming.outputTokens, budget.outputTokens);
+    requireVerifiable(incoming.totalTokens, budget.totalTokens);
+    final exhausted =
+        (budget.inputTokens != null &&
+            incoming.inputTokens! >= budget.inputTokens!) ||
+        (budget.outputTokens != null &&
+            incoming.outputTokens! >= budget.outputTokens!) ||
+        (budget.totalTokens != null &&
+            incoming.totalTokens! >= budget.totalTokens!);
+    if (exhausted) {
+      throwAgent(
+        AgentErrorKind.compaction,
+        'Compaction token budget was exhausted.',
+      );
+    }
+  }
+
+  Future<AgentCompactionStrategyResult> invokeCompactor({
+    required AgentCompactionContext context,
+    required AgentCompactionDecision decision,
+    required void Function(LlmUsage usage) chargeUsage,
+  }) async {
+    final compactor = runtime.historyCompactor;
+    if (compactor == null) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'No history compactor is configured.',
+      );
+    }
+    final future = compactor.compact(context, decision);
+    final done = Completer<AgentCompactionStrategyResult>();
+    unawaited(
+      future.then(
+        (value) {
+          if (!done.isCompleted) {
+            done.complete(value);
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!done.isCompleted) {
+            done.completeError(error, stackTrace);
+          }
+        },
+      ),
+    );
+    final registration = context.cancellation.register(() {
+      if (!done.isCompleted) {
+        done.completeError(_cancelledException());
+      }
+    });
+    try {
+      late final AgentCompactionStrategyResult result;
+      try {
+        result = await done.future;
+      } on AgentCompactionStrategyException catch (error) {
+        final usage = error.usage;
+        if (usage != null) {
+          if (error.error.kind == AgentErrorKind.cancelled) {
+            try {
+              chargeUsage(usage);
+            } on Object {
+              // Cancellation remains the sole terminal when it wins after
+              // provider work has already reported usage.
+            }
+          } else {
+            chargeUsage(usage);
+          }
+        }
+        throw AgentException(error.error);
+      }
+      if (result.strategyId != compactor.id ||
+          result.strategyVersion != compactor.version) {
+        throwAgent(
+          AgentErrorKind.compaction,
+          'Compactor result identity does not match the bound compactor.',
+        );
+      }
+      final usage = result.usage;
+      if (usage != null) {
+        chargeUsage(usage);
+      }
+      return result;
+    } finally {
+      registration.dispose();
+    }
+  }
+
+  Future<PreparedAgentCompaction> prepareAndCommitCompaction({
+    required AgentCompactionContext context,
+    required AgentCompactionDecision decision,
+    required AgentCompactionCandidate candidate,
+  }) async {
+    final prepared = prepareAgentCompaction(
+      context: context,
+      decision: decision,
+      candidate: candidate,
+      estimator: runtime.contextEstimator,
+      updatedAtMicros: runtime.clock.nowMicros(),
+    );
+    if (context.cancellation.isCancelled) {
+      throw _cancelledException();
+    }
+    final nextRevision = persistence == SessionPersistence.repository
+        ? revision + 1
+        : revision;
+    final proposed = _recordForSave(
+      nextRevision: nextRevision,
+      transcript: AgentTranscript(messages: prepared.messages),
+      continuationEntries: prepared.continuationEntries,
+      compactionState: prepared.state,
+    );
+    late final AgentSessionRecord validated;
+    try {
+      validated = runtime.codec.decode(runtime.codec.encode(proposed));
+    } on AgentException {
+      rethrow;
+    } on LlmException catch (error) {
+      throwAgent(AgentErrorKind.compaction, error.error.message);
+    } on Object {
+      throw AgentException(sanitizedCompactionError());
+    }
+    if (persistence == SessionPersistence.repository) {
+      await _serialized(() async {
+        await _saveRecord(
+          validated,
+          expectedRevision: revision,
+          operationCancellation: context.cancellation,
+          adoptRevision: false,
+        );
+      });
+    }
+    transcript = validated.transcript;
+    continuationEntries = List<LlmContinuationEntry>.from(
+      validated.continuationEntries,
+    );
+    compactionState = validated.compactionState;
+    if (persistence == SessionPersistence.repository) {
+      revision = validated.revision;
+      persisted = true;
+    }
+    if (context.cancellation.isCancelled) {
+      throw _cancelledException();
+    }
+    return prepared;
+  }
+
+  Future<_AutomaticCompactionOutcome> maybeCompactBeforeRequest({
+    required RunId runId,
+    required AgentCompactionReason reason,
+    required LlmRequestSnapshot request,
+    required CancellationToken cancellation,
+    required void Function(AgentCompactionEvent event) emit,
+    required void Function(LlmUsage usage) chargeUsage,
+  }) async {
+    final trigger = runtime.compactionTrigger;
+    final compactor = runtime.historyCompactor;
+    if (trigger == null || compactor == null) {
+      return _AutomaticCompactionOutcome.skipped;
+    }
+    final operationId = AgentCompactionOperationId(
+      runtime.ids.next('compaction'),
+    );
+    late AgentCompactionContext context;
+    late AgentCompactionDecision decision;
+    try {
+      context = buildCompactionContext(
+        operationId: operationId,
+        runId: runId,
+        reason: reason,
+        request: request,
+        cancellation: cancellation,
+      );
+      decision = trigger.evaluate(context);
+    } on AgentException catch (error) {
+      if (error.error.kind == AgentErrorKind.cancelled ||
+          cancellation.isCancelled) {
+        throw _cancelledException();
+      }
+      throw AgentException(sanitizedCompactionError());
+    } on Object {
+      if (cancellation.isCancelled) {
+        throw _cancelledException();
+      }
+      throw AgentException(sanitizedCompactionError());
+    }
+    if (decision.triggerId == null || decision.triggerVersion == null) {
+      throwAgent(
+        AgentErrorKind.compaction,
+        'Automatic trigger decisions require trigger identity.',
+      );
+    }
+    if (decision.kind == AgentCompactionDecisionKind.skip) {
+      return _AutomaticCompactionOutcome.skipped;
+    }
+    context = context.withTarget(decision.targetEstimate);
+    LlmUsage? chargedUsage;
+    emit(
+      AgentCompactionStarted(
+        operationId: operationId,
+        sessionId: id,
+        runId: runId,
+        reason: reason,
+        triggerId: decision.triggerId,
+        triggerVersion: decision.triggerVersion,
+        strategyId: compactor.id,
+        strategyVersion: compactor.version,
+        estimatorId: context.currentEstimate.estimatorId,
+        estimatorVersion: context.currentEstimate.estimatorVersion,
+        beforeEstimate: context.currentEstimate.value,
+        targetEstimate: decision.targetEstimate,
+      ),
+    );
+    try {
+      final result = await invokeCompactor(
+        context: context,
+        decision: decision,
+        chargeUsage: (usage) {
+          chargedUsage = usage;
+          chargeUsage(usage);
+        },
+      );
+      if (result is AgentCompactionNoChange) {
+        emit(
+          AgentCompactionNoChangeEvent(
+            operationId: operationId,
+            sessionId: id,
+            runId: runId,
+            reason: reason,
+            triggerId: decision.triggerId,
+            triggerVersion: decision.triggerVersion,
+            strategyId: result.strategyId,
+            strategyVersion: result.strategyVersion,
+            estimatorId: context.currentEstimate.estimatorId,
+            estimatorVersion: context.currentEstimate.estimatorVersion,
+            beforeEstimate: context.currentEstimate.value,
+            targetEstimate: decision.targetEstimate,
+            usage: result.usage,
+          ),
+        );
+        return _AutomaticCompactionOutcome.noChange;
+      }
+      if (result is! AgentCompactionCandidate) {
+        throw AgentException(sanitizedCompactionError());
+      }
+      final prepared = await prepareAndCommitCompaction(
+        context: context,
+        decision: decision,
+        candidate: result,
+      );
+      emit(
+        AgentCompactionSucceeded(
+          operationId: operationId,
+          sessionId: id,
+          runId: runId,
+          reason: reason,
+          triggerId: decision.triggerId,
+          triggerVersion: decision.triggerVersion,
+          strategyId: result.strategyId,
+          strategyVersion: result.strategyVersion,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
+          targetEstimate: decision.targetEstimate,
+          afterEstimate: prepared.afterEstimate.value,
+          generation: prepared.state.generation,
+          usage: prepared.usage,
+        ),
+      );
+      return _AutomaticCompactionOutcome.compacted;
+    } on _RunStop {
+      emit(
+        AgentCompactionFailed(
+          operationId: operationId,
+          sessionId: id,
+          runId: runId,
+          reason: reason,
+          triggerId: decision.triggerId,
+          triggerVersion: decision.triggerVersion,
+          strategyId: compactor.id,
+          strategyVersion: compactor.version,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
+          targetEstimate: decision.targetEstimate,
+          error: sanitizedCompactionError(),
+          usage: chargedUsage,
+        ),
+      );
+      rethrow;
+    } on AgentException catch (error) {
+      if (error.error.kind == AgentErrorKind.cancelled ||
+          cancellation.isCancelled) {
+        emit(
+          AgentCompactionCancelled(
+            operationId: operationId,
+            sessionId: id,
+            runId: runId,
+            reason: reason,
+            triggerId: decision.triggerId,
+            triggerVersion: decision.triggerVersion,
+            strategyId: compactor.id,
+            strategyVersion: compactor.version,
+            estimatorId: context.currentEstimate.estimatorId,
+            estimatorVersion: context.currentEstimate.estimatorVersion,
+            beforeEstimate: context.currentEstimate.value,
+            targetEstimate: decision.targetEstimate,
+            usage: chargedUsage,
+          ),
+        );
+        throw _cancelledException();
+      }
+      final exposed =
+          error.error.kind == AgentErrorKind.conflict ||
+              error.error.kind == AgentErrorKind.persistence ||
+              error.error.kind == AgentErrorKind.budgetUnverifiable
+          ? error.error
+          : sanitizedCompactionError();
+      emit(
+        AgentCompactionFailed(
+          operationId: operationId,
+          sessionId: id,
+          runId: runId,
+          reason: reason,
+          triggerId: decision.triggerId,
+          triggerVersion: decision.triggerVersion,
+          strategyId: compactor.id,
+          strategyVersion: compactor.version,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
+          targetEstimate: decision.targetEstimate,
+          error: exposed,
+          usage: chargedUsage,
+        ),
+      );
+      throw AgentException(exposed);
+    } on Object {
+      if (cancellation.isCancelled) {
+        emit(
+          AgentCompactionCancelled(
+            operationId: operationId,
+            sessionId: id,
+            runId: runId,
+            reason: reason,
+            triggerId: decision.triggerId,
+            triggerVersion: decision.triggerVersion,
+            strategyId: compactor.id,
+            strategyVersion: compactor.version,
+            estimatorId: context.currentEstimate.estimatorId,
+            estimatorVersion: context.currentEstimate.estimatorVersion,
+            beforeEstimate: context.currentEstimate.value,
+            targetEstimate: decision.targetEstimate,
+            usage: chargedUsage,
+          ),
+        );
+        throw _cancelledException();
+      }
+      final exposed = sanitizedCompactionError();
+      emit(
+        AgentCompactionFailed(
+          operationId: operationId,
+          sessionId: id,
+          runId: runId,
+          reason: reason,
+          triggerId: decision.triggerId,
+          triggerVersion: decision.triggerVersion,
+          strategyId: compactor.id,
+          strategyVersion: compactor.version,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
+          targetEstimate: decision.targetEstimate,
+          error: exposed,
+          usage: chargedUsage,
+        ),
+      );
+      throw AgentException(exposed);
     }
   }
 
@@ -1061,6 +1600,11 @@ final class _LiveSession implements AgentSession {
       beginPersistenceShutdown();
     }
     final active = _active;
+    final activeCompaction = _activeCompaction;
+    if (activeCompaction != null) {
+      unawaited(activeCompaction.cancel());
+      await activeCompaction._unwound.future;
+    }
     if (active != null) {
       unawaited(active.cancel());
       if (persistence == SessionPersistence.repository) {
@@ -1142,6 +1686,244 @@ final class _LiveSession implements AgentSession {
   }
 }
 
+final class _LiveCompaction implements AgentCompactionOperation {
+  _LiveCompaction({required this.session, required this.id})
+    : cancelSource = CancellationSource(),
+      _result = Completer<AgentCompactionOutcome>();
+
+  final _LiveSession session;
+
+  @override
+  final AgentCompactionOperationId id;
+
+  final CancellationSource cancelSource;
+  final Completer<AgentCompactionOutcome> _result;
+  final Completer<void> _unwound = Completer<void>();
+  late final StreamController<AgentCompactionEvent> _controller;
+  late final Future<void> _done;
+  Future<void>? _cancelFuture;
+  var _terminal = false;
+
+  @override
+  Stream<AgentCompactionEvent> get events => _controller.stream;
+
+  @override
+  Future<AgentCompactionOutcome> get result => _result.future;
+
+  void start() {
+    _controller = StreamController<AgentCompactionEvent>(onCancel: cancel);
+    _result.future.ignore();
+    _done = _execute();
+    unawaited(_done);
+  }
+
+  @override
+  Future<void> cancel() {
+    cancelSource.cancel();
+    return _cancelFuture ??= _unwound.future;
+  }
+
+  Future<void> _execute() async {
+    AgentCompactionContext? context;
+    final compactor = session.runtime.historyCompactor!;
+    LlmUsage? chargedUsage;
+    try {
+      final selection = session.runtime.registry.resolve(
+        session.definition.model,
+      );
+      final request = LlmRequest(
+        model: session.definition.model,
+        context: LlmContext(
+          systemPrompt: session.definition.systemPrompt,
+          messages: session.transcript.messages,
+          tools: session.runtime.tools.descriptorsFor(
+            session.definition.enabledTools,
+          ),
+          continuationEntries: session.continuationEntries,
+        ),
+        generation: session.definition.generation,
+      ).snapshot();
+      context = session.buildCompactionContext(
+        operationId: id,
+        reason: AgentCompactionReason.manual,
+        request: request,
+        cancellation: cancelSource.token,
+      );
+      _emit(
+        AgentCompactionStarted(
+          operationId: id,
+          sessionId: session.id,
+          reason: AgentCompactionReason.manual,
+          strategyId: compactor.id,
+          strategyVersion: compactor.version,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
+        ),
+      );
+      if (selection.model != context.selectedModel) {
+        throwAgent(
+          AgentErrorKind.compaction,
+          'Selected model changed while preparing compaction.',
+        );
+      }
+      final decision = AgentCompactionDecision.manual();
+      final strategy = await session.invokeCompactor(
+        context: context,
+        decision: decision,
+        chargeUsage: (usage) {
+          chargedUsage = usage;
+          session.chargeManualCompactionUsage(usage);
+        },
+      );
+      if (strategy is AgentCompactionNoChange) {
+        _emit(
+          AgentCompactionNoChangeEvent(
+            operationId: id,
+            sessionId: session.id,
+            reason: AgentCompactionReason.manual,
+            strategyId: strategy.strategyId,
+            strategyVersion: strategy.strategyVersion,
+            estimatorId: context.currentEstimate.estimatorId,
+            estimatorVersion: context.currentEstimate.estimatorVersion,
+            beforeEstimate: context.currentEstimate.value,
+            usage: strategy.usage,
+          ),
+        );
+        _completeResult(AgentCompactionOutcome.noChange);
+        return;
+      }
+      if (strategy is! AgentCompactionCandidate) {
+        throw AgentException(sanitizedCompactionError());
+      }
+      final prepared = await session.prepareAndCommitCompaction(
+        context: context,
+        decision: decision,
+        candidate: strategy,
+      );
+      _emit(
+        AgentCompactionSucceeded(
+          operationId: id,
+          sessionId: session.id,
+          reason: AgentCompactionReason.manual,
+          strategyId: strategy.strategyId,
+          strategyVersion: strategy.strategyVersion,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
+          afterEstimate: prepared.afterEstimate.value,
+          generation: prepared.state.generation,
+          usage: prepared.usage,
+        ),
+      );
+      _completeResult(AgentCompactionOutcome.compacted);
+    } on AgentException catch (error) {
+      if (error.error.kind == AgentErrorKind.cancelled ||
+          cancelSource.token.isCancelled) {
+        _emitCancelled(context, compactor, chargedUsage);
+        _completeError(_cancelledException());
+      } else {
+        final exposed =
+            error.error.kind == AgentErrorKind.conflict ||
+                error.error.kind == AgentErrorKind.persistence ||
+                error.error.kind == AgentErrorKind.budgetUnverifiable
+            ? error.error
+            : AgentError(
+                kind: AgentErrorKind.compaction,
+                message: sanitizePublicText(
+                  error.error.message,
+                  fallback: sanitizedCompactionError().message,
+                ),
+              );
+        _emitFailed(context, compactor, exposed, chargedUsage);
+        _completeError(AgentException(exposed));
+      }
+    } on Object {
+      if (cancelSource.token.isCancelled) {
+        _emitCancelled(context, compactor, chargedUsage);
+        _completeError(_cancelledException());
+      } else {
+        final error = sanitizedCompactionError();
+        _emitFailed(context, compactor, error, chargedUsage);
+        _completeError(AgentException(error));
+      }
+    } finally {
+      session.detachCompaction(this);
+      if (!_unwound.isCompleted) {
+        _unwound.complete();
+      }
+      await _closeRunController(_controller);
+    }
+  }
+
+  void _emitCancelled(
+    AgentCompactionContext? context,
+    AgentHistoryCompactor compactor,
+    LlmUsage? usage,
+  ) {
+    _emit(
+      AgentCompactionCancelled(
+        operationId: id,
+        sessionId: session.id,
+        reason: AgentCompactionReason.manual,
+        strategyId: compactor.id,
+        strategyVersion: compactor.version,
+        estimatorId: context?.currentEstimate.estimatorId ?? 'unknown',
+        estimatorVersion: context?.currentEstimate.estimatorVersion ?? 1,
+        beforeEstimate: context?.currentEstimate.value ?? 0,
+        usage: usage,
+      ),
+    );
+  }
+
+  void _emitFailed(
+    AgentCompactionContext? context,
+    AgentHistoryCompactor compactor,
+    AgentError error,
+    LlmUsage? usage,
+  ) {
+    _emit(
+      AgentCompactionFailed(
+        operationId: id,
+        sessionId: session.id,
+        reason: AgentCompactionReason.manual,
+        strategyId: compactor.id,
+        strategyVersion: compactor.version,
+        estimatorId: context?.currentEstimate.estimatorId ?? 'unknown',
+        estimatorVersion: context?.currentEstimate.estimatorVersion ?? 1,
+        beforeEstimate: context?.currentEstimate.value ?? 0,
+        error: error,
+        usage: usage,
+      ),
+    );
+  }
+
+  void _emit(AgentCompactionEvent event) {
+    if (_controller.isClosed || (_terminal && !event.isTerminal)) {
+      return;
+    }
+    if (event.isTerminal) {
+      if (_terminal) {
+        return;
+      }
+      _terminal = true;
+    }
+    _controller.add(event);
+  }
+
+  void _completeResult(AgentCompactionOutcome outcome) {
+    if (!_result.isCompleted) {
+      _result.complete(outcome);
+    }
+  }
+
+  void _completeError(AgentException error) {
+    if (!_result.isCompleted) {
+      _result.completeError(error);
+    }
+  }
+}
+
 final class _LiveRun implements AgentRun {
   _LiveRun({
     required this.session,
@@ -1179,6 +1961,7 @@ final class _LiveRun implements AgentRun {
   LlmUsage _usageBaseline = LlmUsage();
   Future<void>? _cancelFuture;
   final Completer<void> _unwound = Completer<void>();
+  Completer<void>? _automaticCompactionDone;
   final List<Future<_CancelSettlement>> _providerTeardowns =
       <Future<_CancelSettlement>>[];
   var _closingController = false;
@@ -1206,7 +1989,13 @@ final class _LiveRun implements AgentRun {
     try {
       if (!_terminated) {
         session.beginPersistenceShutdown();
-        await _completeWith(const AgentRunCancelled());
+        final automaticCompaction = _automaticCompactionDone;
+        if (automaticCompaction != null) {
+          await automaticCompaction.future;
+        }
+        if (!_terminated) {
+          await _completeWith(const AgentRunCancelled());
+        }
       }
     } on Object catch (error) {
       remember(error);
@@ -1364,7 +2153,21 @@ final class _LiveRun implements AgentRun {
       final enabled = session.runtime.tools.descriptorsFor(
         session.definition.enabledTools,
       );
-      final request = LlmRequest(
+      var request = LlmRequest(
+        model: session.definition.model,
+        context: LlmContext(
+          systemPrompt: session.definition.systemPrompt,
+          messages: session.transcript.messages,
+          tools: enabled,
+          continuationEntries: session.continuationEntries,
+        ),
+        generation: _generation,
+      );
+      await _attemptAutomaticCompaction(
+        reason: AgentCompactionReason.preRequest,
+        request: request,
+      );
+      request = LlmRequest(
         model: session.definition.model,
         context: LlmContext(
           systemPrompt: session.definition.systemPrompt,
@@ -1376,46 +2179,94 @@ final class _LiveRun implements AgentRun {
       );
       _runModelTurns += 1;
       session.modelTurns += 1;
-      final assembler = _ToolCallAssembler();
-      final answer = StringBuffer();
-      final reasoning = StringBuffer();
+      late _ToolCallAssembler assembler;
+      late StringBuffer answer;
+      late StringBuffer reasoning;
       LlmFinishReason? finish;
       LlmProviderTurnState? completedTurnState;
       _turnUsage = LlmUsage();
       _turnUsageCommitted = false;
-      await for (final event in _providerEvents(request)) {
-        _throwIfCancelled();
-        switch (event) {
-          case LlmReasoningDelta(:final text):
-            reasoning.write(text);
-            _resetIdle();
-            _emit(AgentReasoningDelta(text));
-          case LlmTextDelta(:final text):
-            answer.write(text);
-            _resetIdle();
-            _emit(AgentAnswerDelta(text));
-          case LlmToolCallDelta():
-            assembler.add(event);
-            _resetIdle();
-          case LlmUsageUpdate(:final usage):
-            _onUsage(usage);
-          case LlmCompleted(
-            :final finishReason,
-            :final usage,
-            :final turnState,
-          ):
-            finish = finishReason;
-            completedTurnState = turnState;
-            if (usage != null) {
-              _turnUsage = _mergeUsage(_turnUsage, usage);
-            }
-          case LlmFailed(:final error):
-            throw AgentException(agentErrorFromLlm(error));
-          case LlmCancelled():
-            throw AgentException(
-              AgentError(kind: AgentErrorKind.cancelled, message: 'cancelled'),
-            );
+      var overflowRecoveryOffered = false;
+      while (true) {
+        assembler = _ToolCallAssembler();
+        answer = StringBuffer();
+        reasoning = StringBuffer();
+        finish = null;
+        completedTurnState = null;
+        LlmError? providerFailure;
+        var sawModelDelta = false;
+        await for (final event in _providerEvents(request)) {
+          _throwIfCancelled();
+          switch (event) {
+            case LlmReasoningDelta(:final text):
+              sawModelDelta = true;
+              reasoning.write(text);
+              _resetIdle();
+              _emit(AgentReasoningDelta(text));
+            case LlmTextDelta(:final text):
+              sawModelDelta = true;
+              answer.write(text);
+              _resetIdle();
+              _emit(AgentAnswerDelta(text));
+            case LlmToolCallDelta():
+              sawModelDelta = true;
+              assembler.add(event);
+              _resetIdle();
+            case LlmUsageUpdate(:final usage):
+              _onUsage(usage);
+            case LlmCompleted(
+              :final finishReason,
+              :final usage,
+              :final turnState,
+            ):
+              finish = finishReason;
+              completedTurnState = turnState;
+              if (usage != null) {
+                _turnUsage = _mergeUsage(_turnUsage, usage);
+              }
+            case LlmFailed(:final error):
+              providerFailure = error;
+            case LlmCancelled():
+              throw AgentException(
+                AgentError(
+                  kind: AgentErrorKind.cancelled,
+                  message: 'cancelled',
+                ),
+              );
+          }
         }
+        final failure = providerFailure;
+        if (failure == null) {
+          break;
+        }
+        if (failure.kind != LlmErrorKind.contextOverflow ||
+            sawModelDelta ||
+            overflowRecoveryOffered) {
+          throw AgentException(agentErrorFromLlm(failure));
+        }
+        overflowRecoveryOffered = true;
+        if (!_turnUsage.isEmpty) {
+          _commitTurnUsage();
+        }
+        final recovery = await _attemptAutomaticCompaction(
+          reason: AgentCompactionReason.providerOverflow,
+          request: request,
+        );
+        if (recovery != _AutomaticCompactionOutcome.compacted) {
+          throw AgentException(agentErrorFromLlm(failure));
+        }
+        _turnUsage = LlmUsage();
+        _turnUsageCommitted = false;
+        request = LlmRequest(
+          model: session.definition.model,
+          context: LlmContext(
+            systemPrompt: session.definition.systemPrompt,
+            messages: session.transcript.messages,
+            tools: enabled,
+            continuationEntries: session.continuationEntries,
+          ),
+          generation: _generation,
+        );
       }
       _throwIfCancelled();
       _commitTurnUsage();
@@ -2166,6 +3017,54 @@ final class _LiveRun implements AgentRun {
     _controller.add(event);
   }
 
+  void _emitAutomaticCompaction(AgentCompactionEvent event) {
+    _emit(AgentAutomaticCompactionEvent(event));
+  }
+
+  Future<_AutomaticCompactionOutcome> _attemptAutomaticCompaction({
+    required AgentCompactionReason reason,
+    required LlmRequest request,
+  }) async {
+    final done = Completer<void>();
+    _automaticCompactionDone = done;
+    try {
+      return await session.maybeCompactBeforeRequest(
+        runId: id,
+        reason: reason,
+        request: request.snapshot(),
+        cancellation: cancelSource.token,
+        emit: _emitAutomaticCompaction,
+        chargeUsage: _chargeAutomaticCompactionUsage,
+      );
+    } finally {
+      if (!done.isCompleted) {
+        done.complete();
+      }
+      if (identical(_automaticCompactionDone, done)) {
+        _automaticCompactionDone = null;
+      }
+    }
+  }
+
+  void _chargeAutomaticCompactionUsage(LlmUsage usage) {
+    session.usage = _addUsage(session.usage, usage);
+    _emit(AgentUsageUpdated(session.usage));
+    void requireVerifiable(int? used, int? limit) {
+      if (limit != null && used == null) {
+        throwAgent(
+          AgentErrorKind.budgetUnverifiable,
+          'Configured token budget cannot be verified from provider usage.',
+        );
+      }
+    }
+
+    requireVerifiable(usage.inputTokens, guards.inputTokenBudget);
+    requireVerifiable(usage.outputTokens, guards.outputTokenBudget);
+    requireVerifiable(usage.totalTokens, guards.totalTokenBudget);
+    _checkBudgets(preWork: false);
+    _checkBudgetUnverifiable(usage: _runScopedUsage(session.usage));
+  }
+
   bool _usesPersistenceShutdown(AgentRunEvent terminal) {
     if (terminal is AgentRunCancelled) {
       return true;
@@ -2303,6 +3202,8 @@ final class _RunStop implements Exception {
 
   final AgentStopReason reason;
 }
+
+enum _AutomaticCompactionOutcome { skipped, noChange, compacted }
 
 AgentException _cancelledException() {
   return AgentException(

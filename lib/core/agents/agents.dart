@@ -1,4 +1,5 @@
 export 'clock.dart';
+export 'compaction.dart';
 export 'definition.dart';
 export 'errors.dart';
 export 'events.dart';
@@ -10,5 +11,6 @@ export 'record.dart';
 export 'repository.dart';
 export 'runtime.dart';
 export 'schema.dart';
+export 'summary_compactor.dart';
 export 'tools.dart';
 export 'transcript.dart';

@@ -2,6 +2,7 @@ import '../llm/errors.dart';
 import '../llm/identifiers.dart';
 import '../llm/messages.dart';
 import '../llm/usage.dart';
+import 'compaction.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'policies.dart';
@@ -17,7 +18,146 @@ enum AgentStopReason {
   totalBudget,
 }
 
-enum AgentSessionLifecycle { idle, running, closing, closed }
+enum AgentSessionLifecycle { idle, running, compacting, closing, closed }
+
+sealed class AgentCompactionEvent {
+  const AgentCompactionEvent({
+    required this.operationId,
+    required this.sessionId,
+    this.runId,
+    required this.reason,
+    this.triggerId,
+    this.triggerVersion,
+    required this.strategyId,
+    required this.strategyVersion,
+    required this.estimatorId,
+    required this.estimatorVersion,
+    required this.beforeEstimate,
+    this.targetEstimate,
+  });
+
+  final AgentCompactionOperationId operationId;
+  final AgentSessionId sessionId;
+  final RunId? runId;
+  final AgentCompactionReason reason;
+  final String? triggerId;
+  final int? triggerVersion;
+  final String strategyId;
+  final int strategyVersion;
+  final String estimatorId;
+  final int estimatorVersion;
+  final int beforeEstimate;
+  final int? targetEstimate;
+
+  bool get isTerminal =>
+      this is AgentCompactionSucceeded ||
+      this is AgentCompactionNoChangeEvent ||
+      this is AgentCompactionFailed ||
+      this is AgentCompactionCancelled;
+}
+
+final class AgentCompactionStarted extends AgentCompactionEvent {
+  const AgentCompactionStarted({
+    required super.operationId,
+    required super.sessionId,
+    super.runId,
+    required super.reason,
+    super.triggerId,
+    super.triggerVersion,
+    required super.strategyId,
+    required super.strategyVersion,
+    required super.estimatorId,
+    required super.estimatorVersion,
+    required super.beforeEstimate,
+    super.targetEstimate,
+  });
+}
+
+final class AgentCompactionSucceeded extends AgentCompactionEvent {
+  const AgentCompactionSucceeded({
+    required super.operationId,
+    required super.sessionId,
+    super.runId,
+    required super.reason,
+    super.triggerId,
+    super.triggerVersion,
+    required super.strategyId,
+    required super.strategyVersion,
+    required super.estimatorId,
+    required super.estimatorVersion,
+    required super.beforeEstimate,
+    super.targetEstimate,
+    required this.afterEstimate,
+    required this.generation,
+    this.usage,
+  });
+
+  final int afterEstimate;
+  final int generation;
+  final LlmUsage? usage;
+}
+
+final class AgentCompactionNoChangeEvent extends AgentCompactionEvent {
+  const AgentCompactionNoChangeEvent({
+    required super.operationId,
+    required super.sessionId,
+    super.runId,
+    required super.reason,
+    super.triggerId,
+    super.triggerVersion,
+    required super.strategyId,
+    required super.strategyVersion,
+    required super.estimatorId,
+    required super.estimatorVersion,
+    required super.beforeEstimate,
+    super.targetEstimate,
+    this.usage,
+  });
+
+  final LlmUsage? usage;
+}
+
+final class AgentCompactionFailed extends AgentCompactionEvent {
+  const AgentCompactionFailed({
+    required super.operationId,
+    required super.sessionId,
+    super.runId,
+    required super.reason,
+    super.triggerId,
+    super.triggerVersion,
+    required super.strategyId,
+    required super.strategyVersion,
+    required super.estimatorId,
+    required super.estimatorVersion,
+    required super.beforeEstimate,
+    super.targetEstimate,
+    required this.error,
+    this.usage,
+  });
+
+  final AgentError error;
+  final LlmUsage? usage;
+}
+
+final class AgentCompactionCancelled extends AgentCompactionEvent {
+  const AgentCompactionCancelled({
+    required super.operationId,
+    required super.sessionId,
+    super.runId,
+    required super.reason,
+    super.triggerId,
+    super.triggerVersion,
+    required super.strategyId,
+    required super.strategyVersion,
+    required super.estimatorId,
+    required super.estimatorVersion,
+    required super.beforeEstimate,
+    super.targetEstimate,
+    this.usage,
+  });
+
+  final LlmUsage? usage;
+}
 
 sealed class AgentRunEvent {
   const AgentRunEvent();
@@ -27,6 +167,12 @@ sealed class AgentRunEvent {
       this is AgentRunStopped ||
       this is AgentRunFailed ||
       this is AgentRunCancelled;
+}
+
+final class AgentAutomaticCompactionEvent extends AgentRunEvent {
+  const AgentAutomaticCompactionEvent(this.compaction);
+
+  final AgentCompactionEvent compaction;
 }
 
 final class AgentRunStarted extends AgentRunEvent {
@@ -145,6 +291,7 @@ AgentError agentErrorFromLlm(LlmError error) {
     LlmErrorKind.provider ||
     LlmErrorKind.authentication ||
     LlmErrorKind.rateLimit ||
+    LlmErrorKind.contextOverflow ||
     LlmErrorKind.network ||
     LlmErrorKind.interrupted => AgentErrorKind.provider,
     LlmErrorKind.unknown => AgentErrorKind.unknown,

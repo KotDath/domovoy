@@ -79,11 +79,13 @@ AgentDefinition testDefinition({
   AgentNoProgressPolicy? noProgress,
   AgentTokenBudget? budget,
   String systemPrompt = 'You are a test agent.',
+  List<LlmMessage> initialMessages = const <LlmMessage>[],
 }) {
   return AgentDefinition(
     id: AgentId('tester'),
     name: 'Tester',
     systemPrompt: systemPrompt,
+    initialMessages: initialMessages,
     model: model ?? BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
     enabledTools: tools ?? const <ToolId>[],
     policy: policy ?? PolicyId('allow'),
@@ -106,6 +108,9 @@ InMemoryAgentRuntime testRuntime({
   AgentRunLimits? profileLimits,
   AgentRuntimeProfile? profile,
   AgentPersistencePolicy? persistencePolicy,
+  AgentContextEstimator? contextEstimator,
+  AgentCompactionTrigger? compactionTrigger,
+  AgentHistoryCompactor? historyCompactor,
 }) {
   final registry = LlmProviderRegistry();
   BuiltInLlmCatalog.registerInto(registry);
@@ -122,6 +127,9 @@ InMemoryAgentRuntime testRuntime({
     profileLimits: profileLimits,
     profile: profile,
     persistencePolicy: persistencePolicy,
+    contextEstimator: contextEstimator,
+    compactionTrigger: compactionTrigger,
+    historyCompactor: historyCompactor,
   );
 }
 

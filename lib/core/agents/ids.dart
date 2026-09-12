@@ -131,6 +131,34 @@ final class RunId {
   String toString() => value;
 }
 
+final class AgentCompactionOperationId {
+  AgentCompactionOperationId(String value)
+    : value = _validate(value, 'Compaction operation id');
+
+  factory AgentCompactionOperationId.fromJson(Object? json) {
+    final map = decodeTypedJson(json, type: jsonType);
+    return AgentCompactionOperationId(requireString(map, 'value'));
+  }
+
+  static const jsonType = 'agent.compaction_operation_id';
+
+  final String value;
+
+  Map<String, Object?> toJson() =>
+      typedJson(type: jsonType, fields: <String, Object?>{'value': value});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AgentCompactionOperationId && other.value == value;
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() => value;
+}
+
 final class TurnId {
   TurnId(String value) : value = _validate(value, 'Turn id');
 

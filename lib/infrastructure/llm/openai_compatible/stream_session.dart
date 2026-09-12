@@ -36,7 +36,11 @@ LlmError missingCredentialError(ProviderId providerId) {
   );
 }
 
-LlmError httpStatusError(ProviderId providerId, int statusCode) {
+LlmError httpStatusError(
+  ProviderId providerId,
+  int statusCode, {
+  Map<String, Object?>? payload,
+}) {
   if (statusCode == 401 || statusCode == 403) {
     return LlmError(
       kind: LlmErrorKind.authentication,
@@ -50,17 +54,33 @@ LlmError httpStatusError(ProviderId providerId, int statusCode) {
           'Лимит запросов провайдера ${providerId.value} исчерпан. Попробуйте позже.',
     );
   }
+  if (payload != null && _confirmedContextOverflowCode(payload) != null) {
+    return contextOverflowError(providerId);
+  }
   return LlmError(
     kind: LlmErrorKind.provider,
     message: 'Провайдер ${providerId.value} вернул ошибку HTTP $statusCode.',
   );
 }
 
-LlmError providerStreamError(ProviderId providerId) {
+LlmError providerStreamError(
+  ProviderId providerId, {
+  Map<String, Object?>? payload,
+}) {
+  if (payload != null && _confirmedContextOverflowCode(payload) != null) {
+    return contextOverflowError(providerId);
+  }
   return LlmError(
     kind: LlmErrorKind.provider,
     message:
         'Провайдер ${providerId.value} сообщил об ошибке во время генерации.',
+  );
+}
+
+LlmError contextOverflowError(ProviderId providerId) {
+  return LlmError(
+    kind: LlmErrorKind.contextOverflow,
+    message: 'Контекст запроса превышает лимит провайдера ${providerId.value}.',
   );
 }
 
@@ -229,8 +249,18 @@ Future<void> _run({
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final status = response.statusCode;
-      await _release(response);
-      sink.add(LlmFailed(httpStatusError(providerId, status)));
+      final payload = await raceCancellation(
+        _readErrorPayload(response),
+        cancellation: requested,
+        also: cancellation,
+      );
+      if (isCancelled()) {
+        sink.add(const LlmCancelled());
+        return;
+      }
+      sink.add(
+        LlmFailed(httpStatusError(providerId, status, payload: payload)),
+      );
       return;
     }
 
@@ -285,6 +315,33 @@ Future<void> _run({
     if (!controller.isClosed) {
       await controller.close();
     }
+  }
+}
+
+String? _confirmedContextOverflowCode(Map<String, Object?> payload) {
+  String? codeFrom(Object? value) {
+    final object = asJsonObject(value);
+    final code = object?['code'];
+    return code is String ? code : null;
+  }
+
+  final direct = payload['code'];
+  final response = asJsonObject(payload['response']);
+  final code = direct is String
+      ? direct
+      : codeFrom(payload['error']) ?? codeFrom(response?['error']);
+  return code == 'context_length_exceeded' ? code : null;
+}
+
+Future<Map<String, Object?>?> _readErrorPayload(
+  http.StreamedResponse response,
+) async {
+  try {
+    final bytes = await response.stream.toBytes();
+    final decoded = jsonDecode(utf8.decode(bytes));
+    return asJsonObject(decoded);
+  } on Object {
+    return null;
   }
 }
 

@@ -14,6 +14,7 @@ import 'package:http/http.dart' as http;
 
 import 'support/agent_harness.dart';
 import 'support/fakes.dart';
+import 'support/recording_http_client.dart';
 
 void main() {
   group('production agent composition', () {
@@ -51,6 +52,8 @@ void main() {
       expect(stack.runtime.profile.limits.maxModelTurns, isNull);
       expect(stack.runtime.profile.limits.maxToolCalls, isNull);
       expect(stack.runtime.profile.budget.totalTokens, isNull);
+      expect(stack.runtime.compactionTrigger, isNull);
+      expect(stack.runtime.historyCompactor, isNull);
       expect(
         stack.runtime.profile.liveness.idleTimeout,
         AgentLivenessPolicy.defaultIdleTimeout,
@@ -91,6 +94,58 @@ void main() {
         expect(client.closed, isTrue);
         expect(client.releasedBeforeClose, isTrue);
         expect(stack.runtime.lifecycle, AgentRuntimeLifecycle.closed);
+      },
+    );
+
+    test(
+      'production prompt workspace remains an unconfigured one-shot',
+      () async {
+        final client = RecordingClient(
+          (_) => sseResponse(
+            'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        );
+        final stack = buildProductionAgentStack(
+          httpClient: client,
+          credentials: DefaultProviderCredentialResolver(
+            store: MemoryProviderCredentialStore(<ProviderId, String>{
+              BuiltInLlmCatalog.deepSeek: 'test-key',
+            }),
+            readEnvironment: (_) => null,
+          ),
+        );
+        addTearDown(() async {
+          await stack.runtime.close();
+          client.close();
+        });
+
+        expect(stack.runtime.compactionTrigger, isNull);
+        expect(stack.runtime.historyCompactor, isNull);
+        expect(stack.promptDefinition.limits?.maxModelTurns, 1);
+        expect(stack.promptDefinition.limits?.maxToolCalls, 0);
+
+        final agent = stack.runtime.agent(stack.promptDefinition);
+        final first = await agent.run('first').events.toList();
+        final second = await agent.run('second').events.toList();
+
+        expect(first.last, isA<AgentRunCompleted>());
+        expect(second.last, isA<AgentRunCompleted>());
+        expect(first.whereType<AgentAutomaticCompactionEvent>(), isEmpty);
+        expect(second.whereType<AgentAutomaticCompactionEvent>(), isEmpty);
+        expect(
+          first.whereType<AgentRunStarted>().single.sessionId,
+          isNot(second.whereType<AgentRunStarted>().single.sessionId),
+        );
+        expect(client.requests, hasLength(2));
+        expect(
+          (client.requests[0].jsonBody['messages'] as List).single['content'],
+          'first',
+        );
+        expect(
+          (client.requests[1].jsonBody['messages'] as List).single['content'],
+          'second',
+        );
       },
     );
 

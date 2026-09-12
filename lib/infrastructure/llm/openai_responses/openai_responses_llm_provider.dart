@@ -365,13 +365,15 @@ final class _ResponsesParseState {
         );
       case 'response.failed':
       case 'error':
-        sink.add(LlmFailed(providerStreamError(providerId)));
+        sink.add(LlmFailed(providerStreamError(providerId, payload: payload)));
       case 'response.refusal.delta':
       case 'response.output_text.refusal':
         sink.add(LlmFailed(providerStreamError(providerId)));
       default:
         if (payload['error'] != null) {
-          sink.add(LlmFailed(providerStreamError(providerId)));
+          sink.add(
+            LlmFailed(providerStreamError(providerId, payload: payload)),
+          );
         }
     }
   }

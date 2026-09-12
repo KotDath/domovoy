@@ -1,6 +1,7 @@
 import '../llm/json.dart';
 import '../llm/messages.dart';
 import '../llm/usage.dart';
+import 'compaction.dart';
 import 'definition.dart';
 import 'events.dart';
 import 'ids.dart';
@@ -50,6 +51,7 @@ final class AgentSessionSnapshot {
     required this.modelTurns,
     required this.toolAttempts,
     required this.revision,
+    required this.compactionState,
   });
 
   final AgentSessionId id;
@@ -60,4 +62,7 @@ final class AgentSessionSnapshot {
   final int modelTurns;
   final int toolAttempts;
   final int revision;
+  final AgentCompactionState? compactionState;
+
+  int get compactionGeneration => compactionState?.generation ?? 0;
 }
