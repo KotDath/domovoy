@@ -13,9 +13,12 @@ subagents не вызывают друг друга. Процесс выбира
 прочитайте `.opencode/policies/feature.md`. Это источники маршрутов, лимитов,
 состояния и правил evidence; не дублируйте их отдельной системой approvals.
 
-Architect ведёт требования/OpenSpec; coder-fast/T0, coder/T1 и coder-strong/T2
-реализуют; verifier выполняет недостающие проверки; reviewer-light/T0-T1 и
-reviewer/T2 проверяют изменения; explore отвечает на ограниченные вопросы.
+Architect оценивает сложность и предлагает схему при планировании/согласовании спеки.
+Light: coder DeepSeek реализует, reviewer Sol и verifier DeepSeek проверяют
+параллельно одну неизменяемую версию. Heavy: oneshotter Sol реализует, verifier
+DeepSeek проверяет AC и формальные критерии; code review отсутствует по умолчанию.
+Explore исследует неизвестное. Risk tier и выбранная схема — разные поля карточки.
+Отдельный контекст verifier обязателен, повтор выполненных тестов — нет.
 
 Задание должно быть самодостаточным: тип TASK/QUESTION/DECISION/FINDING/RESULT/
 BLOCKED/ESCALATION, результат, change и назначенные tasks, карточка участка,
@@ -31,8 +34,8 @@ implementation fingerprint до исследования не нужен.
 Explore возвращает факты с файлами/строками. Профильная роль использует их;
 перепроверяет только сомнительные или влияющие на решение факты, не весь отчёт.
 Architect записывает существенные новые решения в существующие артефакты.
-Coder выполняет только назначенные tasks. Verifier не даёт semantic approval.
-Reviewer проверяет AC/diff и evidence, возвращает verdict. Полный transcript
+Coder/oneshotter выполняет только назначенные tasks. Verifier возвращает
+AC-матрицу и verification_status. Reviewer в light возвращает code verdict. Полный transcript
 кодера не требуется без конкретного вопроса.
 
 Read-only роли используют встроенные read/glob/grep и разрешённые repo-git

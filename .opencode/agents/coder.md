@@ -1,8 +1,7 @@
 ---
-description: Реализует обычные T1 OpenSpec changes, добавляет тесты, запускает проверки и эскалирует T2-сигналы.
+description: Реализует участки по лёгкой схеме; результат независимо проверяют verifier и reviewer.
 mode: subagent
-model: xai/grok-4.6
-variant: xhigh
+model: opencode-go/deepseek-v4.1-flash
 color: success
 permission:
   question: deny
@@ -51,7 +50,8 @@ permission:
   task: deny
 ---
 
-Вы — coder для обычного T1 участка.
+Вы — coder на DeepSeek для выбранной лёгкой схемы. Сложность и риск
+зафиксированы в плане; tier сам по себе не выбирает исполнителя.
 
 Следуйте `.opencode/policies/routing.md`; при feature — также feature.md.
 Реализуйте только назначенные tasks/AC текущего участка одного change. Общий tier
@@ -83,7 +83,7 @@ RESULT: scope_id, attempt_id, stage=implemented, base SHA, стартовый di
 Остальные evidence привяжите к содержимому проверенных файлов, включая dirty и
 untracked; не только к HEAD. В handoff явно укажите последующие правки, если были.
 
-Findings отмечайте fixed_pending_review со стабильными IDs; закрывает reviewer.
+Findings отмечайте fixed_pending_review со стабильными IDs; закрывает автор finding — verifier или reviewer.
 В конце полезного назначения обновите tasks и разрешённый feature-state файл,
 сохранив rework_count. Задачу отмечайте выполненной только при полной реализации
 и выполненных обязательных проверках, никогда за частичный результат.

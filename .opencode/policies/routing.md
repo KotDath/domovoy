@@ -19,25 +19,45 @@
 оценивайте отдельно. Отсутствие ясного AC требует уточнить AC, а не автоматически T2.
 Повторный finding требует исправления/остановки, но не сам по себе повышения tier.
 
+## Оценка сложности и выбор схемы
+
+На планировании architect (или координатор по готовому плану) предлагает
+приоритетную схему; при согласовании спеки оценка уточняется и выбор фиксируется.
+Light подходит при ясной локальной реализации и хороших тестах; heavy — при
+связанных подсистемах, существенной неопределённости и сложных состояниях.
+Риск tier оценивается отдельно: небольшой security diff может требовать heavy.
+Рекомендация объясняет сложность, риск, неизвестности и проверяемость AC.
+Если пользователь уже выбрал схему — используйте её. Иначе предложите выбор вместе
+с планом/спекой до writer. При обнаружении новой существенной сложности верните
+обоснованную рекомендацию смены; не переключайте модель молча. Смена схемы не
+сбрасывает счётчик исправлений и не означает автоматическое новое полное ревью.
+
 ## Маршруты
 
-T0: coder-fast → недостающие проверки → reviewer-light.
-T1: architect только при пробеле в плане → coder → недостающие проверки → reviewer-light.
-T2: architect только при пробеле в контракте → reviewer затронутого контракта,
-если нет применимого approval → coder-strong → проверки → reviewer изменений.
+- light: coder (DeepSeek) → параллельно reviewer (Sol code review) и verifier
+  (DeepSeek проверяет соответствие спеке и формальные критерии).
+- heavy: oneshotter (Sol) → verifier (DeepSeek проверяет AC и формальные критерии).
+  Отдельный code review Sol и обязательный contract review отсутствуют.
 
-Исследование и показ макетов имеют свои результаты, не требуют code approval.
-Существующий contract verdict используйте, пока затронутое решение не менялось.
-Ревью фиксирует предмет approval; запись пользовательского согласия, process-log,
-посторонний коммит или правка другого раздела не отменяют его автоматически.
-Содержательное изменение одобренного контракта требует review изменённой части.
+Оба проверяющих light получают одну фиксированную версию. Writer не меняет файлы
+до их завершения. Verifier — отдельный контекст от DeepSeek-исполнителя.
+Reviewer не ждёт RESULT verifier для начала, не дублирует AC-аудит/запуски тестов.
+Координатор собирает оба результата, объединяет findings и назначает одно исправление.
+
+В heavy не заменяйте непроверяемый AC словами «Sol уже сделал». DeepSeek возвращает
+PASS/FAIL/UNVERIFIED по каждому AC с доказательствами. Семантический/визуальный AC
+не становится формальным от наличия тестов. Пробел закрывается целевым тестом,
+демонстрацией или конкретной экспертной проверкой, а не общим аудитом по умолчанию.
+Готовые макеты показываются независимо от технической приёмки; пользовательские
+approval gates сохраняются. Запись решения без изменения поведения не требует review.
 
 ## Карточка участка
 
 scope_id, attempt_id, stage, change, результат, task IDs / AC, initial_tier,
 current_tier, risk evidence, included/excluded scope, expected_changed_paths,
 base_revision (полный SHA до writer), contract_revision (решение для участка),
-стартовый dirty diff, model_tiers_used, rework_count, пользовательские gates.
+стартовый dirty diff, execution_mode (light/heavy), recommended_mode, rationale,
+selection_source (решение пользователя), model_tiers_used, rework_count, gates.
 
 Перед writer зафиксируйте base и исходные чужие изменения; не удаляйте и не
 коммитьте их ради чистой проверки. Последующий участок без промежуточного коммита
@@ -47,15 +67,18 @@ base_revision (полный SHA до writer), contract_revision (решение 
 ## Проверки и evidence
 
 Различайте implemented, CHECKS_PASS и accepted. Для accepted нужны AC,
-доказательства всех обязательных проверок и подходящий verdict по текущему diff.
+verification_status=PASS от verifier на текущем diff; в light дополнительно
+APPROVED/APPROVED_WITH_NOTES от reviewer на той же версии. В heavy code verdict
+не требуется. В обеих схемах открытый обязательный finding блокирует accepted.
 Единственный обязательный формат evidence — проверяемый handoff: команда, cwd,
 код завершения, итоговый вывод/путь к логу, проверенный состав файлов и его версия
 (содержимое/hash или runner fingerprint), зависимости/окружение, ограничения.
 HEAD без учёта dirty/untracked файлов не идентифицирует проверенную реализацию.
 
-Источник — coder или verifier. Если результаты полные и актуальные, отдельный
-вызов verifier не требуется. Reviewer возвращает evidence_refs (может быть runner
-result_id), scope_id, base_revision, contract_revision и проверенную версию/diff.
+Источник командных evidence — coder, oneshotter или verifier. Актуальные
+результаты запусков не повторяются; независимая оценка AC/evidence verifier нужна
+в обеих схемах. Он возвращает evidence_refs, AC-матрицу и verification_status;
+reviewer в light — code verdict, scope_id и рассмотренную версию/diff.
 При неизвестной актуальности не считайте проверку пройденной: уточните состояние
 или повторите относящуюся проверку. Новая реализация, зависимость, окружение либо
 обнаруженная ненадёжность evidence требуют соответствующего повторного запуска.
@@ -78,11 +101,12 @@ Finding: finding_id, invariant_id, severity, file:line, причинность, 
 Review ограничен новым diff и вызванными им регрессиями. Старые несвязанные проблемы
 и вкусовые улучшения — notes; ими нельзя блокировать участок. Конкретный пропущенный
 AC блокирует даже если строки реализации для него отсутствуют.
-Coder отмечает fixed_pending_review; reviewer закрывает finding.
+Исполнитель отмечает fixed_pending_review; автор finding (verifier или reviewer)
+закрывает его после целевой проверки.
 Повторный review проверяет исправления и связанные регрессии. Новый blocker допустим
 при конкретном новом evidence, не для общего аудита заново.
 
-Максимум два цикла исправлений на участок суммарно (contract и code review).
+Максимум два цикла исправлений на участок суммарно (проверки AC, формальные проверки и code review).
 Смена task_id, revision, архитектора или названия того же scope не сбрасывает лимит.
 После каждого исправления допустим целевой re-review (исходное ревью + максимум
 два re-review). Если второй цикл не снял блокер — blocked с причиной, без третьего
@@ -96,17 +120,11 @@ Coder отмечает fixed_pending_review; reviewer закрывает finding
 
 ## Модельные профили
 
-Профили описывают назначение, а не обещанную цену провайдера:
+- `fast`: `opencode-go/deepseek-v4.1-flash` — coder, explore, verifier.
+- `strong`: `openai/gpt-5.6-sol` (high) — oneshotter, orchestrator, architect, reviewer.
 
-- `fast`: `opencode-go/muse-spark-1.3-contributor` — `coder-fast`, verifier
-  и light reviewer;
-- `balanced`: `xai/grok-4.6` — T1 `coder`;
-- `strong`: `openai/gpt-5.6-sol` — orchestrator для всех tier'ов,
-  architect, T2 `coder-strong` и heavy reviewer.
-
-На T0 Sol используется оркестратором, но не кодером и не reviewer.
-Недоступность strong-профиля не понижает T2:
-scope остаётся незавершённым до требуемого review.
+Недоступность выбранной модели не разрешает молчаливую замену схемы. Balanced
+остаётся допустимым историческим значением runner, но текущей роли не назначен.
 
 ## Исполнение команд по ролям
 
@@ -121,7 +139,7 @@ signing и редакторы. Lazy fetch, pager, external diff/textconv и fsmo
 Неподдержанная, network, lossy или external-scope операция идёт через прямой `git`, который
 остаётся `ask` для writer-ролей и `deny` для read-only ролей.
 
-`explore`, `reviewer-light` и `reviewer` используют встроенные
+`explore` и `reviewer` используют встроенные
 `read`/`glob`/`grep` и только фиксированные read-only wrappers:
 `.opencode/bin/repo-git --read-only`, `.opencode/bin/repo-openspec` и
 `.opencode/bin/read-check`. Их shell deny-правила также запрещают redirection,
