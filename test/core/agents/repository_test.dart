@@ -90,6 +90,107 @@ void main() {
       expect(await repo.load(record.id), isNull);
     });
 
+    test('catalog is immutable and deterministically ordered', () async {
+      final repo = InMemoryAgentSessionRepository();
+      final records = <AgentSessionRecord>[
+        _catalogRecord('z', updatedAtMicros: 9),
+        _catalogRecord('b', updatedAtMicros: 10),
+        _catalogRecord('a', updatedAtMicros: 10, messageCount: 2),
+      ];
+      for (final record in records) {
+        await repo.save(
+          record,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+      }
+      final snapshot = await repo.list();
+      expect(snapshot.available.map((summary) => summary.id.value), <String>[
+        'a',
+        'b',
+        'z',
+      ]);
+      expect(snapshot.available.first.messageCount, 2);
+      expect(snapshot.available.first.model, records.last.definition.model);
+      expect(
+        () => snapshot.available.add(snapshot.available.first),
+        throwsUnsupportedError,
+      );
+    });
+
+    test(
+      'delete checks revision, cancellation, and permanently reserves id',
+      () async {
+        final repo = InMemoryAgentSessionRepository();
+        final record = _catalogRecord('reserved', updatedAtMicros: 1);
+        await repo.save(
+          record,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+        await expectLater(
+          repo.delete(
+            record.id,
+            expectedRevision: 1,
+            cancellation: _openToken(),
+          ),
+          _agentError(AgentErrorKind.conflict),
+        );
+        final cancelled = CancellationSource()..cancel();
+        await expectLater(
+          repo.delete(
+            record.id,
+            expectedRevision: 0,
+            cancellation: cancelled.token,
+          ),
+          _agentError(AgentErrorKind.cancelled),
+        );
+        expect(await repo.load(record.id), record);
+        await repo.delete(
+          record.id,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+        expect(await repo.load(record.id), isNull);
+        expect((await repo.list()).available, isEmpty);
+        await expectLater(
+          repo.save(record, expectedRevision: 0, cancellation: _openToken()),
+          _agentError(AgentErrorKind.conflict),
+        );
+        final fresh = _catalogRecord('fresh', updatedAtMicros: 2);
+        await repo.save(fresh, expectedRevision: 0, cancellation: _openToken());
+        expect((await repo.list()).available.single.id, fresh.id);
+      },
+    );
+
+    test('same-revision in-memory saves serialize to one winner', () async {
+      final repo = InMemoryAgentSessionRepository();
+      final initial = _catalogRecord('race', updatedAtMicros: 1);
+      await repo.save(initial, expectedRevision: 0, cancellation: _openToken());
+      final outcomes = await Future.wait<Object?>(
+        <Future<void>>[
+          repo.save(
+            initial.copyWith(revision: 1, updatedAtMicros: 2),
+            expectedRevision: 0,
+            cancellation: _openToken(),
+          ),
+          repo.save(
+            initial.copyWith(revision: 1, updatedAtMicros: 3),
+            expectedRevision: 0,
+            cancellation: _openToken(),
+          ),
+        ].map(
+          (future) => future.then<Object?>((_) => null).catchError((e) => e),
+        ),
+      );
+      expect(outcomes.where((outcome) => outcome == null), hasLength(1));
+      expect(
+        outcomes.whereType<AgentException>().single.error.kind,
+        AgentErrorKind.conflict,
+      );
+      expect((await repo.load(initial.id))!.revision, 1);
+    });
+
     test('save commit wins a later cancellation', () async {
       final repo = _CommitWinsRepository();
       final source = CancellationSource();
@@ -387,7 +488,12 @@ void main() {
         throwsA(isA<AgentException>()),
       );
       await session.close();
-      await runtime.repository.delete(session.id);
+      final stored = await runtime.repository.load(session.id);
+      await runtime.repository.delete(
+        session.id,
+        expectedRevision: stored!.revision,
+        cancellation: _openToken(),
+      );
       expect(await runtime.repository.load(session.id), isNull);
     });
 
@@ -444,28 +550,29 @@ void main() {
         wireFamily: LlmWireFamily.openaiChatCompletions,
         turns: <List<LlmEvent>>[textTurn('ok')],
       );
-      final runtime = testRuntime(provider: provider);
+      final repo = InMemoryAgentSessionRepository();
+      final runtime = testRuntime(provider: provider, repository: repo);
       final agent = runtime.agent(testDefinition());
       final session = await agent.createSession(
         persistence: SessionPersistence.repository,
       );
       final id = session.id;
       await session.close();
-      await runtime.repository.delete(id);
-      await runtime.repository.save(
-        AgentSessionRecord(
-          id: id,
-          revision: 0,
-          definition: testDefinition(tools: <ToolId>[ToolId('ghost')]),
-          transcript: AgentTranscript(),
-          usage: LlmUsage(),
-          modelTurns: 0,
-          toolAttempts: 0,
-          createdAtMicros: 1,
-          updatedAtMicros: 1,
+      repo.replacePayload(
+        id,
+        repo.codec.encode(
+          AgentSessionRecord(
+            id: id,
+            revision: 0,
+            definition: testDefinition(tools: <ToolId>[ToolId('ghost')]),
+            transcript: AgentTranscript(),
+            usage: LlmUsage(),
+            modelTurns: 0,
+            toolAttempts: 0,
+            createdAtMicros: 1,
+            updatedAtMicros: 1,
+          ),
         ),
-        expectedRevision: 0,
-        cancellation: _openToken(),
       );
       await expectLater(
         agent.restoreSession(id),
@@ -1242,6 +1349,36 @@ void main() {
 
 CancellationToken _openToken() => CancellationSource().token;
 
+Matcher _agentError(AgentErrorKind kind) => throwsA(
+  isA<AgentException>().having((error) => error.error.kind, 'kind', kind),
+);
+
+AgentSessionRecord _catalogRecord(
+  String id, {
+  required int updatedAtMicros,
+  int messageCount = 0,
+}) {
+  return AgentSessionRecord(
+    id: AgentSessionId(id),
+    revision: 0,
+    definition: testDefinition(),
+    transcript: AgentTranscript(
+      messages: List<LlmMessage>.generate(
+        messageCount,
+        (index) => LlmMessage(
+          role: LlmMessageRole.user,
+          parts: <LlmContentPart>[LlmTextPart('message-$index')],
+        ),
+      ),
+    ),
+    usage: LlmUsage(),
+    modelTurns: 0,
+    toolAttempts: 0,
+    createdAtMicros: 1,
+    updatedAtMicros: updatedAtMicros,
+  );
+}
+
 Future<void> _waitForHang(_HangingRepository repo) async {
   for (var i = 0; i < 40; i++) {
     if (repo.hangingCount > 0) {
@@ -1301,7 +1438,15 @@ final class _FailOnceRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) => _inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => _inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }
 
 final class _DelayedRepository implements AgentSessionRepository {
@@ -1377,7 +1522,15 @@ final class _DelayedRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) => _inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => _inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }
 
 final class _HangingRepository implements AgentSessionRepository {
@@ -1427,7 +1580,15 @@ final class _HangingRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) => _inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => _inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }
 
 final class _FailingRepository implements AgentSessionRepository {
@@ -1462,7 +1623,15 @@ final class _FailingRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) => _inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => _inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }
 
 final class _CommitWinsRepository implements AgentSessionRepository {
@@ -1495,7 +1664,15 @@ final class _CommitWinsRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) => _inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => _inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }
 
 final class _RegistrationCountingRepository implements AgentSessionRepository {
@@ -1531,7 +1708,15 @@ final class _RegistrationCountingRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) => _inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => _inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }
 
 final class _SecondFlushHangsRepository implements AgentSessionRepository {
@@ -1580,7 +1765,15 @@ final class _SecondFlushHangsRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) => _inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => _inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }
 
 final class _ImmediateErrorCancelLlmProvider implements LlmProvider {

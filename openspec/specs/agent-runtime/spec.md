@@ -88,10 +88,10 @@ Each agent session SHALL have one stable `AgentSessionId` used for runtime ident
 - **THEN** its saved record remains available for restoration until a separate delete operation succeeds
 
 ### Requirement: Versioned session records and persistence seam
-The runtime SHALL represent restorable state as a versioned serializable session record containing stable session identity, record revision, serializable agent-definition snapshot, committed provider-neutral transcript, message-indexed provider continuation metadata, cumulative reported usage and counters, and creation/update metadata. Continuation metadata SHALL be committed atomically with its complete normalized assistant turn, SHALL be absent for partial/cancelled/failed output, and SHALL be validated against transcript indexes and the definition's exact model/wire origin during decode/restore. A repository port SHALL load, cancellation-aware revision-check and save, and delete records; its save operation SHALL accept an operation-scoped cancellation token and complete successfully only after commit. If cancellation wins before commit, a conforming repository SHALL complete with the typed cancelled error and guarantee no later mutation from that operation; if commit already won, it SHALL complete successfully. Conflict and persistence failures SHALL also guarantee no later mutation from that operation. A codec port SHALL encode and strictly decode supported record versions. This change SHALL provide an in-memory implementation and SHALL NOT require a database, file, or cloud adapter.
+The runtime SHALL represent restorable state as a versioned serializable session record containing stable session identity, record revision, serializable agent-definition snapshot, committed provider-neutral transcript, message-indexed provider continuation metadata, cumulative reported usage and counters, and creation/update metadata. Continuation metadata SHALL be committed atomically with its complete normalized assistant turn, SHALL be absent for partial/cancelled/failed output, and SHALL be validated against transcript indexes and the definition's exact model/wire origin during decode/restore. A replaceable repository port SHALL load, cancellation-aware revision-check and save, and cancellation-aware expected-revision delete records; a companion platform-neutral catalog port SHALL project immutable summaries and sanitized storage issues for listing without exposing infrastructure types. Save and delete SHALL complete successfully only after commit. If cancellation wins before commit admission, a conforming repository SHALL complete with the typed cancelled error and guarantee no later mutation from that operation; if commit admission already won, it SHALL complete successfully after durable acknowledgement. Conflict and persistence failures SHALL append no later logical mutation from that operation. A codec port SHALL remain authoritative for encoding and strict decoding of supported record versions. The system SHALL provide behaviorally conforming in-memory and durable JSONL implementations.
 
 #### Scenario: Caller-owned session is restored
-- **WHEN** a caller closes a repository-backed idle session and later restores its identifier from the same in-memory repository
+- **WHEN** a caller closes a repository-backed idle session and later restores its identifier from the configured repository
 - **THEN** the restored session has the same identity, definition snapshot, committed transcript, usage, and counters and begins idle with no active run resources
 
 #### Scenario: Record round-trips through the codec
@@ -115,7 +115,7 @@ The runtime SHALL represent restorable state as a versioned serializable session
 - **THEN** the run emits a typed sanitized persistence failure and starts no further provider turn or tool while making no exact-once claim for an external tool side effect that completed before the failed save
 
 #### Scenario: A normal durable checkpoint is delayed
-- **WHEN** a repository save completes after asynchronous file, SQLite, or Drift work while neither run nor session cancellation has begun
+- **WHEN** a repository save completes after asynchronous durable storage work while neither run nor session cancellation has begun
 - **THEN** the runtime awaits its actual completion, advances revision exactly once, and does not classify it from microtask or event-loop-turn timing
 
 #### Scenario: Cancellation interrupts a checkpoint
@@ -129,6 +129,18 @@ The runtime SHALL represent restorable state as a versioned serializable session
 #### Scenario: Terminal checkpoint fails
 - **WHEN** the final checkpoint for normal completion or a non-cancellation stop fails
 - **THEN** a typed sanitized persistence or conflict failure replaces the provisional terminal and the unreliable session closes
+
+#### Scenario: Catalog implementation is replaced
+- **WHEN** a caller composes another conforming repository/catalog implementation
+- **THEN** listing, load, save, restore, and delete preserve the same summaries, revisions, cancellation, and error semantics without runtime dependence on its storage technology
+
+#### Scenario: Current revision is deleted
+- **WHEN** repository delete supplies the active session revision and its cancellation has not won before commit admission
+- **THEN** deletion is acknowledged exactly once and later load/restore/catalog operations treat the identifier as absent
+
+#### Scenario: Stale revision is deleted
+- **WHEN** repository delete supplies a revision that does not equal the active record revision
+- **THEN** deletion fails with a typed conflict and the active record remains unchanged
 
 ### Requirement: Guarded agent loop
 For each run, the runtime SHALL add the submitted user content, invoke the selected provider with the session context, project normalized deltas, append completed assistant output, process requested tools, append correlated tool results, and repeat until a typed terminal condition occurs. A run MAY continue without a turn, tool, total-duration, or cumulative-token quota when those values are absent. The runtime SHALL preserve event and message order, commit only complete transcript artifacts at defined safe boundaries, and issue no model request or tool execution after a terminal event.

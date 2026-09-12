@@ -1573,7 +1573,15 @@ class _CountingRepository implements AgentSessionRepository {
   var saves = 0;
 
   @override
-  Future<void> delete(AgentSessionId id) => inner.delete(id);
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 
   @override
   Future<AgentSessionRecord?> load(AgentSessionId id) => inner.load(id);

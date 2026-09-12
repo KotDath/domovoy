@@ -491,7 +491,11 @@ final class _HangingSaveRepository implements AgentSessionRepository {
   }
 
   @override
-  Future<void> delete(AgentSessionId id) async {}
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) async {}
 }
 
 final class _HangingLoadRepository implements AgentSessionRepository {
@@ -510,7 +514,11 @@ final class _HangingLoadRepository implements AgentSessionRepository {
   }) async {}
 
   @override
-  Future<void> delete(AgentSessionId id) async {}
+  Future<void> delete(
+    AgentSessionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) async {}
 }
 
 final class _DelayedCancelLlmProvider implements LlmProvider {

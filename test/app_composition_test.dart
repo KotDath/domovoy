@@ -8,6 +8,9 @@ import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/environment/environment_reader.dart';
 import 'package:domovoy/features/prompt/domain/prompt_workspace.dart';
 import 'package:domovoy/features/settings/domain/api_key_credentials.dart';
+import 'package:domovoy/infrastructure/agents/jsonl/jsonl.dart';
+import 'package:domovoy/infrastructure/agents/jsonl/jsonl_stream_storage_io.dart'
+    hide createPlatformJsonlStreamStorage;
 import 'package:domovoy/infrastructure/credentials/credentials.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -54,6 +57,9 @@ void main() {
       expect(stack.runtime.profile.budget.totalTokens, isNull);
       expect(stack.runtime.compactionTrigger, isNull);
       expect(stack.runtime.historyCompactor, isNull);
+      expect(stack.repository, isA<JsonlAgentSessionStore>());
+      expect(identical(stack.repository, stack.catalog), isTrue);
+      expect(identical(stack.runtime.repository, stack.repository), isTrue);
       expect(
         stack.runtime.profile.liveness.idleTimeout,
         AgentLivenessPolicy.defaultIdleTimeout,
@@ -78,6 +84,8 @@ void main() {
         final dependencies = DomovoyDependencies(
           runtime: stack.runtime,
           promptDefinition: stack.promptDefinition,
+          repository: stack.repository,
+          catalog: stack.catalog,
           overrideStore: MemoryApiKeyOverrideStore(),
           apiKeyResolver: ApiKeyResolver(
             overrideStore: MemoryApiKeyOverrideStore(),
@@ -90,6 +98,8 @@ void main() {
         await Future<void>.delayed(Duration.zero);
         await Future<void>.delayed(Duration.zero);
         await dependencies.close();
+        expect(identical(dependencies.repository, stack.repository), isTrue);
+        expect(identical(dependencies.catalog, stack.catalog), isTrue);
         expect(client.released, isTrue);
         expect(client.closed, isTrue);
         expect(client.releasedBeforeClose, isTrue);
@@ -100,6 +110,12 @@ void main() {
     test(
       'production prompt workspace remains an unconfigured one-shot',
       () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'domovoy-composition-prompt-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        final storage = _filesystemStorage(sandbox);
+        final persistence = JsonlAgentSessionStore(storage: storage);
         final client = RecordingClient(
           (_) => sseResponse(
             'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n'
@@ -114,6 +130,8 @@ void main() {
             }),
             readEnvironment: (_) => null,
           ),
+          repository: persistence,
+          catalog: persistence,
         );
         addTearDown(() async {
           await stack.runtime.close();
@@ -138,6 +156,9 @@ void main() {
           isNot(second.whereType<AgentRunStarted>().single.sessionId),
         );
         expect(client.requests, hasLength(2));
+        expect((await stack.catalog.list()).available, isEmpty);
+        expect((await stack.catalog.list()).issues, isEmpty);
+        expect(await storage.listKeys(), isEmpty);
         expect(
           (client.requests[0].jsonBody['messages'] as List).single['content'],
           'first',
@@ -145,6 +166,141 @@ void main() {
         expect(
           (client.requests[1].jsonBody['messages'] as List).single['content'],
           'second',
+        );
+      },
+    );
+
+    test(
+      'fresh production stacks restore exact records and durable deletion',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'domovoy-composition-restart-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+
+        final firstClient = http.Client();
+        final firstStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final first = _buildStackWithPersistence(firstClient, firstStore);
+        final rich = _richRecord(
+          AgentSessionId('production-rich'),
+          revision: 0,
+          updatedAtMicros: 20,
+        );
+        final other = _record(
+          AgentSessionId('production-other'),
+          revision: 0,
+          updatedAtMicros: 10,
+          messages: 2,
+        );
+        await first.repository.save(
+          rich,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+        await first.repository.save(
+          other,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+        await first.runtime.close();
+        firstClient.close();
+
+        final secondClient = http.Client();
+        final secondStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final second = _buildStackWithPersistence(secondClient, secondStore);
+        expect(identical(second.repository, secondStore), isTrue);
+        expect(identical(second.catalog, secondStore), isTrue);
+        expect(identical(second.runtime.repository, secondStore), isTrue);
+        final catalog = await second.catalog.list();
+        expect(catalog.available.map((entry) => entry.id.value), <String>[
+          'production-rich',
+          'production-other',
+        ]);
+        expect(await second.repository.load(rich.id), rich);
+        expect(await second.repository.load(other.id), other);
+
+        final restored = await second.runtime
+            .agent(rich.definition)
+            .restoreSession(rich.id);
+        expect(restored.snapshot.id, rich.id);
+        expect(restored.snapshot.transcript, rich.transcript);
+        expect(restored.snapshot.usage, rich.usage);
+        expect(restored.snapshot.modelTurns, rich.modelTurns);
+        expect(restored.snapshot.toolAttempts, rich.toolAttempts);
+        expect(restored.snapshot.compactionState, rich.compactionState);
+        expect(restored.snapshot.revision, rich.revision);
+        await restored.close();
+        final acknowledgedRich = (await second.repository.load(rich.id))!;
+        expect(acknowledgedRich.revision, 1);
+        expect(acknowledgedRich.transcript, rich.transcript);
+        expect(acknowledgedRich.usage, rich.usage);
+        expect(acknowledgedRich.continuationEntries, rich.continuationEntries);
+        expect(acknowledgedRich.compactionState, rich.compactionState);
+
+        await second.repository.delete(
+          other.id,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+        await second.runtime.close();
+        secondClient.close();
+
+        final thirdClient = http.Client();
+        final thirdStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final third = _buildStackWithPersistence(thirdClient, thirdStore);
+        final afterDelete = await third.catalog.list();
+        expect(afterDelete.available.single.id, rich.id);
+        expect(
+          afterDelete.available.single.revision,
+          acknowledgedRich.revision,
+        );
+        expect(afterDelete.issues, isEmpty);
+        expect(await third.repository.load(other.id), isNull);
+        expect(await third.repository.load(rich.id), acknowledgedRich);
+        await expectLater(
+          third.repository.save(
+            other,
+            expectedRevision: 0,
+            cancellation: _openToken(),
+          ),
+          _agentError(AgentErrorKind.conflict),
+        );
+        await third.runtime.close();
+        thirdClient.close();
+      },
+    );
+
+    test(
+      'injected durable failures are surfaced without memory fallback',
+      () async {
+        final client = http.Client();
+        addTearDown(client.close);
+        final persistence = JsonlAgentSessionStore(
+          storage: const _UnavailableJsonlStorage(),
+        );
+        final stack = _buildStackWithPersistence(client, persistence);
+        addTearDown(stack.runtime.close);
+
+        expect(identical(stack.repository, persistence), isTrue);
+        expect(identical(stack.catalog, persistence), isTrue);
+        expect(identical(stack.runtime.repository, persistence), isTrue);
+        await _expectSanitizedPersistence(stack.catalog.list());
+        await _expectSanitizedPersistence(
+          stack.repository.save(
+            _record(
+              AgentSessionId('no-production-fallback'),
+              revision: 0,
+              updatedAtMicros: 1,
+            ),
+            expectedRevision: 0,
+            cancellation: _openToken(),
+          ),
         );
       },
     );
@@ -162,6 +318,8 @@ void main() {
       final dependencies = DomovoyDependencies(
         runtime: stack.runtime,
         promptDefinition: stack.promptDefinition,
+        repository: stack.repository,
+        catalog: stack.catalog,
         overrideStore: MemoryApiKeyOverrideStore(),
         apiKeyResolver: ApiKeyResolver(
           overrideStore: MemoryApiKeyOverrideStore(),
@@ -190,6 +348,8 @@ void main() {
         final dependencies = DomovoyDependencies(
           runtime: stack.runtime,
           promptDefinition: stack.promptDefinition,
+          repository: stack.repository,
+          catalog: stack.catalog,
           overrideStore: MemoryApiKeyOverrideStore(),
           apiKeyResolver: ApiKeyResolver(
             overrideStore: MemoryApiKeyOverrideStore(),
@@ -391,6 +551,169 @@ void main() {
       },
     );
   });
+}
+
+JsonlFilesystemStreamStorage _filesystemStorage(Directory applicationSupport) {
+  return JsonlFilesystemStreamStorage(
+    applicationSupportDirectoryResolver: () async => applicationSupport,
+  );
+}
+
+ProductionAgentStack _buildStackWithPersistence(
+  http.Client client,
+  JsonlAgentSessionStore persistence,
+) {
+  return buildProductionAgentStack(
+    httpClient: client,
+    credentials: DefaultProviderCredentialResolver(
+      store: MemoryProviderCredentialStore(),
+      readEnvironment: (_) => null,
+    ),
+    repository: persistence,
+    catalog: persistence,
+  );
+}
+
+final class _UnavailableJsonlStorage implements JsonlStreamStorage {
+  const _UnavailableJsonlStorage();
+
+  @override
+  Future<void> cleanup(String key) {
+    throw StateError('storage cleanup /private/sk-secret raw-content');
+  }
+
+  @override
+  Future<List<String>> listKeys() {
+    throw StateError('storage list /private/sk-secret raw-content');
+  }
+
+  @override
+  Future<void> publish(String key, List<int> contents) {
+    throw StateError('storage publish /private/sk-secret raw-content');
+  }
+
+  @override
+  Future<Stream<List<int>>?> read(String key) {
+    throw StateError('storage read /private/sk-secret raw-content');
+  }
+}
+
+Future<void> _expectSanitizedPersistence(Future<Object?> future) async {
+  try {
+    await future;
+    fail('Expected a persistence failure.');
+  } on AgentException catch (error) {
+    expect(error.error.kind, AgentErrorKind.persistence);
+    expect(error.error.message, isNot(contains('sk-secret')));
+    expect(error.error.message, isNot(contains('/private')));
+    expect(error.error.message, isNot(contains('raw-content')));
+  }
+}
+
+Matcher _agentError(AgentErrorKind kind) => throwsA(
+  isA<AgentException>().having((error) => error.error.kind, 'kind', kind),
+);
+
+CancellationToken _openToken() => CancellationSource().token;
+
+AgentSessionRecord _record(
+  AgentSessionId id, {
+  required int revision,
+  required int updatedAtMicros,
+  int messages = 0,
+}) {
+  return AgentSessionRecord(
+    id: id,
+    revision: revision,
+    definition: testDefinition(),
+    transcript: AgentTranscript(
+      messages: List<LlmMessage>.generate(
+        messages,
+        (index) => LlmMessage(
+          role: index.isEven ? LlmMessageRole.user : LlmMessageRole.assistant,
+          parts: <LlmContentPart>[LlmTextPart('message-$index')],
+        ),
+      ),
+    ),
+    usage: LlmUsage(totalTokens: messages),
+    modelTurns: messages ~/ 2,
+    toolAttempts: 0,
+    createdAtMicros: 1,
+    updatedAtMicros: updatedAtMicros,
+  );
+}
+
+AgentSessionRecord _richRecord(
+  AgentSessionId id, {
+  required int revision,
+  required int updatedAtMicros,
+}) {
+  final messages = <LlmMessage>[
+    LlmMessage(
+      role: LlmMessageRole.assistant,
+      parts: <LlmContentPart>[LlmTextPart('summary')],
+    ),
+    LlmMessage(
+      role: LlmMessageRole.user,
+      parts: <LlmContentPart>[LlmTextPart('question')],
+    ),
+    LlmMessage(
+      role: LlmMessageRole.assistant,
+      parts: <LlmContentPart>[LlmTextPart('answer')],
+    ),
+  ];
+  return AgentSessionRecord(
+    id: id,
+    revision: revision,
+    definition: testDefinition(model: BuiltInLlmCatalog.gpt4oMiniModel.ref),
+    transcript: AgentTranscript(messages: messages),
+    usage: LlmUsage(inputTokens: 4, outputTokens: 2, totalTokens: 6),
+    modelTurns: 1,
+    toolAttempts: 0,
+    createdAtMicros: 1,
+    updatedAtMicros: updatedAtMicros,
+    continuationEntries: <LlmContinuationEntry>[
+      LlmContinuationEntry(
+        assistantMessageIndex: 2,
+        state: LlmProviderTurnState(
+          origin: BuiltInLlmCatalog.gpt4oMiniModel.ref,
+          wireFamily: LlmWireFamily.openaiResponses,
+          format: openaiResponsesOutputItemsV1,
+          payload: <Map<String, Object?>>[
+            <String, Object?>{
+              'type': 'message',
+              'id': 'message-2',
+              'role': 'assistant',
+              'content': <Map<String, Object?>>[
+                <String, Object?>{
+                  'type': 'output_text',
+                  'text': 'answer',
+                  'annotations': <Object?>[],
+                },
+              ],
+            },
+          ],
+        ),
+      ),
+    ],
+    compactionState: AgentCompactionState(
+      generation: 1,
+      generatedPrefixStart: 0,
+      generatedPrefixCount: 1,
+      reason: AgentCompactionReason.manual,
+      triggerId: null,
+      triggerVersion: null,
+      strategyId: 'summary',
+      strategyVersion: 1,
+      estimatorId: 'utf8-framing',
+      estimatorVersion: 1,
+      removedMessageCount: 2,
+      beforeEstimate: 20,
+      afterEstimate: 10,
+      decisionMetadata: const <String, Object?>{'mode': 'safe'},
+      updatedAtMicros: updatedAtMicros,
+    ),
+  );
 }
 
 final class _DelayedReleaseClient extends http.BaseClient {

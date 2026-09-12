@@ -292,9 +292,12 @@ final class _Harness {
       overrideStore: store,
       environment: const MapEnvironmentReader({}),
     );
+    persistence = InMemoryAgentSessionRepository();
     dependencies = DomovoyDependencies(
       runtime: _providedRuntime ?? this.runtime,
       promptDefinition: PromptWorkspace.definition(),
+      repository: persistence,
+      catalog: persistence,
       overrideStore: store,
       apiKeyResolver: resolver,
     );
@@ -304,6 +307,7 @@ final class _Harness {
   final AgentRuntime? _providedRuntime;
   late final MemoryApiKeyOverrideStore store;
   late final ApiKeyResolver resolver;
+  late final InMemoryAgentSessionRepository persistence;
   late final DomovoyDependencies dependencies;
 
   Widget get app => DomovoyApp(dependencies: dependencies);

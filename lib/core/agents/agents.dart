@@ -1,4 +1,5 @@
 export 'clock.dart';
+export 'catalog.dart';
 export 'compaction.dart';
 export 'definition.dart';
 export 'errors.dart';

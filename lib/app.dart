@@ -14,6 +14,7 @@ import 'features/settings/data/secure_model_settings_store.dart';
 import 'features/settings/domain/api_key_credentials.dart';
 import 'features/settings/domain/model_settings.dart';
 import 'infrastructure/credentials/credentials.dart';
+import 'infrastructure/agents/jsonl/jsonl.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
 
@@ -23,18 +24,34 @@ final class ProductionAgentStack {
     required this.runtime,
     required this.promptDefinition,
     required this.credentials,
+    required this.repository,
+    required this.catalog,
   });
 
   final LlmProviderRegistry registry;
   final InMemoryAgentRuntime runtime;
   final AgentDefinition promptDefinition;
   final ProviderCredentialResolver credentials;
+  final AgentSessionRepository repository;
+  final AgentSessionCatalog catalog;
 }
 
 ProductionAgentStack buildProductionAgentStack({
   required http.Client httpClient,
   required ProviderCredentialResolver credentials,
+  AgentSessionRepository? repository,
+  AgentSessionCatalog? catalog,
 }) {
+  if ((repository == null) != (catalog == null)) {
+    throw ArgumentError(
+      'Repository and catalog replacements must be supplied together.',
+    );
+  }
+  final durableStore = repository == null
+      ? JsonlAgentSessionStore(storage: createPlatformJsonlStreamStorage())
+      : null;
+  final resolvedRepository = repository ?? durableStore!;
+  final resolvedCatalog = catalog ?? durableStore!;
   final deepSeek = OpenAiCompatibleProfile.deepSeek();
   final moonshot = OpenAiCompatibleProfile.moonshotAi();
   final openAi = OpenAiResponsesProfile.builtIn();
@@ -68,7 +85,7 @@ ProductionAgentStack buildProductionAgentStack({
       'deny': const DenyAllPolicy(),
       'allow': const AllowAllPolicy(),
     },
-    repository: InMemoryAgentSessionRepository(),
+    repository: resolvedRepository,
     router: InMemorySessionRouter(),
     profile: AgentRuntimeProfile(),
   );
@@ -77,6 +94,8 @@ ProductionAgentStack buildProductionAgentStack({
     runtime: runtime,
     promptDefinition: PromptWorkspace.definition(),
     credentials: credentials,
+    repository: resolvedRepository,
+    catalog: resolvedCatalog,
   );
 }
 
@@ -84,6 +103,8 @@ final class DomovoyDependencies {
   DomovoyDependencies({
     required this.runtime,
     required this.promptDefinition,
+    required this.repository,
+    required this.catalog,
     required this.overrideStore,
     required this.apiKeyResolver,
     DeepSeekModelSettingsStore? modelSettingsStore,
@@ -116,6 +137,8 @@ final class DomovoyDependencies {
     return DomovoyDependencies(
       runtime: stack.runtime,
       promptDefinition: stack.promptDefinition,
+      repository: stack.repository,
+      catalog: stack.catalog,
       overrideStore: overrideStore,
       apiKeyResolver: resolver,
       modelSettingsStore: modelSettingsStore,
@@ -125,6 +148,8 @@ final class DomovoyDependencies {
 
   final AgentRuntime runtime;
   final AgentDefinition promptDefinition;
+  final AgentSessionRepository repository;
+  final AgentSessionCatalog catalog;
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore modelSettingsStore;
