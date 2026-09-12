@@ -1,114 +1,98 @@
 # Маршрутизация задач
 
-Каждая работа получает стабильный `scope_id`, `attempt_id`, начальный tier и
-проверяемые критерии приёмки до назначения исполнителя. Tier можно только
-повышать. Если фактический diff обнаруживает новый риск, старый маршрут больше
-не действует.
+Сначала определите сценарий и ближайший результат, затем риск конкретного участка.
+Для реализации используйте feature.md. Один change может включать несколько
+участков. Его общий T2 не делает каждый макет, документ и UI-участок T2.
 
-## Tier'ы
+## Tier
 
-### T0 — локальное изменение
+- T0: локальное изменение с известным scope и очевидной проверкой.
+- T1: обычный участок с готовыми или требующими уточнения требованиями.
+- T2: участок изменяет authentication/secrets/privacy/permissions/cryptography;
+  persistence/schema/migration/deletion; concurrency/cancellation/retry/lifecycle;
+  внешний необратимый/платный side effect; public API/provider protocol или
+  архитектурный контракт. Нужны конкретное изменяемое поведение и evidence,
+  а не совпадение слов в описании всей фичи.
 
-Допустим только когда scope известен, изменение локально, критерий проверки
-очевиден и нет hard-сигналов. Обычный маршрут:
+Новый hard-сигнал в текущем участке повышает tier до затронутой правки.
+Не понижайте риск того же участка для обхода review. Независимый следующий участок
+оценивайте отдельно. Отсутствие ясного AC требует уточнить AC, а не автоматически T2.
+Повторный finding требует исправления/остановки, но не сам по себе повышения tier.
 
-```text
-coder-fast -> verifier -> reviewer-light
-```
+## Маршруты
 
-### T1 — обычная запланированная работа
+T0: coder-fast → недостающие проверки → reviewer-light.
+T1: architect только при пробеле в плане → coder → недостающие проверки → reviewer-light.
+T2: architect только при пробеле в контракте → reviewer затронутого контракта,
+если нет применимого approval → coder-strong → проверки → reviewer изменений.
 
-Нужны требования и декомпозиция, но нет hard-сигналов. Обычный маршрут:
+Исследование и показ макетов имеют свои результаты, не требуют code approval.
+Существующий contract verdict используйте, пока затронутое решение не менялось.
+Ревью фиксирует предмет approval; запись пользовательского согласия, process-log,
+посторонний коммит или правка другого раздела не отменяют его автоматически.
+Содержательное изменение одобренного контракта требует review изменённой части.
 
-```text
-architect -> coder -> verifier -> reviewer-light
-```
+## Карточка участка
 
-### T2 — критический контракт
+scope_id, attempt_id, stage, change, результат, task IDs / AC, initial_tier,
+current_tier, risk evidence, included/excluded scope, expected_changed_paths,
+base_revision (полный SHA до writer), contract_revision (решение для участка),
+стартовый dirty diff, model_tiers_used, rework_count, пользовательские gates.
 
-Любой из следующих сигналов сразу требует T2:
+Перед writer зафиксируйте base и исходные чужие изменения; не удаляйте и не
+коммитьте их ради чистой проверки. Последующий участок без промежуточного коммита
+использует тот же base плюс явно записанный стартовый diff. Reviewer оценивает
+дельту участка относительно этого состояния, а не всю накопленную фичу.
 
-- authentication, secrets, privacy, permissions или cryptography;
-- persistence, schema, migration, data loss или restore;
-- concurrency, cancellation, retry, lifecycle, recovery или idempotency;
-- внешний необратимый, платный или пользовательский side effect;
-- public API, wire/provider protocol или backward compatibility;
-- изменение архитектурного контракта;
-- повторно открытый invariant;
-- отсутствие исполняемого критерия приёмки.
+## Проверки и evidence
 
-Маршрут:
+Различайте implemented, CHECKS_PASS и accepted. Для accepted нужны AC,
+доказательства всех обязательных проверок и подходящий verdict по текущему diff.
+Единственный обязательный формат evidence — проверяемый handoff: команда, cwd,
+код завершения, итоговый вывод/путь к логу, проверенный состав файлов и его версия
+(содержимое/hash или runner fingerprint), зависимости/окружение, ограничения.
+HEAD без учёта dirty/untracked файлов не идентифицирует проверенную реализацию.
 
-```text
-architect -> reviewer (contract review) -> coder-strong -> verifier
-          -> reviewer (code review)
-```
+Источник — coder или verifier. Если результаты полные и актуальные, отдельный
+вызов verifier не требуется. Reviewer возвращает evidence_refs (может быть runner
+result_id), scope_id, base_revision, contract_revision и проверенную версию/diff.
+При неизвестной актуальности не считайте проверку пройденной: уточните состояние
+или повторите относящуюся проверку. Новая реализация, зависимость, окружение либо
+обнаруженная ненадёжность evidence требуют соответствующего повторного запуска.
+Документирование результата само по себе не требует повторного Flutter-набора.
 
-## Route card
+Pipeline-check остаётся опциональным источником формального RESULT. Он проверяет
+весь base..HEAD + index/worktree/untracked, не умеет выделять дельту участка и
+всегда выполняет полный выбранный набор. Используйте его только при совместимом
+scope. Не расширяйте allowed paths чужими файлами для зелёного результата и не
+создавайте worktree лишь ради формы evidence. При несовместимом scope используйте
+прямые проверки coder с проверяемым handoff. Не называйте этот handoff runner RESULT.
+Для изменений приложения: dart format, flutter analyze, flutter test обязательны
+на готовом участке; целевые проверки дополнительно по AC. Для tooling/docs-only
+выбирайте проверки конфигурации/форматов; Flutter без изменений приложения не нужен.
 
-Оркестратор создаёт и передаёт каждой роли:
+## Findings и предел работы
 
-```text
-scope_id: <стабильный id>
-attempt_id: <id текущей попытки>
-initial_tier: T0 | T1 | T2
-current_tier: T0 | T1 | T2
-contract_revision: <версия пользовательского запроса/OpenSpec>
-implementation_revision: pending | <fingerprint verifier>
-base_revision: <полный immutable commit SHA до начала реализации>
-included_scope: <пути и поведение>
-excluded_scope: <явные non-goals>
-risk_signals: <сигнал + доказательство или none>
-acceptance_ids: <AC-...>
-expected_changed_paths: <repo-relative paths/globs>
-required_checks: <команды>
-model_tiers_used: <fast | balanced | strong>
-rework_count: <целое число>
-```
+Finding: finding_id, invariant_id, severity, file:line, причинность, нарушенный AC
+или поведение, evidence, требуемое исправление, blocking или note.
+Review ограничен новым diff и вызванными им регрессиями. Старые несвязанные проблемы
+и вкусовые улучшения — notes; ими нельзя блокировать участок. Конкретный пропущенный
+AC блокирует даже если строки реализации для него отсутствуют.
+Coder отмечает fixed_pending_review; reviewer закрывает finding.
+Повторный review проверяет исправления и связанные регрессии. Новый blocker допустим
+при конкретном новом evidence, не для общего аудита заново.
 
-`base_revision` фиксируется полным commit SHA до первого writer-вызова и не
-меняется внутри scope. Verifier анализирует совокупность `base..HEAD`, index,
-worktree и untracked paths. Его fingerprint включает base/HEAD tree blobs,
-file modes, index entries, содержимое файлов, symlink targets и удаления.
+Максимум два цикла исправлений на участок суммарно (contract и code review).
+Смена task_id, revision, архитектора или названия того же scope не сбрасывает лимит.
+После каждого исправления допустим целевой re-review (исходное ревью + максимум
+два re-review). Если второй цикл не снял блокер — blocked с причиной, без третьего
+цикла исправлений или нового общего review.
+Существенные нерешённые дефекты нельзя принимать по истечении лимита.
+Новый участок для обхода того же блокера запрещён. Независимая работа может продолжаться.
 
-Оценка выполняется трижды:
-
-1. `orchestrator` — по запросу и известному контексту;
-2. `coder`/`coder-fast` — до первой правки по планируемому touch-set;
-3. `reviewer-light`/`reviewer` — по фактическому diff.
-
-Coder или reviewer, обнаруживший необходимость повышения, возвращает
-`ESCALATION` оркестратору и не продолжает облегчённый маршрут.
-
-## Состояния и revisions
-
-```text
-planned -> implementing -> implemented -> under_review -> accepted
-                                      \-> blocked_by_spec
-```
-
-`implemented` означает только handoff кодера. `CHECKS_PASS` означает только
-успех формальных проверок. `accepted` возможен исключительно после подходящего
-LLM-review и его verdict.
-
-Вердикт всегда привязан к `scope_id`, `base_revision`, `contract_revision` и
-`implementation_revision`. Изменение контракта, базы или проверяемой реализации
-делает прежний verdict устаревшим. `result_id` строится из canonical check
-payload и сохраняется иммутабельно: повтор идентичной проверки идемпотентен, а
-иная полезная нагрузка никогда не перезаписывает существующий RESULT.
-
-## Findings и остановка бесполезного цикла
-
-Каждый обязательный finding получает стабильные `finding_id` и `invariant_id`.
-Coder переводит его только в `fixed_pending_review`; закрыть finding может лишь
-reviewer. Повторное открытие одного invariant после двух попыток исправления
-маршрутизируется архитектору как `BLOCKED_BY_SPEC`. Два цикла без нового
-evidence, закрытого finding или улучшившейся проверки дают `NO_PROGRESS` и
-требуют пересмотра контракта, дробления scope или решения пользователя.
-
-После изменения архитектуры или двух fix-циклов создаётся свежий task context.
-В него передают route card, решения, открытые findings и evidence, а не полный
-transcript.
+Процессные записи и shadow-log неблокирующие. Не назначайте отдельного verifier
+для записи, копирования, проверки сохранения или удаления evidence. Существующие
+нужные результаты сохраняйте; ошибку журнала сообщайте без рекурсивного ремонта.
 
 ## Модельные профили
 
