@@ -22,6 +22,11 @@ import 'support/recording_http_client.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   group('production agent composition', () {
+    test('direct core ID factory retains its legacy default IDs', () {
+      expect(AgentIdFactory().next('message'), 'message-1');
+      expect(AgentIdFactory().next('run'), 'run-1');
+    });
+
     test('registers API-key provider manifest and curated startup models', () {
       final client = http.Client();
       addTearDown(client.close);
@@ -318,6 +323,90 @@ void main() {
               ),
           hasLength(summaryRequests.length),
         );
+      },
+    );
+
+    test(
+      'fresh production stack appends to restored legacy message IDs',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'domovoy-production-id-restart-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        final client = RecordingClient((request) {
+          if (request.method == 'POST' &&
+              request.url.host == 'api.deepseek.com' &&
+              request.url.path.endsWith('/chat/completions')) {
+            return sseResponse(_chatCompletionSse('Принято', promptTokens: 25));
+          }
+          return _switchDiscoveryResponse(request);
+        });
+        addTearDown(client.close);
+        final credentials = DefaultProviderCredentialResolver(
+          store: MemoryProviderCredentialStore(<ProviderId, String>{
+            BuiltInLlmCatalog.deepSeek: 'test-key',
+          }),
+          readEnvironment: (_) => null,
+        );
+        final originalStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final original = buildProductionAgentStack(
+          httpClient: client,
+          credentials: credentials,
+          repository: originalStore,
+          catalog: originalStore,
+          diagnosticNoCompaction: true,
+          ids: AgentIdFactory(),
+        );
+        final session = await original.runtime
+            .agent(original.promptDefinition)
+            .createSession(
+              id: AgentSessionId('production-legacy-message-ids'),
+              persistence: SessionPersistence.repository,
+            );
+        expect(
+          (await session.run('Первый запрос').events.toList()).last,
+          isA<AgentRunCompleted>(),
+        );
+        final oldIds = session.snapshot.transcript.messageIds
+            .whereType<AgentTranscriptMessageId>()
+            .toList();
+        expect(oldIds, hasLength(2));
+        expect(oldIds.every((id) => id.value.startsWith('message-')), isTrue);
+        await session.close();
+        await original.runtime.close();
+        await original.providerModelCatalog?.close();
+
+        final restoredStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final fresh = buildProductionAgentStack(
+          httpClient: client,
+          credentials: credentials,
+          repository: restoredStore,
+          catalog: restoredStore,
+          diagnosticNoCompaction: true,
+        );
+        final restored = await fresh.runtime
+            .agent(fresh.promptDefinition)
+            .restoreSession(AgentSessionId('production-legacy-message-ids'));
+        expect(
+          (await restored.run('Второй запрос').events.toList()).last,
+          isA<AgentRunCompleted>(),
+        );
+        final allIds = restored.snapshot.transcript.messageIds
+            .whereType<AgentTranscriptMessageId>()
+            .toList();
+        expect(allIds, hasLength(4));
+        expect(allIds.toSet(), hasLength(4));
+        expect(
+          allIds.skip(2).every((id) => id.value.startsWith('runtime-')),
+          isTrue,
+        );
+        await restored.close();
+        await fresh.runtime.close();
+        await fresh.providerModelCatalog?.close();
       },
     );
 

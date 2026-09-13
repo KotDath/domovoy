@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -52,6 +53,7 @@ ProductionAgentStack buildProductionAgentStack({
   AgentSessionRepository? repository,
   AgentSessionCatalog? catalog,
   bool diagnosticNoCompaction = false,
+  AgentIdFactory? ids,
 }) {
   if ((repository == null) != (catalog == null)) {
     throw ArgumentError(
@@ -156,6 +158,7 @@ ProductionAgentStack buildProductionAgentStack({
     compactionTrigger: diagnosticNoCompaction ? null : compactionTrigger,
     modelSwitchFitPolicy: modelSwitchFitPolicy,
     historyCompactor: diagnosticNoCompaction ? null : historyCompactor,
+    ids: ids ?? AgentIdFactory(namespace: _newRuntimeNamespace()),
   );
   return ProductionAgentStack(
     registry: registry,
@@ -166,6 +169,15 @@ ProductionAgentStack buildProductionAgentStack({
     catalog: resolvedCatalog,
     providerModelCatalog: providerModelCatalog,
   );
+}
+
+String _newRuntimeNamespace() {
+  final random = Random.secure();
+  final nonce = List<String>.generate(
+    4,
+    (_) => random.nextInt(1 << 30).toRadixString(36),
+  ).join('-');
+  return 'runtime-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-$nonce';
 }
 
 final class DomovoyDependencies {
