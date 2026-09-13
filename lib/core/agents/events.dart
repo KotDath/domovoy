@@ -19,7 +19,14 @@ enum AgentStopReason {
   totalBudget,
 }
 
-enum AgentSessionLifecycle { idle, running, compacting, closing, closed }
+enum AgentSessionLifecycle {
+  idle,
+  running,
+  compacting,
+  switchingModel,
+  closing,
+  closed,
+}
 
 sealed class AgentCompactionEvent {
   const AgentCompactionEvent({

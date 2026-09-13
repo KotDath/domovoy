@@ -55,8 +55,16 @@ void main() {
       expect(stack.runtime.profile.limits.maxModelTurns, isNull);
       expect(stack.runtime.profile.limits.maxToolCalls, isNull);
       expect(stack.runtime.profile.budget.totalTokens, isNull);
-      expect(stack.runtime.compactionTrigger, isNull);
-      expect(stack.runtime.historyCompactor, isNull);
+      expect(
+        stack.runtime.contextEstimator,
+        isA<Utf8FramingAgentContextEstimator>(),
+      );
+      expect(stack.runtime.compactionTrigger, isA<OpenCodeCompactionTrigger>());
+      expect(
+        stack.runtime.modelSwitchFitPolicy,
+        isA<OpenCodeAgentModelSwitchFitPolicy>(),
+      );
+      expect(stack.runtime.historyCompactor, isA<OpenCodeSummaryCompactor>());
       expect(stack.repository, isA<JsonlAgentSessionStore>());
       expect(identical(stack.repository, stack.catalog), isTrue);
       expect(identical(stack.runtime.repository, stack.repository), isTrue);
@@ -83,6 +91,7 @@ void main() {
         );
         final dependencies = DomovoyDependencies(
           runtime: stack.runtime,
+          registry: stack.registry,
           promptDefinition: stack.promptDefinition,
           repository: stack.repository,
           catalog: stack.catalog,
@@ -108,7 +117,7 @@ void main() {
     );
 
     test(
-      'production prompt workspace remains an unconfigured one-shot',
+      'non-workspace prompt facade remains one-shot with configured runtime',
       () async {
         final sandbox = await Directory.systemTemp.createTemp(
           'domovoy-composition-prompt-',
@@ -138,8 +147,8 @@ void main() {
           client.close();
         });
 
-        expect(stack.runtime.compactionTrigger, isNull);
-        expect(stack.runtime.historyCompactor, isNull);
+        expect(stack.runtime.compactionTrigger, isNotNull);
+        expect(stack.runtime.historyCompactor, isNotNull);
         expect(stack.promptDefinition.limits?.maxModelTurns, 1);
         expect(stack.promptDefinition.limits?.maxToolCalls, 0);
 
@@ -430,6 +439,7 @@ void main() {
       client.runtime = stack.runtime;
       final dependencies = DomovoyDependencies(
         runtime: stack.runtime,
+        registry: stack.registry,
         promptDefinition: stack.promptDefinition,
         repository: stack.repository,
         catalog: stack.catalog,
@@ -460,6 +470,7 @@ void main() {
         );
         final dependencies = DomovoyDependencies(
           runtime: stack.runtime,
+          registry: stack.registry,
           promptDefinition: stack.promptDefinition,
           repository: stack.repository,
           catalog: stack.catalog,
@@ -779,6 +790,11 @@ AgentSessionRecord _richRecord(
     id: id,
     revision: revision,
     definition: testDefinition(model: BuiltInLlmCatalog.gpt4oMiniModel.ref),
+    selection: AgentSessionSelection(
+      model: BuiltInLlmCatalog.gpt4oMiniModel.ref,
+      reasoningMode: ReasoningMode.disabled,
+      reasoningEffort: ReasoningEffort.modelDefault,
+    ),
     transcript: AgentTranscript(messages: messages),
     usage: LlmUsage(inputTokens: 4, outputTokens: 2, totalTokens: 6),
     modelTurns: 1,

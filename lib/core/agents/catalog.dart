@@ -3,6 +3,7 @@ import '../llm/json.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'record.dart';
+import 'selection.dart';
 
 abstract interface class AgentSessionCatalog {
   Future<AgentSessionCatalogSnapshot> list();
@@ -15,6 +16,8 @@ final class AgentSessionSummary {
     required this.createdAtMicros,
     required this.updatedAtMicros,
     required this.model,
+    required this.selection,
+    this.title,
     required this.messageCount,
   });
 
@@ -23,6 +26,8 @@ final class AgentSessionSummary {
   final int createdAtMicros;
   final int updatedAtMicros;
   final ModelRef model;
+  final AgentSessionSelection selection;
+  final String? title;
   final int messageCount;
 
   @override
@@ -34,6 +39,8 @@ final class AgentSessionSummary {
           other.createdAtMicros == createdAtMicros &&
           other.updatedAtMicros == updatedAtMicros &&
           other.model == model &&
+          other.selection == selection &&
+          other.title == title &&
           other.messageCount == messageCount;
 
   @override
@@ -43,6 +50,8 @@ final class AgentSessionSummary {
     createdAtMicros,
     updatedAtMicros,
     model,
+    selection,
+    title,
     messageCount,
   );
 }
@@ -92,7 +101,9 @@ AgentSessionSummary summarizeAgentSession(AgentSessionRecord record) {
     revision: record.revision,
     createdAtMicros: record.createdAtMicros,
     updatedAtMicros: record.updatedAtMicros,
-    model: record.definition.model,
+    model: record.selection.model,
+    selection: record.selection,
+    title: record.title,
     messageCount: record.transcript.messages.length,
   );
 }

@@ -9,7 +9,9 @@ import 'compaction.dart';
 import 'definition.dart';
 import 'errors.dart';
 import 'ids.dart';
+import 'selection.dart';
 import 'token_accounting.dart';
+import 'title.dart';
 import 'transcript.dart';
 
 final class AgentSessionRecord {
@@ -23,11 +25,16 @@ final class AgentSessionRecord {
     required this.toolAttempts,
     required this.createdAtMicros,
     required this.updatedAtMicros,
+    AgentSessionSelection? selection,
+    String? title,
     List<LlmContinuationEntry> continuationEntries =
         const <LlmContinuationEntry>[],
     this.compactionState,
     AgentTokenAccountingState? tokenAccounting,
-  }) : tokenAccounting =
+  }) : selection =
+           selection ?? AgentSessionSelection.fromDefinition(definition),
+       title = title == null ? null : requireValidAgentSessionTitle(title),
+       tokenAccounting =
            tokenAccounting ??
            AgentTokenAccountingState.legacy(
              transcriptMessageCount: transcript.messages.length,
@@ -53,8 +60,8 @@ final class AgentSessionRecord {
         validateContinuationEntries(
           messages: transcript.messages,
           entries: this.continuationEntries,
-          origin: definition.model,
-          wireFamily: _wireFamilyFor(definition, this.continuationEntries),
+          origin: this.selection.model,
+          wireFamily: _wireFamilyFor(this.selection, this.continuationEntries),
         );
       } on LlmException catch (error) {
         throwAgent(AgentErrorKind.configuration, error.error.message);
@@ -103,7 +110,14 @@ final class AgentSessionRecord {
   }
 
   factory AgentSessionRecord.fromJson(Object? json) {
-    final map = decodeTypedJson(json, type: jsonType);
+    final raw = asJsonObject(json);
+    final version = raw?[llmJsonVersionKey];
+    final isLegacy = version == legacyJsonVersion;
+    final map = decodeTypedJson(
+      json,
+      type: jsonType,
+      version: isLegacy ? legacyJsonVersion : currentJsonVersion,
+    );
     var transcript = AgentTranscript.fromJson(map['transcript']);
     final accounting = map['tokenAccounting'] == null
         ? null
@@ -127,6 +141,10 @@ final class AgentSessionRecord {
       toolAttempts: requireInt(map, 'toolAttempts'),
       createdAtMicros: requireInt(map, 'createdAtMicros'),
       updatedAtMicros: requireInt(map, 'updatedAtMicros'),
+      selection: isLegacy
+          ? null
+          : AgentSessionSelection.fromJson(map['selection']),
+      title: isLegacy ? null : optionalString(map, 'title'),
       continuationEntries: map['continuationEntries'] == null
           ? const <LlmContinuationEntry>[]
           : requireList(
@@ -141,6 +159,8 @@ final class AgentSessionRecord {
   }
 
   static const jsonType = 'agent.session_record';
+  static const legacyJsonVersion = 1;
+  static const currentJsonVersion = 2;
 
   final AgentSessionId id;
   final int revision;
@@ -151,6 +171,8 @@ final class AgentSessionRecord {
   final int toolAttempts;
   final int createdAtMicros;
   final int updatedAtMicros;
+  final AgentSessionSelection selection;
+  final String? title;
   final List<LlmContinuationEntry> continuationEntries;
   final AgentCompactionState? compactionState;
   final AgentTokenAccountingState tokenAccounting;
@@ -175,6 +197,8 @@ final class AgentSessionRecord {
     int? modelTurns,
     int? toolAttempts,
     int? updatedAtMicros,
+    AgentSessionSelection? selection,
+    String? title,
     List<LlmContinuationEntry>? continuationEntries,
     AgentCompactionState? compactionState,
     bool clearCompactionState = false,
@@ -200,6 +224,8 @@ final class AgentSessionRecord {
       toolAttempts: toolAttempts ?? this.toolAttempts,
       createdAtMicros: createdAtMicros,
       updatedAtMicros: updatedAtMicros ?? this.updatedAtMicros,
+      selection: selection ?? this.selection,
+      title: title ?? this.title,
       continuationEntries: continuationEntries ?? this.continuationEntries,
       compactionState: clearCompactionState
           ? null
@@ -219,17 +245,25 @@ final class AgentSessionRecord {
       'toolAttempts': toolAttempts,
       'createdAtMicros': createdAtMicros,
       'updatedAtMicros': updatedAtMicros,
+      'selection': selection.toJson(),
       'continuationEntries': continuationEntries
           .map((entry) => entry.toJson())
           .toList(),
     };
+    if (title != null) {
+      fields['title'] = title;
+    }
     if (compactionState != null) {
       fields['compactionState'] = compactionState!.toJson();
     }
     if (tokenAccounting.generation > 0) {
       fields['tokenAccounting'] = tokenAccounting.toJson();
     }
-    return typedJson(type: jsonType, fields: fields);
+    return typedJson(
+      type: jsonType,
+      version: currentJsonVersion,
+      fields: fields,
+    );
   }
 
   @override
@@ -245,6 +279,8 @@ final class AgentSessionRecord {
           other.toolAttempts == toolAttempts &&
           other.createdAtMicros == createdAtMicros &&
           other.updatedAtMicros == updatedAtMicros &&
+          other.selection == selection &&
+          other.title == title &&
           listEquals(other.continuationEntries, continuationEntries) &&
           other.compactionState == compactionState &&
           other.tokenAccounting == tokenAccounting;
@@ -260,6 +296,8 @@ final class AgentSessionRecord {
     toolAttempts,
     createdAtMicros,
     updatedAtMicros,
+    selection,
+    title,
     Object.hashAll(continuationEntries),
     compactionState,
     tokenAccounting,
@@ -274,11 +312,11 @@ final class AgentSessionRecord {
 }
 
 LlmWireFamily _wireFamilyFor(
-  AgentDefinition definition,
+  AgentSessionSelection selection,
   List<LlmContinuationEntry> entries,
 ) {
   for (final model in BuiltInLlmCatalog.models) {
-    if (model.ref == definition.model) {
+    if (model.ref == selection.model) {
       return model.wireFamily;
     }
   }

@@ -110,6 +110,7 @@ InMemoryAgentRuntime testRuntime({
   AgentPersistencePolicy? persistencePolicy,
   AgentContextEstimator? contextEstimator,
   AgentCompactionTrigger? compactionTrigger,
+  AgentModelSwitchFitPolicy? modelSwitchFitPolicy,
   AgentHistoryCompactor? historyCompactor,
 }) {
   final registry = LlmProviderRegistry();
@@ -129,6 +130,7 @@ InMemoryAgentRuntime testRuntime({
     persistencePolicy: persistencePolicy,
     contextEstimator: contextEstimator,
     compactionTrigger: compactionTrigger,
+    modelSwitchFitPolicy: modelSwitchFitPolicy,
     historyCompactor: historyCompactor,
   );
 }

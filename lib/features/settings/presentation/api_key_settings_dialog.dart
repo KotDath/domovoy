@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../design_system/design_system.dart';
 import '../domain/api_key_credentials.dart';
 import '../domain/model_settings.dart';
 import 'api_key_settings_controller.dart';
@@ -99,7 +100,7 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
       child: AlertDialog(
         title: const Text('Настройки DeepSeek'),
         content: SizedBox(
-          width: 520,
+          width: DomovoyDimensions.settingsDialogWidth,
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -110,13 +111,13 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
                   'Учётные данные',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: DomovoyDimensions.space3),
                 Text(
                   _sourceDescription(state.source),
                   key: const ValueKey('api-key-source'),
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: DomovoyDimensions.space5),
                 TextField(
                   key: const ValueKey('api-key-input'),
                   controller: _keyController,
@@ -135,7 +136,7 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
                   onSubmitted: busy ? null : (_) => _save(),
                 ),
                 if (state.hasApplicationOverride) ...[
-                  const SizedBox(height: 8),
+                  const SizedBox(height: DomovoyDimensions.space3),
                   Align(
                     alignment: Alignment.centerLeft,
                     child: TextButton.icon(
@@ -147,13 +148,15 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
                   ),
                 ],
                 if (widget.isWeb) ...[
-                  const SizedBox(height: 12),
+                  const SizedBox(height: DomovoyDimensions.space4),
                   Container(
                     key: const ValueKey('web-key-warning'),
-                    padding: const EdgeInsets.all(12),
+                    padding: DomovoyDimensions.panelInsets,
                     decoration: BoxDecoration(
                       color: colorScheme.tertiaryContainer,
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(
+                        DomovoyDimensions.radiusMedium,
+                      ),
                     ),
                     child: const Text(
                       'Браузерное приложение не может скрыть ключ от кода, '
@@ -162,9 +165,9 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 20),
+                const SizedBox(height: DomovoyDimensions.space6),
                 Text('Модель', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
+                const SizedBox(height: DomovoyDimensions.space3),
                 SwitchListTile(
                   key: const ValueKey('reasoning-switch'),
                   value: state.reasoningEnabled,
@@ -180,13 +183,13 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
                   contentPadding: EdgeInsets.zero,
                 ),
                 if (state.isReasoningSaving) ...[
-                  const SizedBox(height: 4),
+                  const SizedBox(height: DomovoyDimensions.space2),
                   const LinearProgressIndicator(
                     key: ValueKey('reasoning-saving'),
                   ),
                 ],
                 if (state.message != null) ...[
-                  const SizedBox(height: 12),
+                  const SizedBox(height: DomovoyDimensions.space4),
                   Text(
                     state.message!,
                     key: const ValueKey('api-key-settings-message'),
@@ -207,8 +210,10 @@ class _ApiKeySettingsDialogState extends State<ApiKeySettingsDialog> {
             onPressed: busy ? null : _save,
             child: state.isSaving
                 ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    dimension: DomovoyDimensions.progressSmall,
+                    child: CircularProgressIndicator(
+                      strokeWidth: DomovoyDimensions.progressStroke,
+                    ),
                   )
                 : const Text('Сохранить'),
           ),

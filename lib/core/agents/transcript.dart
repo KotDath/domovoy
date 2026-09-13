@@ -5,6 +5,7 @@ import 'compaction.dart';
 import 'definition.dart';
 import 'events.dart';
 import 'ids.dart';
+import 'selection.dart';
 import 'token_accounting.dart';
 
 final class AgentTranscript {
@@ -84,8 +85,12 @@ final class AgentSessionSnapshot {
     required this.toolAttempts,
     required this.revision,
     required this.compactionState,
+    AgentSessionSelection? selection,
+    this.title,
     AgentTokenAccountingSnapshot? tokenAccounting,
-  }) : tokenAccounting =
+  }) : selection =
+           selection ?? AgentSessionSelection.fromDefinition(definition),
+       tokenAccounting =
            tokenAccounting ??
            const AgentTokenAccountingProjector().project(
              state: AgentTokenAccountingState.legacy(
@@ -103,6 +108,8 @@ final class AgentSessionSnapshot {
   final int toolAttempts;
   final int revision;
   final AgentCompactionState? compactionState;
+  final AgentSessionSelection selection;
+  final String? title;
   final AgentTokenAccountingSnapshot tokenAccounting;
 
   int get compactionGeneration => compactionState?.generation ?? 0;

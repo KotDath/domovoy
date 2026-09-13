@@ -76,6 +76,7 @@ final class OpenAiCompatibleProfile {
 
   factory OpenAiCompatibleProfile.custom({
     required ProviderId id,
+    String? displayName,
     required Uri endpoint,
     required String environmentVariable,
     required List<LlmModel> models,
@@ -87,6 +88,7 @@ final class OpenAiCompatibleProfile {
     return OpenAiCompatibleProfile(
       snapshot: LlmProviderProfile(
         id: id,
+        displayName: displayName,
         wireFamily: LlmWireFamily.openaiChatCompletions,
         endpoint: endpoint,
         environmentVariable: environmentVariable,

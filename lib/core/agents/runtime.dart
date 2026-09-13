@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../llm/cancellation.dart';
+import '../llm/capabilities.dart';
 import '../llm/continuation.dart';
 import '../llm/errors.dart';
 import '../llm/events.dart';
@@ -23,8 +24,10 @@ import 'policies.dart';
 import 'record.dart';
 import 'repository.dart';
 import 'schema.dart';
+import 'selection.dart';
 import 'tools.dart';
 import 'token_accounting.dart';
+import 'title.dart';
 import 'transcript.dart';
 
 enum SessionPersistence { transient, repository }
@@ -59,9 +62,25 @@ abstract interface class AgentSession {
 
   AgentSessionLifecycle get lifecycle;
 
-  AgentRun run(String input, {AgentRunOptions? options});
+  AgentRun run(
+    String input, {
+    AgentRunOptions? options,
+    AgentSessionTitlePolicy? titlePolicy,
+  });
 
-  AgentRun runTyped(LlmMessage input, {AgentRunOptions? options});
+  AgentRun runTyped(
+    LlmMessage input, {
+    AgentRunOptions? options,
+    AgentSessionTitlePolicy? titlePolicy,
+  });
+
+  Future<AgentSessionSelectionResult> changeSelection(
+    AgentSessionSelection selection,
+  );
+
+  AgentSessionSelectionOperation changeSelectionOperation(
+    AgentSessionSelection selection,
+  );
 
   AgentCompactionOperation compact();
 
@@ -103,6 +122,7 @@ final class InMemoryAgentRuntime implements AgentRuntime {
     AgentPersistencePolicy? persistencePolicy,
     AgentContextEstimator? contextEstimator,
     AgentCompactionTrigger? compactionTrigger,
+    AgentModelSwitchFitPolicy? modelSwitchFitPolicy,
     this.historyCompactor,
   }) : tools = tools ?? AgentToolRegistry(),
        policies =
@@ -120,6 +140,8 @@ final class InMemoryAgentRuntime implements AgentRuntime {
        persistencePolicy = persistencePolicy ?? AgentPersistencePolicy(),
        contextEstimator =
            contextEstimator ?? const Utf8FramingAgentContextEstimator(),
+       modelSwitchFitPolicy =
+           modelSwitchFitPolicy ?? OpenCodeAgentModelSwitchFitPolicy(),
        compactionTrigger = historyCompactor == null
            ? compactionTrigger
            : compactionTrigger ?? OpenCodeCompactionTrigger() {
@@ -144,6 +166,13 @@ final class InMemoryAgentRuntime implements AgentRuntime {
         'Configured context estimator identity is invalid.',
       );
     }
+    if (this.modelSwitchFitPolicy.id.trim().isEmpty ||
+        this.modelSwitchFitPolicy.version <= 0) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Configured model-switch fit policy identity is invalid.',
+      );
+    }
   }
 
   final LlmProviderRegistry registry;
@@ -159,6 +188,7 @@ final class InMemoryAgentRuntime implements AgentRuntime {
   final AgentRuntimeProfile profile;
   final AgentPersistencePolicy persistencePolicy;
   final AgentContextEstimator contextEstimator;
+  final AgentModelSwitchFitPolicy modelSwitchFitPolicy;
   final AgentCompactionTrigger? compactionTrigger;
   final AgentHistoryCompactor? historyCompactor;
   AgentRunLimits? get profileLimits => profile.limits;
@@ -475,13 +505,26 @@ final class _BoundAgent implements Agent {
           'Stored session identity does not match the requested identifier.',
         );
       }
-      _resolveResourcesFor(record.definition);
+      _resolveResourcesFor(
+        record.definition,
+        validateDefinitionSelection: false,
+      );
       try {
-        final selection = _runtime.registry.resolve(record.definition.model);
+        final selectedModel = validateAgentSessionSelection(
+          record.selection,
+          _runtime.registry,
+        );
+        final selection = _runtime.registry.resolve(record.selection.model);
+        if (selectedModel != selection.model) {
+          throwAgent(
+            AgentErrorKind.configuration,
+            'Stored session selection could not be resolved.',
+          );
+        }
         validateContinuationEntries(
           messages: record.transcript.messages,
           entries: record.continuationEntries,
-          origin: record.definition.model,
+          origin: record.selection.model,
           wireFamily: selection.model.wireFamily,
         );
       } on LlmException catch (error) {
@@ -499,6 +542,8 @@ final class _BoundAgent implements Agent {
         continuationEntries: record.continuationEntries,
         compactionState: record.compactionState,
         tokenAccounting: record.tokenAccounting,
+        selection: record.selection,
+        title: record.title,
         revision: record.revision,
         createdAtMicros: record.createdAtMicros,
         persisted: true,
@@ -538,6 +583,7 @@ final class _BoundAgent implements Agent {
         persistence: persistence,
         transcript: AgentTranscript(messages: definition.initialMessages),
         compactionState: null,
+        selection: AgentSessionSelection.fromDefinition(definition),
         createdAtMicros: now,
       );
       _runtime._registerLive(session);
@@ -564,9 +610,18 @@ final class _BoundAgent implements Agent {
 
   void _resolveResources() => _resolveResourcesFor(definition);
 
-  void _resolveResourcesFor(AgentDefinition def) {
+  void _resolveResourcesFor(
+    AgentDefinition def, {
+    bool validateDefinitionSelection = true,
+  }) {
     try {
       _runtime.registry.resolve(def.model);
+      if (validateDefinitionSelection) {
+        validateAgentSessionSelection(
+          AgentSessionSelection.fromDefinition(def),
+          _runtime.registry,
+        );
+      }
     } on LlmException catch (error) {
       throwAgent(AgentErrorKind.configuration, error.error.message);
     }
@@ -696,10 +751,14 @@ final class _LiveSession implements AgentSession {
         const <LlmContinuationEntry>[],
     this.compactionState,
     AgentTokenAccountingState? tokenAccounting,
+    AgentSessionSelection? selection,
+    this.title,
     this.revision = 0,
     required this.createdAtMicros,
     this.persisted = false,
   }) : usage = usage ?? LlmUsage(),
+       selection =
+           selection ?? AgentSessionSelection.fromDefinition(definition),
        tokenAccounting =
            tokenAccounting ??
            AgentTokenAccountingState.legacy(
@@ -724,12 +783,16 @@ final class _LiveSession implements AgentSession {
   List<LlmContinuationEntry> continuationEntries;
   AgentCompactionState? compactionState;
   AgentTokenAccountingState tokenAccounting;
+  AgentSessionSelection selection;
+  String? title;
+  String? _pendingTitle;
   int revision;
   var persisted = false;
   final int createdAtMicros;
   AgentSessionLifecycle _lifecycle = AgentSessionLifecycle.idle;
   _LiveRun? _active;
   _LiveCompaction? _activeCompaction;
+  _LiveSelectionOperation? _activeSelectionOperation;
   var _closed = false;
   Future<void>? _closeFuture;
   Future<void> _checkpointChain = Future<void>.value();
@@ -781,6 +844,8 @@ final class _LiveSession implements AgentSession {
       revision: revision,
       compactionState: compactionState,
       tokenAccounting: accounting,
+      selection: selection,
+      title: title,
     );
   }
 
@@ -829,15 +894,24 @@ final class _LiveSession implements AgentSession {
   }
 
   LlmRequestSnapshot _retainedRequestSnapshot() => LlmRequest(
-    model: definition.model,
+    model: selection.model,
     context: LlmContext(
       systemPrompt: definition.systemPrompt,
       messages: transcript.messages,
       tools: runtime.tools.descriptorsFor(definition.enabledTools),
       continuationEntries: continuationEntries,
     ),
-    generation: _active?.snapshotGeneration ?? definition.generation,
+    generation: _active?.snapshotGeneration ?? _generationFor(selection),
   ).snapshot();
+
+  LlmGenerationConfig _generationFor(AgentSessionSelection selected) {
+    return LlmGenerationConfig(
+      reasoningMode: selected.reasoningMode,
+      reasoningEffort: selected.reasoningEffort,
+      temperature: definition.generation.temperature,
+      maxOutputTokens: definition.generation.maxOutputTokens,
+    );
+  }
 
   AgentTokenAccountingState get _effectiveTokenAccounting =>
       tokenAccounting.generation == 0
@@ -964,14 +1038,23 @@ final class _LiveSession implements AgentSession {
   }
 
   @override
-  AgentRun run(String input, {AgentRunOptions? options}) {
-    return runTyped(_userMessageFromString(input), options: options);
+  AgentRun run(
+    String input, {
+    AgentRunOptions? options,
+    AgentSessionTitlePolicy? titlePolicy,
+  }) {
+    return runTyped(
+      _userMessageFromString(input),
+      options: options,
+      titlePolicy: titlePolicy,
+    );
   }
 
   @override
   AgentRun runTyped(
     LlmMessage input, {
     AgentRunOptions? options,
+    AgentSessionTitlePolicy? titlePolicy,
     RunId? runId,
   }) {
     final message = _requireUser(input);
@@ -985,7 +1068,8 @@ final class _LiveSession implements AgentSession {
     }
     if (_lifecycle != AgentSessionLifecycle.idle ||
         _active != null ||
-        _activeCompaction != null) {
+        _activeCompaction != null ||
+        _activeSelectionOperation != null) {
       throwAgent(AgentErrorKind.busy, 'Session ${id.value} is busy.');
     }
     _lifecycle = AgentSessionLifecycle.running;
@@ -993,11 +1077,134 @@ final class _LiveSession implements AgentSession {
       session: this,
       input: message,
       options: options ?? AgentRunOptions(),
+      selection: selection,
+      titlePolicy: titlePolicy,
       id: runId ?? RunId(runtime.ids.next('run')),
     );
     _active = run;
     run.start();
     return run;
+  }
+
+  @override
+  Future<AgentSessionSelectionResult> changeSelection(
+    AgentSessionSelection requested,
+  ) => changeSelectionOperation(requested).result;
+
+  @override
+  AgentSessionSelectionOperation changeSelectionOperation(
+    AgentSessionSelection requested,
+  ) {
+    AgentSessionSelectionResult? immediate;
+    try {
+      runtime._ensureOpen();
+      validateAgentSessionSelection(requested, runtime.registry);
+    } on AgentException catch (error) {
+      immediate = AgentSessionSelectionResult.error(
+        _sanitizeSelectionError(error.error),
+      );
+    } on Object {
+      immediate = AgentSessionSelectionResult.error(
+        _selectionConfigurationError(),
+      );
+    }
+    if (immediate == null && requested == selection) {
+      immediate = AgentSessionSelectionResult.unchanged(selection);
+    }
+    if (immediate == null && (_closed || isClosing)) {
+      immediate = AgentSessionSelectionResult.error(
+        AgentError(
+          kind: AgentErrorKind.configuration,
+          message: 'Сессия уже закрыта.',
+        ),
+      );
+    }
+    if (immediate == null &&
+        (_lifecycle != AgentSessionLifecycle.idle ||
+            _active != null ||
+            _activeCompaction != null ||
+            _activeSelectionOperation != null)) {
+      immediate = AgentSessionSelectionResult.busy(_activeOperationKind);
+    }
+    if (immediate != null) {
+      return _ImmediateSelectionOperation(
+        id: AgentSelectionOperationId(runtime.ids.next('selection')),
+        result: immediate,
+      );
+    }
+    _lifecycle = AgentSessionLifecycle.switchingModel;
+    final operation = _LiveSelectionOperation(
+      session: this,
+      id: AgentSelectionOperationId(runtime.ids.next('selection')),
+      requested: requested,
+    );
+    _activeSelectionOperation = operation;
+    operation.start();
+    return operation;
+  }
+
+  AgentSessionOperationKind get _activeOperationKind {
+    if (_active != null || _lifecycle == AgentSessionLifecycle.running) {
+      return AgentSessionOperationKind.run;
+    }
+    if (_activeCompaction != null ||
+        _lifecycle == AgentSessionLifecycle.compacting) {
+      return AgentSessionOperationKind.compaction;
+    }
+    if (_activeSelectionOperation != null ||
+        _lifecycle == AgentSessionLifecycle.switchingModel) {
+      return AgentSessionOperationKind.selection;
+    }
+    return AgentSessionOperationKind.close;
+  }
+
+  Future<AgentSessionSelectionResult> commitReasoningSelection(
+    AgentSessionSelection requested,
+    CancellationToken cancellation,
+  ) async {
+    await Future<void>.value();
+    try {
+      final nextRevision = persistence == SessionPersistence.repository
+          ? revision + 1
+          : revision;
+      final proposed = _recordForSave(
+        nextRevision: nextRevision,
+        selection: requested,
+      );
+      final validated = runtime.codec.decode(runtime.codec.encode(proposed));
+      if (persistence == SessionPersistence.repository) {
+        await _serialized(() async {
+          await _saveRecord(
+            validated,
+            expectedRevision: revision,
+            operationCancellation: cancellation,
+            adoptRevision: false,
+          );
+        });
+      }
+      selection = validated.selection;
+      title = validated.title;
+      if (persistence == SessionPersistence.repository) {
+        revision = validated.revision;
+        persisted = true;
+      }
+      return AgentSessionSelectionResult.changed(selection);
+    } on AgentException catch (error) {
+      return AgentSessionSelectionResult.error(
+        _sanitizeSelectionError(error.error),
+      );
+    } on Object {
+      return AgentSessionSelectionResult.error(sanitizedPersistenceError());
+    }
+  }
+
+  void detachSelection(_LiveSelectionOperation operation) {
+    if (identical(_activeSelectionOperation, operation)) {
+      _activeSelectionOperation = null;
+    }
+    if (!_closed && _lifecycle == AgentSessionLifecycle.switchingModel) {
+      _lifecycle = AgentSessionLifecycle.idle;
+    }
   }
 
   void detachRun() {
@@ -1020,7 +1227,8 @@ final class _LiveSession implements AgentSession {
     }
     if (_lifecycle != AgentSessionLifecycle.idle ||
         _active != null ||
-        _activeCompaction != null) {
+        _activeCompaction != null ||
+        _activeSelectionOperation != null) {
       throwAgent(AgentErrorKind.busy, 'Session ${id.value} is busy.');
     }
     if (runtime.historyCompactor == null) {
@@ -1054,6 +1262,8 @@ final class _LiveSession implements AgentSession {
     List<LlmContinuationEntry>? continuationEntries,
     AgentCompactionState? compactionState,
     AgentTokenAccountingState? tokenAccounting,
+    AgentSessionSelection? selection,
+    String? title,
   }) {
     final nextTranscript = transcript ?? this.transcript;
     final sourceAccounting = tokenAccounting ?? _effectiveTokenAccounting;
@@ -1076,6 +1286,8 @@ final class _LiveSession implements AgentSession {
       compactionState: compactionState ?? this.compactionState,
       tokenAccounting: accounting,
       updatedAtMicros: runtime.clock.nowMicros(),
+      selection: selection ?? this.selection,
+      title: title ?? _pendingTitle ?? this.title,
     );
   }
 
@@ -1090,6 +1302,10 @@ final class _LiveSession implements AgentSession {
 
   Future<void> checkpoint() async {
     if (persistence != SessionPersistence.repository) {
+      if (_pendingTitle != null) {
+        title = _pendingTitle;
+        _pendingTitle = null;
+      }
       return;
     }
     if (persistenceUnreliable) {
@@ -1177,6 +1393,9 @@ final class _LiveSession implements AgentSession {
       if (adoptRevision) {
         revision = record.revision;
         persisted = true;
+        selection = record.selection;
+        title = record.title;
+        _pendingTitle = null;
       }
     } on AgentException {
       rethrow;
@@ -1202,6 +1421,7 @@ final class _LiveSession implements AgentSession {
     required LlmRequestSnapshot request,
     required CancellationToken cancellation,
     int? targetEstimate,
+    LlmModel? selectedModel,
   }) {
     final state = compactionState;
     final generatedStart =
@@ -1214,7 +1434,8 @@ final class _LiveSession implements AgentSession {
       messages: request.context.messages,
       startMessageIndex: generatedEnd,
     );
-    final selected = runtime.registry.resolve(definition.model).model;
+    final selected =
+        selectedModel ?? runtime.registry.resolve(selection.model).model;
     return AgentCompactionContext(
       operationId: operationId,
       sessionId: id,
@@ -1807,11 +2028,16 @@ final class _LiveSession implements AgentSession {
   Future<void> _performClose() async {
     _closed = true;
     _lifecycle = AgentSessionLifecycle.closing;
+    final active = _active;
+    final activeCompaction = _activeCompaction;
+    final activeSelectionOperation = _activeSelectionOperation;
+    if (activeSelectionOperation != null) {
+      unawaited(activeSelectionOperation.cancel());
+      await activeSelectionOperation._unwound.future;
+    }
     if (persistence == SessionPersistence.repository) {
       beginPersistenceShutdown();
     }
-    final active = _active;
-    final activeCompaction = _activeCompaction;
     if (activeCompaction != null) {
       unawaited(activeCompaction.cancel());
       await activeCompaction._unwound.future;
@@ -1897,6 +2123,573 @@ final class _LiveSession implements AgentSession {
   }
 }
 
+final class _ImmediateSelectionOperation
+    implements AgentSessionSelectionOperation {
+  _ImmediateSelectionOperation({
+    required this.id,
+    required AgentSessionSelectionResult result,
+  }) : result = Future<AgentSessionSelectionResult>.value(result);
+
+  @override
+  final AgentSelectionOperationId id;
+
+  @override
+  final Future<AgentSessionSelectionResult> result;
+
+  @override
+  Stream<AgentSessionSelectionEvent> get events =>
+      const Stream<AgentSessionSelectionEvent>.empty();
+
+  @override
+  Future<void> cancel() async {}
+}
+
+final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
+  _LiveSelectionOperation({
+    required this.session,
+    required this.id,
+    required this.requested,
+  }) : previous = session.selection,
+       cancelSource = CancellationSource(),
+       _result = Completer<AgentSessionSelectionResult>();
+
+  final _LiveSession session;
+
+  @override
+  final AgentSelectionOperationId id;
+
+  final AgentSessionSelection previous;
+  final AgentSessionSelection requested;
+  final CancellationSource cancelSource;
+  final Completer<AgentSessionSelectionResult> _result;
+  final Completer<void> _unwound = Completer<void>();
+  late final StreamController<AgentSessionSelectionEvent> _controller;
+  Future<void>? _cancelFuture;
+  var _terminal = false;
+  var _compactionTerminal = false;
+  AgentCompactionContext? _compactionContext;
+  AgentHistoryCompactor? _compactor;
+  List<AgentCompactionInvocationReport> _chargedReports =
+      const <AgentCompactionInvocationReport>[];
+
+  @override
+  Stream<AgentSessionSelectionEvent> get events => _controller.stream;
+
+  @override
+  Future<AgentSessionSelectionResult> get result => _result.future;
+
+  void start() {
+    _controller = StreamController<AgentSessionSelectionEvent>(
+      onCancel: cancel,
+    );
+    unawaited(_execute());
+  }
+
+  @override
+  Future<void> cancel() {
+    cancelSource.cancel();
+    return _cancelFuture ??= _unwound.future;
+  }
+
+  Future<void> _execute() async {
+    var chargedReports = const <AgentCompactionInvocationReport>[];
+    var reportsAcknowledged = false;
+    try {
+      await Future<void>.value();
+      _throwIfCancelled();
+      if (requested.model == previous.model) {
+        _emit(
+          AgentSessionSelectionStarted(
+            operationId: id,
+            sessionId: session.id,
+            previous: previous,
+            requested: requested,
+          ),
+        );
+        final result = await session.commitReasoningSelection(
+          requested,
+          cancelSource.token,
+        );
+        if (result.status == AgentSessionSelectionStatus.changed) {
+          _emitSucceeded(compacted: false);
+          _complete(result);
+        } else {
+          _completeFromResult(result);
+        }
+        return;
+      }
+
+      final targetModel = validateAgentSessionSelection(
+        requested,
+        session.runtime.registry,
+      );
+      final targetRequest = _targetRequest(targetModel);
+      try {
+        validateRequestAgainstModel(
+          LlmRequest(
+            model: targetRequest.model,
+            context: targetRequest.context,
+            generation: targetRequest.generation,
+          ),
+          targetModel,
+        );
+      } on LlmException catch (error) {
+        throwAgent(AgentErrorKind.configuration, error.error.message);
+      }
+      _throwIfCancelled();
+      final estimate = session.runtime.contextEstimator.estimate(
+        AgentContextEstimateInput(
+          request: targetRequest,
+          cancellation: cancelSource.token,
+        ),
+      );
+      if (estimate.estimatorId != session.runtime.contextEstimator.id ||
+          estimate.estimatorVersion !=
+              session.runtime.contextEstimator.version) {
+        throwAgent(
+          AgentErrorKind.configuration,
+          'Context estimator result identity changed.',
+        );
+      }
+      final fit = session.runtime.modelSwitchFitPolicy.evaluate(
+        AgentModelSwitchFitInput(
+          model: targetModel,
+          maxOutputTokens: targetRequest.generation.maxOutputTokens,
+        ),
+      );
+      if (fit.policyId.trim().isEmpty ||
+          fit.policyId != session.runtime.modelSwitchFitPolicy.id ||
+          fit.policyVersion <= 0 ||
+          fit.policyVersion != session.runtime.modelSwitchFitPolicy.version ||
+          fit.contextBound != targetModel.contextBound ||
+          fit.outputReserve <= 0 ||
+          fit.outputReserve > targetModel.outputBound ||
+          fit.headroom <= 0 ||
+          fit.fitThreshold <= 0 ||
+          fit.compactionTarget < 0 ||
+          fit.compactionTarget > fit.fitThreshold) {
+        throwAgent(
+          AgentErrorKind.configuration,
+          'Model-switch fit policy returned an invalid decision.',
+        );
+      }
+      _emit(
+        AgentSessionSelectionStarted(
+          operationId: id,
+          sessionId: session.id,
+          previous: previous,
+          requested: requested,
+          beforeEstimate: estimate.value,
+          fitThreshold: fit.fitThreshold,
+          compactionTarget: fit.compactionTarget,
+        ),
+      );
+      if (estimate.value <= fit.fitThreshold) {
+        await _commitFittingSwitch();
+        _emitSucceeded(compacted: false);
+        _complete(AgentSessionSelectionResult.changed(requested));
+        return;
+      }
+
+      final compactor = session.runtime.historyCompactor;
+      if (compactor == null) {
+        throwAgent(
+          AgentErrorKind.compaction,
+          'The target context requires a configured compactor.',
+        );
+      }
+      final compactionId = AgentCompactionOperationId(
+        session.runtime.ids.next('compaction'),
+      );
+      var context = session.buildCompactionContext(
+        operationId: compactionId,
+        reason: AgentCompactionReason.modelSwitch,
+        request: targetRequest,
+        cancellation: cancelSource.token,
+        targetEstimate: fit.compactionTarget,
+        selectedModel: targetModel,
+      );
+      _compactionContext = context;
+      _compactor = compactor;
+      final decision = AgentCompactionDecision.compact(
+        triggerId: fit.policyId,
+        triggerVersion: fit.policyVersion,
+        targetEstimate: fit.compactionTarget,
+        metadata: fit.metadata,
+      );
+      context = context.withTarget(fit.compactionTarget);
+      _emitCompaction(
+        AgentCompactionStarted(
+          operationId: compactionId,
+          sessionId: session.id,
+          reason: AgentCompactionReason.modelSwitch,
+          triggerId: fit.policyId,
+          triggerVersion: fit.policyVersion,
+          strategyId: compactor.id,
+          strategyVersion: compactor.version,
+          estimatorId: estimate.estimatorId,
+          estimatorVersion: estimate.estimatorVersion,
+          beforeEstimate: estimate.value,
+          targetEstimate: fit.compactionTarget,
+        ),
+      );
+      final strategy = await session.invokeCompactor(
+        context: context,
+        decision: decision,
+        chargeReports: (reports) {
+          chargedReports = reports;
+          _chargedReports = reports;
+          final usage = aggregateAgentCompactionUsage(reports);
+          if (usage != null) session.chargeManualCompactionUsage(usage);
+        },
+      );
+      if (strategy is AgentCompactionNoChange) {
+        if (strategy.reports.isNotEmpty) {
+          await session.checkpoint();
+          reportsAcknowledged = true;
+        }
+        _emitCompaction(
+          AgentCompactionNoChangeEvent(
+            operationId: compactionId,
+            sessionId: session.id,
+            reason: AgentCompactionReason.modelSwitch,
+            triggerId: fit.policyId,
+            triggerVersion: fit.policyVersion,
+            strategyId: strategy.strategyId,
+            strategyVersion: strategy.strategyVersion,
+            estimatorId: estimate.estimatorId,
+            estimatorVersion: estimate.estimatorVersion,
+            beforeEstimate: estimate.value,
+            targetEstimate: fit.compactionTarget,
+            reports: strategy.reports,
+          ),
+        );
+        throwAgent(
+          AgentErrorKind.compaction,
+          'Compaction did not make the target context fit.',
+        );
+      }
+      if (strategy is! AgentCompactionCandidate) {
+        throw AgentException(sanitizedCompactionError());
+      }
+      final prepared = prepareAgentCompaction(
+        context: context,
+        decision: decision,
+        candidate: _identifiedCandidate(strategy),
+        estimator: session.runtime.contextEstimator,
+        updatedAtMicros: session.runtime.clock.nowMicros(),
+      );
+      _throwIfCancelled();
+      final currentAccounting = session._generationOneAccounting;
+      final nextAccounting = currentAccounting.copyWith(
+        contextRevision: currentAccounting.contextRevision + 1,
+        messageIds: prepared.messageIds,
+      );
+      final nextRevision = session.persistence == SessionPersistence.repository
+          ? session.revision + 1
+          : session.revision;
+      final proposed = session._recordForSave(
+        nextRevision: nextRevision,
+        transcript: AgentTranscript(
+          messages: prepared.messages,
+          messageIds: prepared.messageIds,
+        ),
+        continuationEntries: prepared.continuationEntries,
+        compactionState: prepared.state,
+        tokenAccounting: nextAccounting,
+        selection: requested,
+      );
+      final validated = session.runtime.codec.decode(
+        session.runtime.codec.encode(proposed),
+      );
+      if (session.persistence == SessionPersistence.repository) {
+        await session._serialized(() async {
+          await session._saveRecord(
+            validated,
+            expectedRevision: session.revision,
+            operationCancellation: cancelSource.token,
+            adoptRevision: false,
+          );
+        });
+      }
+      // Repository acknowledgement wins a cancellation race. Adopt the complete
+      // candidate only after the combined successor has been acknowledged.
+      session.transcript = validated.transcript;
+      session.tokenAccounting = validated.tokenAccounting;
+      session.usage = validated.usage;
+      session.continuationEntries = List<LlmContinuationEntry>.from(
+        validated.continuationEntries,
+      );
+      session.compactionState = validated.compactionState;
+      session.selection = validated.selection;
+      session.title = validated.title;
+      if (session.persistence == SessionPersistence.repository) {
+        session.revision = validated.revision;
+        session.persisted = true;
+      }
+      reportsAcknowledged = true;
+      _emitCompaction(
+        AgentCompactionSucceeded(
+          operationId: compactionId,
+          sessionId: session.id,
+          reason: AgentCompactionReason.modelSwitch,
+          triggerId: fit.policyId,
+          triggerVersion: fit.policyVersion,
+          strategyId: strategy.strategyId,
+          strategyVersion: strategy.strategyVersion,
+          estimatorId: estimate.estimatorId,
+          estimatorVersion: estimate.estimatorVersion,
+          beforeEstimate: estimate.value,
+          targetEstimate: fit.compactionTarget,
+          afterEstimate: prepared.afterEstimate.value,
+          generation: prepared.state.generation,
+          reports: strategy.reports,
+        ),
+      );
+      _emitSucceeded(compacted: true);
+      _complete(AgentSessionSelectionResult.changed(requested));
+    } on AgentException catch (error) {
+      final cancellationWon =
+          error.error.kind == AgentErrorKind.cancelled ||
+          cancelSource.token.isCancelled;
+      if (chargedReports.isNotEmpty && !reportsAcknowledged) {
+        try {
+          await session.checkpoint();
+          reportsAcknowledged = true;
+        } on Object {
+          // The operation terminal remains sanitized. A conflict is recovered
+          // by the workspace controller from the authoritative record.
+        }
+      }
+      if (cancellationWon) {
+        _emitCompactionTerminal(cancelled: true);
+        _emitCancelled();
+        _complete(
+          AgentSessionSelectionResult.error(
+            AgentError(kind: AgentErrorKind.cancelled, message: 'cancelled'),
+          ),
+        );
+      } else {
+        final exposed = _sanitizeSelectionError(error.error);
+        _emitCompactionTerminal(error: exposed);
+        _emitFailed(exposed);
+        _complete(AgentSessionSelectionResult.error(exposed));
+      }
+    } on Object {
+      final exposed = cancelSource.token.isCancelled
+          ? AgentError(kind: AgentErrorKind.cancelled, message: 'cancelled')
+          : sanitizedRuntimeError();
+      if (exposed.kind == AgentErrorKind.cancelled) {
+        _emitCompactionTerminal(cancelled: true);
+        _emitCancelled();
+      } else {
+        _emitCompactionTerminal(error: exposed);
+        _emitFailed(exposed);
+      }
+      _complete(AgentSessionSelectionResult.error(exposed));
+    } finally {
+      session.detachSelection(this);
+      if (!_unwound.isCompleted) _unwound.complete();
+      await _closeRunController(_controller);
+    }
+  }
+
+  LlmRequestSnapshot _targetRequest(LlmModel targetModel) {
+    final request = LlmRequest(
+      model: requested.model,
+      context: LlmContext(
+        systemPrompt: session.definition.systemPrompt,
+        messages: session.transcript.messages,
+        tools: session.runtime.tools.descriptorsFor(
+          session.definition.enabledTools,
+        ),
+        // Continuation is model/wire-origin bound. It remains live and durable
+        // until a cross-model commit succeeds, but never enters target planning.
+        continuationEntries: const <LlmContinuationEntry>[],
+      ),
+      generation: session._generationFor(requested),
+    );
+    if (targetModel.ref != requested.model) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Target model resolution changed identity.',
+      );
+    }
+    return request.snapshot();
+  }
+
+  Future<void> _commitFittingSwitch() async {
+    _throwIfCancelled();
+    final nextRevision = session.persistence == SessionPersistence.repository
+        ? session.revision + 1
+        : session.revision;
+    final proposed = session._recordForSave(
+      nextRevision: nextRevision,
+      selection: requested,
+      continuationEntries: const <LlmContinuationEntry>[],
+    );
+    final validated = session.runtime.codec.decode(
+      session.runtime.codec.encode(proposed),
+    );
+    if (session.persistence == SessionPersistence.repository) {
+      await session._serialized(() async {
+        await session._saveRecord(
+          validated,
+          expectedRevision: session.revision,
+          operationCancellation: cancelSource.token,
+          adoptRevision: false,
+        );
+      });
+    }
+    session.selection = validated.selection;
+    session.continuationEntries = List<LlmContinuationEntry>.from(
+      validated.continuationEntries,
+    );
+    session.title = validated.title;
+    if (session.persistence == SessionPersistence.repository) {
+      session.revision = validated.revision;
+      session.persisted = true;
+    }
+  }
+
+  AgentCompactionCandidate _identifiedCandidate(
+    AgentCompactionCandidate candidate,
+  ) => AgentCompactionCandidate(
+    strategyId: candidate.strategyId,
+    strategyVersion: candidate.strategyVersion,
+    retainedSuffixBoundaryId: candidate.retainedSuffixBoundaryId,
+    generatedPrefix: candidate.generatedPrefix,
+    generatedPrefixMessageIds: <AgentTranscriptMessageId?>[
+      for (final messageId in candidate.generatedPrefixMessageIds)
+        messageId ??
+            AgentTranscriptMessageId(session.runtime.ids.next('message')),
+    ],
+    metadata: candidate.metadata,
+    reports: candidate.reports,
+  );
+
+  void _throwIfCancelled() {
+    if (cancelSource.token.isCancelled) throw _cancelledException();
+  }
+
+  void _emitCompaction(AgentCompactionEvent compaction) {
+    if (compaction.isTerminal) _compactionTerminal = true;
+    _emit(
+      AgentSessionSelectionCompaction(
+        operationId: id,
+        sessionId: session.id,
+        previous: previous,
+        requested: requested,
+        compaction: compaction,
+      ),
+    );
+  }
+
+  void _emitCompactionTerminal({bool cancelled = false, AgentError? error}) {
+    final context = _compactionContext;
+    final compactor = _compactor;
+    if (_compactionTerminal || context == null || compactor == null) return;
+    if (cancelled) {
+      _emitCompaction(
+        AgentCompactionCancelled(
+          operationId: context.operationId,
+          sessionId: session.id,
+          reason: AgentCompactionReason.modelSwitch,
+          triggerId:
+              context.priorState?.triggerId ??
+              session.runtime.modelSwitchFitPolicy.id,
+          triggerVersion:
+              context.priorState?.triggerVersion ??
+              session.runtime.modelSwitchFitPolicy.version,
+          strategyId: compactor.id,
+          strategyVersion: compactor.version,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
+          targetEstimate: context.targetEstimate,
+          reports: _chargedReports,
+        ),
+      );
+      return;
+    }
+    _emitCompaction(
+      AgentCompactionFailed(
+        operationId: context.operationId,
+        sessionId: session.id,
+        reason: AgentCompactionReason.modelSwitch,
+        triggerId: session.runtime.modelSwitchFitPolicy.id,
+        triggerVersion: session.runtime.modelSwitchFitPolicy.version,
+        strategyId: compactor.id,
+        strategyVersion: compactor.version,
+        estimatorId: context.currentEstimate.estimatorId,
+        estimatorVersion: context.currentEstimate.estimatorVersion,
+        beforeEstimate: context.currentEstimate.value,
+        targetEstimate: context.targetEstimate,
+        error: error ?? sanitizedCompactionError(),
+        reports: _chargedReports,
+      ),
+    );
+  }
+
+  void _emitSucceeded({required bool compacted}) {
+    _emit(
+      AgentSessionSelectionSucceeded(
+        operationId: id,
+        sessionId: session.id,
+        previous: previous,
+        requested: requested,
+        compacted: compacted,
+      ),
+    );
+  }
+
+  void _emitFailed(AgentError error) {
+    _emit(
+      AgentSessionSelectionFailed(
+        operationId: id,
+        sessionId: session.id,
+        previous: previous,
+        requested: requested,
+        error: error,
+      ),
+    );
+  }
+
+  void _emitCancelled() {
+    _emit(
+      AgentSessionSelectionCancelled(
+        operationId: id,
+        sessionId: session.id,
+        previous: previous,
+        requested: requested,
+      ),
+    );
+  }
+
+  void _completeFromResult(AgentSessionSelectionResult result) {
+    final error = result.error;
+    if (error?.kind == AgentErrorKind.cancelled) {
+      _emitCancelled();
+    } else if (error != null) {
+      _emitFailed(error);
+    }
+    _complete(result);
+  }
+
+  void _emit(AgentSessionSelectionEvent event) {
+    if (_controller.isClosed || (_terminal && !event.isTerminal)) return;
+    if (event.isTerminal) {
+      if (_terminal) return;
+      _terminal = true;
+    }
+    _controller.add(event);
+  }
+
+  void _complete(AgentSessionSelectionResult result) {
+    if (!_result.isCompleted) _result.complete(result);
+  }
+}
+
 final class _LiveCompaction implements AgentCompactionOperation {
   _LiveCompaction({required this.session, required this.id})
     : cancelSource = CancellationSource(),
@@ -1941,10 +2734,10 @@ final class _LiveCompaction implements AgentCompactionOperation {
     var reportsAcknowledged = false;
     try {
       final selection = session.runtime.registry.resolve(
-        session.definition.model,
+        session.selection.model,
       );
       final request = LlmRequest(
-        model: session.definition.model,
+        model: session.selection.model,
         context: LlmContext(
           systemPrompt: session.definition.systemPrompt,
           messages: session.transcript.messages,
@@ -1953,7 +2746,7 @@ final class _LiveCompaction implements AgentCompactionOperation {
           ),
           continuationEntries: session.continuationEntries,
         ),
-        generation: session.definition.generation,
+        generation: session._generationFor(session.selection),
       ).snapshot();
       context = session.buildCompactionContext(
         operationId: id,
@@ -2178,6 +2971,8 @@ final class _LiveRun implements AgentRun {
     required this.input,
     required this.options,
     required this.id,
+    required this.selection,
+    required this.titlePolicy,
   }) : cancelSource = CancellationSource();
 
   @override
@@ -2185,6 +2980,8 @@ final class _LiveRun implements AgentRun {
   final _LiveSession session;
   final LlmMessage input;
   final AgentRunOptions options;
+  final AgentSessionSelection selection;
+  final AgentSessionTitlePolicy? titlePolicy;
   final CancellationSource cancelSource;
   late final StreamController<AgentRunEvent> _controller;
   var _started = false;
@@ -2337,6 +3134,11 @@ final class _LiveRun implements AgentRun {
       _emit(AgentRunStarted(runId: id, sessionId: session.id));
       _throwIfCancelled();
       await _drainInbound();
+      if (session.title == null &&
+          session._pendingTitle == null &&
+          titlePolicy != null) {
+        session._pendingTitle = titlePolicy!.deriveTitle(input);
+      }
       session.appendContextMessage(input);
       await _checkpoint();
       _resetIdle();
@@ -2394,9 +3196,7 @@ final class _LiveRun implements AgentRun {
       final turnId = TurnId(session.runtime.ids.next('turn'));
       await _runHooks((hook) => hook.beforeModelTurn(_hookContext(turnId)));
       _throwIfCancelled();
-      final selection = session.runtime.registry.resolve(
-        session.definition.model,
-      );
+      final selection = session.runtime.registry.resolve(this.selection.model);
       if (_generation.maxOutputTokens != null &&
           _generation.maxOutputTokens! > selection.model.outputBound) {
         throwAgent(
@@ -2408,7 +3208,7 @@ final class _LiveRun implements AgentRun {
         session.definition.enabledTools,
       );
       var request = LlmRequest(
-        model: session.definition.model,
+        model: this.selection.model,
         context: LlmContext(
           systemPrompt: session.definition.systemPrompt,
           messages: session.transcript.messages,
@@ -2422,7 +3222,7 @@ final class _LiveRun implements AgentRun {
         request: request,
       );
       request = LlmRequest(
-        model: session.definition.model,
+        model: this.selection.model,
         context: LlmContext(
           systemPrompt: session.definition.systemPrompt,
           messages: session.transcript.messages,
@@ -2532,7 +3332,7 @@ final class _LiveRun implements AgentRun {
         }
         retryOrdinal += 1;
         request = LlmRequest(
-          model: session.definition.model,
+          model: this.selection.model,
           context: LlmContext(
             systemPrompt: session.definition.systemPrompt,
             messages: session.transcript.messages,
@@ -2850,6 +3650,7 @@ final class _LiveRun implements AgentRun {
       if (error.error.kind == AgentErrorKind.cancelled) {
         rethrow;
       }
+      session._pendingTitle = null;
       throw AgentException(
         error.error.kind == AgentErrorKind.conflict
             ? error.error
@@ -3171,8 +3972,16 @@ final class _LiveRun implements AgentRun {
   LlmGenerationConfig _resolveGeneration() {
     final definition = session.definition.generation;
     final override = options.reasoning;
-    final mode = override?.mode ?? definition.reasoningMode;
-    final effort = override?.effort ?? definition.reasoningEffort;
+    final mode = override?.mode ?? selection.reasoningMode;
+    final effort = override?.effort ?? selection.reasoningEffort;
+    validateAgentSessionSelection(
+      AgentSessionSelection(
+        model: selection.model,
+        reasoningMode: mode,
+        reasoningEffort: effort,
+      ),
+      session.runtime.registry,
+    );
     return LlmGenerationConfig(
       reasoningMode: mode,
       reasoningEffort: effort,
@@ -3541,6 +4350,35 @@ final class _LiveRun implements AgentRun {
     await _completeWith(AgentRunFailed(error), closeSession: close);
   }
 }
+
+AgentError _sanitizeSelectionError(AgentError error) {
+  return switch (error.kind) {
+    AgentErrorKind.conflict => AgentError(
+      kind: AgentErrorKind.conflict,
+      message: 'Сессия была изменена в другом процессе. Обновите данные.',
+    ),
+    AgentErrorKind.persistence => sanitizedPersistenceError(),
+    AgentErrorKind.compaction => sanitizedCompactionError(),
+    AgentErrorKind.cancelled => AgentError(
+      kind: AgentErrorKind.cancelled,
+      message: 'cancelled',
+    ),
+    AgentErrorKind.budgetUnverifiable => AgentError(
+      kind: AgentErrorKind.budgetUnverifiable,
+      message: 'Не удалось подтвердить лимит токенов.',
+    ),
+    AgentErrorKind.busy => AgentError(
+      kind: AgentErrorKind.busy,
+      message: 'Сессия занята другой операцией.',
+    ),
+    _ => _selectionConfigurationError(),
+  };
+}
+
+AgentError _selectionConfigurationError() => AgentError(
+  kind: AgentErrorKind.configuration,
+  message: 'Выбранные модель и параметры рассуждения недоступны.',
+);
 
 final class _RunStop implements Exception {
   _RunStop(this.reason);

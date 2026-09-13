@@ -3,6 +3,7 @@ import 'capabilities.dart';
 import 'errors.dart';
 import 'events.dart';
 import 'identifiers.dart';
+import 'json.dart';
 import 'provider.dart';
 import 'request.dart';
 
@@ -16,6 +17,38 @@ final class LlmResolvedSelection {
   final LlmProvider provider;
   final LlmModel model;
   final LlmProviderProfile? profile;
+}
+
+final class LlmProviderGroup {
+  LlmProviderGroup({
+    required this.providerId,
+    required String displayName,
+    required List<LlmModel> models,
+  }) : displayName = displayName.trim(),
+       models = List<LlmModel>.unmodifiable(List<LlmModel>.from(models)) {
+    if (this.displayName.isEmpty) {
+      throwLlm(
+        LlmErrorKind.configuration,
+        'Provider display name must not be blank.',
+      );
+    }
+  }
+
+  final ProviderId providerId;
+  final String displayName;
+  final List<LlmModel> models;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LlmProviderGroup &&
+          other.providerId == providerId &&
+          other.displayName == displayName &&
+          listEquals(other.models, models);
+
+  @override
+  int get hashCode =>
+      Object.hash(providerId, displayName, Object.hashAll(models));
 }
 
 final class LlmProviderRegistry {
@@ -36,6 +69,29 @@ final class LlmProviderRegistry {
 
   List<LlmProvider> get providers =>
       List<LlmProvider>.unmodifiable(_providers.values.toList(growable: false));
+
+  List<LlmProviderGroup> get providerGroups {
+    final modelsByProvider = <String, List<LlmModel>>{};
+    for (final model in _models.values) {
+      if (!_profiles.containsKey(model.providerId.value)) {
+        throwLlm(
+          LlmErrorKind.configuration,
+          'Model ${model.ref} has no registered provider profile.',
+        );
+      }
+      modelsByProvider
+          .putIfAbsent(model.providerId.value, () => <LlmModel>[])
+          .add(model);
+    }
+    return List<LlmProviderGroup>.unmodifiable(<LlmProviderGroup>[
+      for (final profile in _profiles.values)
+        LlmProviderGroup(
+          providerId: profile.id,
+          displayName: profile.displayName,
+          models: modelsByProvider[profile.id.value] ?? const <LlmModel>[],
+        ),
+    ]);
+  }
 
   void registerProvider(LlmProvider provider) {
     final key = provider.id.value;

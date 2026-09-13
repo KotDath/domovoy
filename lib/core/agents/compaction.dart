@@ -15,7 +15,7 @@ import 'schema.dart';
 import 'token_accounting.dart';
 import 'tools.dart';
 
-enum AgentCompactionReason { preRequest, providerOverflow, manual }
+enum AgentCompactionReason { preRequest, providerOverflow, modelSwitch, manual }
 
 enum AgentCompactionDecisionKind { skip, compact }
 

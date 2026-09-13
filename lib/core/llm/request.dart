@@ -193,14 +193,9 @@ void validateRequestAgainstModel(LlmRequest request, LlmModel model) {
   }
   for (final message in request.context.messages) {
     for (final part in message.parts) {
-      if (part is LlmReasoningPart &&
-          model.capabilities.reasoning ==
-              ModelReasoningCapability.unsupported) {
-        throwLlm(
-          LlmErrorKind.configuration,
-          'Model ${model.id.value} does not support reasoning content.',
-        );
-      }
+      // Historical provider-neutral reasoning remains valid input history when
+      // switching to a model that does not generate reasoning. Transport
+      // encoders already omit or map it according to their wire contract.
       if ((part is LlmToolCallPart || part is LlmToolResultPart) &&
           !model.capabilities.supportsTools) {
         throwLlm(

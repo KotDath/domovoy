@@ -19,13 +19,21 @@ abstract interface class LlmProvider {
 final class LlmProviderProfile {
   LlmProviderProfile({
     required this.id,
+    String? displayName,
     required this.wireFamily,
     required Uri endpoint,
     required String environmentVariable,
     required String dialectId,
-  }) : endpoint = requireSecretFreeEndpoint(endpoint),
+  }) : displayName = (displayName ?? id.value).trim(),
+       endpoint = requireSecretFreeEndpoint(endpoint),
        environmentVariable = environmentVariable.trim(),
        dialectId = dialectId.trim() {
+    if (this.displayName.isEmpty) {
+      throwLlm(
+        LlmErrorKind.configuration,
+        'Provider display name must not be blank.',
+      );
+    }
     if (this.environmentVariable.isEmpty) {
       throwLlm(
         LlmErrorKind.configuration,
@@ -41,6 +49,9 @@ final class LlmProviderProfile {
     final map = decodeTypedJson(json, type: jsonType);
     return LlmProviderProfile(
       id: ProviderId.fromJson(map['id']),
+      displayName: map['displayName'] == null
+          ? null
+          : requireString(map, 'displayName'),
       wireFamily: LlmWireFamily.fromJson(map['wireFamily']),
       endpoint: Uri.parse(requireNonBlankString(map, 'endpoint')),
       environmentVariable: requireString(map, 'environmentVariable'),
@@ -51,6 +62,7 @@ final class LlmProviderProfile {
   static const jsonType = 'llm.provider_profile';
 
   final ProviderId id;
+  final String displayName;
   final LlmWireFamily wireFamily;
   final Uri endpoint;
   final String environmentVariable;
@@ -60,6 +72,7 @@ final class LlmProviderProfile {
     type: jsonType,
     fields: <String, Object?>{
       'id': id.toJson(),
+      'displayName': displayName,
       'wireFamily': wireFamily.toJson(),
       'endpoint': secretFreeEndpointString(endpoint),
       'environmentVariable': environmentVariable,
@@ -72,14 +85,21 @@ final class LlmProviderProfile {
       identical(this, other) ||
       other is LlmProviderProfile &&
           other.id == id &&
+          other.displayName == displayName &&
           other.wireFamily == wireFamily &&
           other.endpoint == endpoint &&
           other.environmentVariable == environmentVariable &&
           other.dialectId == dialectId;
 
   @override
-  int get hashCode =>
-      Object.hash(id, wireFamily, endpoint, environmentVariable, dialectId);
+  int get hashCode => Object.hash(
+    id,
+    displayName,
+    wireFamily,
+    endpoint,
+    environmentVariable,
+    dialectId,
+  );
 }
 
 Uri requireSecretFreeEndpoint(Uri endpoint) {

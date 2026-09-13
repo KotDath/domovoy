@@ -54,6 +54,7 @@ abstract final class BuiltInLlmCatalog {
 
   static final LlmProviderProfile deepSeekProfile = LlmProviderProfile(
     id: deepSeek,
+    displayName: 'DeepSeek',
     wireFamily: LlmWireFamily.openaiChatCompletions,
     endpoint: Uri.parse('https://api.deepseek.com/chat/completions'),
     environmentVariable: deepSeekApiKeyEnvironmentVariable,
@@ -62,6 +63,7 @@ abstract final class BuiltInLlmCatalog {
 
   static final LlmProviderProfile moonshotAiProfile = LlmProviderProfile(
     id: moonshotAi,
+    displayName: 'Moonshot AI',
     wireFamily: LlmWireFamily.openaiChatCompletions,
     endpoint: Uri.parse('https://api.moonshot.ai/v1/chat/completions'),
     environmentVariable: moonshotApiKeyEnvironmentVariable,
@@ -70,6 +72,7 @@ abstract final class BuiltInLlmCatalog {
 
   static final LlmProviderProfile openAiProfile = LlmProviderProfile(
     id: openAi,
+    displayName: 'OpenAI',
     wireFamily: LlmWireFamily.openaiResponses,
     endpoint: Uri.parse('https://api.openai.com/v1/responses'),
     environmentVariable: openAiApiKeyEnvironmentVariable,

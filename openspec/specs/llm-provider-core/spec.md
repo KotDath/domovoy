@@ -225,3 +225,18 @@ The built-in production profiles in this change SHALL be DeepSeek over Chat Comp
 #### Scenario: Required and optional OpenAI reasoning are selected
 - **WHEN** `gpt-5-mini` is requested with disabled/max reasoning or `gpt-5.4` is requested with either mode and a valid canonical effort
 - **THEN** `gpt-5-mini` disabled/max is rejected locally; its low/medium/high map exactly; and `gpt-5.4` low/medium/high map exactly, canonical max maps to `xhigh`, model-default enabled maps to backwards-compatible high, and disabled maps explicitly to `none`
+
+### Requirement: UI-safe deterministic catalog enumeration
+The provider registry SHALL expose immutable credential-free provider groups suitable for selection surfaces. Each group SHALL carry stable provider identity, a non-blank display name supplied by profile/catalog metadata, and its registered models with existing model display names and capabilities. Groups and models SHALL preserve explicit registry/catalog order rather than depend on map hash order, feature-local identifiers, or a hard-coded count. Enumeration SHALL expose no provider clients, endpoints not already public metadata, credential references, effective secrets, or compatibility payloads.
+
+#### Scenario: Built-in catalog is enumerated for UI
+- **WHEN** a caller requests selectable groups from the built-in registry
+- **THEN** it receives the three provider display groups and their eight models in declared registry/catalog order with model capabilities and no credential data
+
+#### Scenario: Custom provider is registered
+- **WHEN** a conforming custom profile with a display name and models is registered
+- **THEN** enumeration includes that provider and its models using supplied metadata without a feature code change or provider-identifier branch
+
+#### Scenario: Enumerated collections escape the registry
+- **WHEN** a caller attempts to mutate an obtained provider group or model list
+- **THEN** the registry contents and later enumerations remain unchanged

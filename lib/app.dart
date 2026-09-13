@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -7,12 +8,15 @@ import 'package:http/http.dart' as http;
 import 'core/agents/agents.dart';
 import 'core/environment/platform_environment_reader.dart';
 import 'core/llm/llm.dart';
+import 'design_system/design_system.dart';
+import 'features/chat/application/chat_workspace_controller.dart';
+import 'features/chat/presentation/chat_workspace_page.dart';
 import 'features/prompt/domain/prompt_workspace.dart';
-import 'features/prompt/presentation/prompt_page.dart';
 import 'features/settings/data/secure_api_key_override_store.dart';
 import 'features/settings/data/secure_model_settings_store.dart';
 import 'features/settings/domain/api_key_credentials.dart';
 import 'features/settings/domain/model_settings.dart';
+import 'features/settings/presentation/api_key_settings_dialog.dart';
 import 'infrastructure/credentials/credentials.dart';
 import 'infrastructure/agents/jsonl/jsonl.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
@@ -78,6 +82,12 @@ ProductionAgentStack buildProductionAgentStack({
       credentials: credentials,
     ),
   );
+  const contextEstimator = Utf8FramingAgentContextEstimator();
+  final compactionTrigger = OpenCodeCompactionTrigger();
+  final modelSwitchFitPolicy = OpenCodeAgentModelSwitchFitPolicy();
+  final historyCompactor = OpenCodeSummaryCompactor(
+    llm: RegistryAgentSummaryLlmInvocation(registry),
+  );
   final runtime = InMemoryAgentRuntime(
     registry: registry,
     tools: AgentToolRegistry(),
@@ -88,6 +98,10 @@ ProductionAgentStack buildProductionAgentStack({
     repository: resolvedRepository,
     router: InMemorySessionRouter(),
     profile: AgentRuntimeProfile(),
+    contextEstimator: contextEstimator,
+    compactionTrigger: compactionTrigger,
+    modelSwitchFitPolicy: modelSwitchFitPolicy,
+    historyCompactor: historyCompactor,
   );
   return ProductionAgentStack(
     registry: registry,
@@ -102,6 +116,7 @@ ProductionAgentStack buildProductionAgentStack({
 final class DomovoyDependencies {
   DomovoyDependencies({
     required this.runtime,
+    required this.registry,
     required this.promptDefinition,
     required this.repository,
     required this.catalog,
@@ -136,6 +151,7 @@ final class DomovoyDependencies {
     );
     return DomovoyDependencies(
       runtime: stack.runtime,
+      registry: stack.registry,
       promptDefinition: stack.promptDefinition,
       repository: stack.repository,
       catalog: stack.catalog,
@@ -147,6 +163,7 @@ final class DomovoyDependencies {
   }
 
   final AgentRuntime runtime;
+  final LlmProviderRegistry registry;
   final AgentDefinition promptDefinition;
   final AgentSessionRepository repository;
   final AgentSessionCatalog catalog;
@@ -204,37 +221,80 @@ class DomovoyApp extends StatefulWidget {
 }
 
 class _DomovoyAppState extends State<DomovoyApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  late final ChatWorkspaceController _chatController;
+
+  @override
+  void initState() {
+    super.initState();
+    final dependencies = widget.dependencies;
+    _chatController = ChatWorkspaceController(
+      runtime: dependencies.runtime,
+      definition: dependencies.promptDefinition,
+      catalog: dependencies.catalog,
+      repository: dependencies.repository,
+      registry: dependencies.registry,
+      settingsLauncher: _ApiKeyDialogLauncher(
+        navigatorKey: _navigatorKey,
+        overrideStore: dependencies.overrideStore,
+        resolver: dependencies.apiKeyResolver,
+        modelSettingsStore: dependencies.modelSettingsStore,
+      ),
+    );
+  }
+
   @override
   void dispose() {
     unawaited(
-      widget.dependencies.close().catchError((
-        Object error,
-        StackTrace stackTrace,
-      ) {
-        return;
-      }),
+      _chatController
+          .dispose()
+          .then((_) => widget.dependencies.close())
+          .catchError((Object error, StackTrace stackTrace) {
+            return;
+          }),
     );
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final dependencies = widget.dependencies;
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: 'Domovoy',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
-      ),
-      home: PromptPage(
-        key: const ValueKey('prompt-destination'),
-        runtime: dependencies.runtime,
-        promptDefinition: dependencies.promptDefinition,
-        overrideStore: dependencies.overrideStore,
-        apiKeyResolver: dependencies.apiKeyResolver,
-        modelSettingsStore: dependencies.modelSettingsStore,
-      ),
+      theme: DomovoyTheme.light(),
+      darkTheme: DomovoyTheme.dark(),
+      themeMode: ThemeMode.dark,
+      home: ChatWorkspacePage(controller: _chatController),
+    );
+  }
+}
+
+final class _ApiKeyDialogLauncher implements ChatSettingsLauncher {
+  const _ApiKeyDialogLauncher({
+    required this.navigatorKey,
+    required this.overrideStore,
+    required this.resolver,
+    required this.modelSettingsStore,
+  });
+
+  final GlobalKey<NavigatorState> navigatorKey;
+  final ApiKeyOverrideStore overrideStore;
+  final ApiKeyResolver resolver;
+  final DeepSeekModelSettingsStore modelSettingsStore;
+
+  @override
+  Future<void> openSettings() {
+    final context = navigatorKey.currentContext;
+    if (context == null) {
+      throw StateError('Workspace navigator is not ready.');
+    }
+    return showApiKeySettingsDialog(
+      context: context,
+      overrideStore: overrideStore,
+      resolver: resolver,
+      isWeb: kIsWeb,
+      modelSettingsStore: modelSettingsStore,
     );
   }
 }

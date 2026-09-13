@@ -27,6 +27,93 @@ void main() {
       );
     });
 
+    test('registry exposes immutable ordered provider groups', () {
+      final registry = LlmProviderRegistry();
+      BuiltInLlmCatalog.registerInto(registry);
+
+      final groups = registry.providerGroups;
+      expect(groups.map((group) => group.displayName), <String>[
+        'DeepSeek',
+        'Moonshot AI',
+        'OpenAI',
+      ]);
+      expect(
+        groups.expand((group) => group.models).map((model) => model.id),
+        <ModelId>[
+          BuiltInLlmCatalog.deepSeekV4Flash,
+          BuiltInLlmCatalog.deepSeekV4Pro,
+          BuiltInLlmCatalog.kimiK26,
+          BuiltInLlmCatalog.kimiK27Code,
+          BuiltInLlmCatalog.kimiK3,
+          BuiltInLlmCatalog.gpt4oMini,
+          BuiltInLlmCatalog.gpt5Mini,
+          BuiltInLlmCatalog.gpt54,
+        ],
+      );
+      expect(() => groups.clear(), throwsUnsupportedError);
+      expect(() => groups.first.models.clear(), throwsUnsupportedError);
+      expect(registry.providerGroups.first.models, hasLength(2));
+    });
+
+    test('custom provider grouping uses metadata without id branches', () {
+      final registry = LlmProviderRegistry();
+      BuiltInLlmCatalog.registerInto(registry);
+      final providerId = ProviderId('any-conforming-provider');
+      registry.registerProfile(
+        LlmProviderProfile(
+          id: providerId,
+          displayName: 'Private Research Cluster',
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          endpoint: Uri.parse('https://example.test/v1/chat/completions'),
+          environmentVariable: 'PRIVATE_CLUSTER_KEY',
+          dialectId: 'private_cluster_v1',
+        ),
+      );
+      registry.registerModel(
+        LlmModel(
+          providerId: providerId,
+          id: ModelId('research-model'),
+          name: 'Research Model',
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          capabilities: ModelCapabilities(
+            supportsTextInput: true,
+            reasoning: ModelReasoningCapability.optional,
+            supportsTools: true,
+            selectableEfforts: const <ReasoningEffort>[ReasoningEffort.low],
+          ),
+          contextBound: 1000,
+          outputBound: 100,
+        ),
+      );
+
+      final custom = registry.providerGroups.last;
+      expect(custom.providerId, providerId);
+      expect(custom.displayName, 'Private Research Cluster');
+      expect(custom.models.single.name, 'Research Model');
+      expect(custom.models.single.capabilities.supportsTools, isTrue);
+    });
+
+    test('provider display names are strict and codec-compatible', () {
+      expect(
+        () => LlmProviderProfile(
+          id: ProviderId('blank-name'),
+          displayName: '  ',
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          endpoint: Uri.parse('https://example.test/v1'),
+          environmentVariable: 'KEY',
+          dialectId: 'dialect',
+        ),
+        throwsA(isA<LlmException>()),
+      );
+      final legacy = Map<String, Object?>.from(
+        BuiltInLlmCatalog.deepSeekProfile.toJson(),
+      )..remove('displayName');
+      expect(
+        LlmProviderProfile.fromJson(legacy).displayName,
+        BuiltInLlmCatalog.deepSeek.value,
+      );
+    });
+
     test('profile snapshots never serialize embedded endpoint credentials', () {
       expect(
         () => LlmProviderProfile(
