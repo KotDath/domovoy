@@ -1,27 +1,24 @@
 # Feature State — add-day10-context-strategies-demo
 
-- **change:** `add-day10-context-strategies-demo`
-- **scope_id:** `day10-branch-demo`
-- **attempt_id:** `implementation-1`
-- **stage:** `accepted`; source, process artifacts, formal checks, and browser acceptance are frozen for independent verification.
-- **result:** Day 10 branch-local demo facade, shared fourteen-step scenario, three context projections, checkpointed A/B continuations, persisted state, physical API ledger, native/browser entries, focused tests, and runnable documentation are implemented. This is not yet accepted or committed.
-- **initial_tier / current_tier:** `T2 / T2`.
-- **risk evidence:** Transient production runtime dispatch, independent branch persistence, provider usage attribution, and browser credential relay interact; wrong request seeding or double counting would misrepresent the experiment.
-- **base_revision:** `32b9a52c96d14e512836b7251ae1f3a77c0ce6a9` (`codex/day-10` worktree only).
-- **starting_dirty_diff:** Clean tracked and untracked worktree at assignment.
-- **contract_revision:** `planning-1`; OpenSpec proposal, design, new capability spec, and tasks are complete; strict validation passed.
-- **recommended_mode / execution_mode:** `heavy / heavy`.
-- **rationale:** One writer handles coupled state, runtime, and demo UX; independent verifier checks frozen AC after root manual review.
-- **selection_source:** Root orchestrator explicitly assigned this Sol subagent as sole Day 10 writer.
-- **model_tiers_used:** Sol writer; independent verifier pending assignment by root. No DeepSeek verifier claim.
-- **expected_changed_paths:** `assets/day10_scenario.json`, `lib/demos/day10_*`, `lib/day10_*`, `pubspec.yaml`, `test/demos/day10_engine_test.dart`, `docs/day10-demo.md`, this state, and this OpenSpec change only.
-- **excluded scope:** Main or Day 9 app code; production chat behavior; automatic semantic fact extraction; summaries; commit/push/archive by writer.
-- **implementation decisions:** Transient `Agent.run` receives selected historical pairs through `initialMessages`. The facade stores full UI history, supported explicit facts, lineage, and API ledger in a versioned SharedPreferences document. Each branch owns a random ID and local physical ordinal. A/B inherit history at step eight but start empty new-spend ledgers. Native requests use the ordinary credential resolver; browser requests use the existing keyless marker/loopback relay.
-- **checks / evidence:** Focused Day 10 engine tests 7/7 cover scenario order, sliding trim, budget replacement before dispatch and reload, A/B isolation and new spend, unknown failed usage, selected-strategy advancement and exact checkpoint, and identical fourteen prompts. Final-tree `dart format .` 172 files/0 changed (`/tmp/domovoy-day10-final-format.log`); `flutter analyze` no issues (`/tmp/domovoy-day10-final-analyze.log`); full `flutter test --reporter expanded` 471/471 (`/tmp/domovoy-day10-final-tests.log`); Linux debug build passed (`/tmp/domovoy-day10-final-linux.log`); external web build passed (`/tmp/domovoy-day10-web-final.log`) with scenario JSON, FontManifest and Material Icons present; strict OpenSpec validation passed (`/tmp/domovoy-day10-final-openspec.log`); `git diff --check` clean.
-- **manual evidence:** Initial browser startup failed before any API call because `1 << 32` was not a safe web random bound. Two `1 << 30` draws fixed it. Root then completed 42 real DeepSeek calls (14 per strategy) and four A/B calls. Sliding: input 9196/output 1407/total 10603/cache-read 512, final answer 0/8 facts. Explicit facts: 11318/2000/13318/cache 256, 8/8 facts and only current budget 150000. Full branching: 20275/1269/21544/cache 17280, 8/8 facts. A's two new calls: 3090/49/3139, remembered only waiting list; B's: 3072/44/3116, remembered only family appointments. Both excluded eight inherited calls. B→A switch and reload restored answers, three main totals, active A, and its new ledger (`/tmp/domovoy-evidence/day10-live.json`). Root found low-contrast headings, missing selector, and duplicate final-answer presentation; final source fixed these. On the final build, old-origin reload preserved 14/14, all three totals and active A with visible titles and one final answer. A fresh origin verified selected sliding step alone (228/48/276), selected facts step alone after selector reload (271/5/276), and selected branching reached step eight with checkpoint A/B immediately while the other two remained at step one (branching 7173/303/7476 across eight calls). No API errors. The 42-call full run was reused because dispatch and ledger behavior were unchanged.
-- **tasks:** 8/8 checked in OpenSpec `tasks.md`; no per-provider live coverage beyond DeepSeek is claimed by this branch.
-- **frozen changed-tree fingerprint:** `worktree-sha256:f8c4901a638c17a063d8b4ce065d970b7764431910d3903a1a2efb8171619793` over 13 sorted changed versionable files, hashing path, byte length, and contents separated by NUL; excludes only this self-referential state file.
-- **open_findings:** Independent verification only; no known functional blocker.
-- **rework_count:** `0` (manual development findings before independent review).
+- change: `add-day10-context-strategies-demo`
+- scope_id: `day10-second-memory-agent`
+- stage: `accepted`
+- base_revision: `12389ee` (previous day-10 README commit; initial worktree clean)
+- initial_tier / current_tier: T2 / T2 (persistence, retries, real paid API usage)
+- recommended_mode / execution_mode: heavy / heavy, continuing the existing coupled-state workflow
+- selection_source: user approved the proposed two-agent design and explicitly requested identical model/reasoning for both roles; root continued existing heavy workflow
+- writer: `/root/memory_writer` (Sol), then root for final docs/process and whitespace formatting after writer quota interruption; never concurrent writers
+- verifier: `/root/memory_verifier`, independent replacement for unavailable DeepSeek verifier; no DeepSeek verifier model claim
+- included: day10 engine, memory proposals, invoker, UI, natural scenario, focused/live tests, README/evidence, existing OpenSpec change
+- excluded: main, days 6–9, summary, general runtime fork API, arbitrary background scheduling
+- user gates: design approved; implementation, live testing, commit/push authorized
+- decisions: memory/main share one immutable model+generation config (Flash, reasoning disabled, model-default effort, output1536 by default); memory proposes dynamic sourced operations; validated proposal+processed marker saved before main; one repair; untouched facts retained; failed-main retry reuses accepted memory; actual physical role ledgers and local elapsed time; v1 state explicitly resets; source history expandable
+- evidence: target v3 13 tests `/tmp/domovoy-day10-memory-target-v3.log`; final full suite 477 `/tmp/domovoy-day10-memory-tests-final.log`; final analyze exit0 `/tmp/domovoy-day10-memory-analyze-final.log`; final day10-target Linux debug exit0 `/tmp/domovoy-day10-memory-linux-final.log`; final external web build `/tmp/domovoy-day10-memory-web-build-final.log` with fonts and assets; strict validation `/tmp/domovoy-day10-memory-openspec.log`
+- live evidence: `docs/evidence/day10-memory-live.json` equals saved real second run; 14 steps each, Sliding12430 tokens/0 of8, Facts92531 including15memory calls/8of8, Branching28252/8of8. A4255 waiting-list only, B4201 family-only. Facts40 records, updated budget and explicit delete old reportname, no active voice hypothesis. First exploratory prompt 102957 Facts tokens retained as historical observation only.
+- manual UI: PASS final browser build at localhost8772: seven natural free messages, dynamic add name/budget/date, update90000→110000, delete date, no active hypothetical voice feature; two neutral turns then reload restored6pairs/7603tokens and selected Facts; final answer Ladoga110000/dateunknown/voicestatusunknown;14calls8833tokens. Source expansion visually checked. docs/evidence/day10-memory-manual.json records exact prompts and observed usage.
+- rework_count: 0 (prompt selectivity improvement preceded formal acceptance review)
+- open_findings: none; independent final verification PASS, 0 formal fix cycles
+- previous accepted scope: day10-branch-demo (deterministic parser), superseded by this approved redesign; its old PASS does not cover this scope
 
-- **independent_verification:** `PASS` for day10-branch-demo. Independent replacement confirmed frozen 13-file fingerprint `f8c4901a638c17a063d8b4ce065d970b7764431910d3903a1a2efb8171619793`, all acceptance criteria, byte-identical Day 9/10 scenario assets, and 471-test log. No blocking findings, no DeepSeek verifier model claimed.
+- independent_verification: PASS from `/root/memory_verifier`, final AC matrix covers model/reasoning parity, dynamic sourced operations, atomic save/retry, context isolation, physical accounting, UI/reload, actual results and final checks. Independently confirmed 15-file fingerprint `c163155834be0b4cd08bc471a9d3c14bf087c0fffb0f516a9e057f3e6dd851e0` excluding only this state.
+- final_format: `dart format .` 174 files / 0 changes; clean diff; documentation links and credential scan passed. Native full-app restart was not manually tested; browser reload and Linux target build were verified.

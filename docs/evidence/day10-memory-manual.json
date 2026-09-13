@@ -1,0 +1,64 @@
+{
+  "date": "2026-09-13",
+  "method": "Manual browser UI through loopback relay localhost:8772; final web build; same DeepSeek Flash/disabled reasoning for both roles",
+  "messages": [
+    "Мы делаем сервис записи в мастерскую, назовём его Ладога. Можем потратить девяносто тысяч рублей, запустить хотим второго декабря. Отвечай кратко.",
+    "Может быть, когда-нибудь добавим запись голосом? Пока это только идея, в согласованные требования её не включаем.",
+    "Заказчик согласовал увеличение: теперь бюджет сто десять тысяч рублей вместо прежней суммы.",
+    "Дату запуска отменили. Новый срок пока не согласован, не считай второе декабря действующим сроком.",
+    "Пока не добавляем новых решений. Скажи одной фразой, что продолжим обсуждение позже.",
+    "Новых требований нет. Ответь только: принято.",
+    "Напомни название проекта, действующий бюджет, согласованный срок и статус идеи голосовой записи. Если данных нет, так и скажи."
+  ],
+  "observed": {
+    "activeFacts": {
+      "название сервиса": "Ладога",
+      "бюджет": "110000 рублей"
+    },
+    "operations": [
+      "add name",
+      "add budget 90000",
+      "add launch 2 December",
+      "update budget 110000",
+      "delete launch date"
+    ],
+    "hypothesis": "No active voice-booking fact; final answer reports status unknown, not approved",
+    "finalAnswer": "Название проекта: «Ладога». Бюджет: 110 000 рублей. Согласованный срок: неизвестно. Статус идеи голосовой записи: неизвестно.",
+    "main": {
+      "calls": 7,
+      "input": 1779,
+      "output": 171,
+      "overall": 1950,
+      "elapsedMs": 8680
+    },
+    "memory": {
+      "calls": 7,
+      "input": 6599,
+      "output": 284,
+      "overall": 6883,
+      "elapsedMs": 10983
+    },
+    "combined": {
+      "calls": 14,
+      "input": 8378,
+      "output": 455,
+      "overall": 8833,
+      "cacheRead": 3456
+    },
+    "reloadAfterStep6": {
+      "pairs": 6,
+      "calls": 12,
+      "input": 7200,
+      "output": 403,
+      "overall": 7603,
+      "selectedStrategy": "facts",
+      "preserved": true
+    },
+    "sourceHistoryExpansion": "Original messages and matching source IDs visible; final question receives last2 neutral pairs plus active facts"
+  },
+  "limitations": [
+    "This is a manual observation record, not raw browser storage export.",
+    "No native full-application restart tested in this probe; browser reload recreated runtime.",
+    "Hypothesis status itself is not retained once its message leaves window."
+  ]
+}

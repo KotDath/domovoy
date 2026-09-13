@@ -4,10 +4,10 @@ The existing demos show API usage and summarization but do not let a viewer comp
 
 ## What Changes
 
-- Add a branch-local, persistent demo facade over real transient `AgentRuntime` calls for a two-pair sliding window, deterministic explicit facts with replacement, and full-history branching.
+- Add a branch-local, persistent demo facade over real transient `AgentRuntime` calls for a two-pair sliding window, a second LLM agent that extracts and updates dynamic key-value facts, and full-history branching.
 - Run the same fourteen-step scenario across all three strategies. Fork two independent continuations from step eight and expose lineage, active branch, and new spending.
 - Display actual final answers, the eight expected facts, API-derived usage, retained context, and caveats about quality and usability. Provide native and safe loopback-relay browser entries.
-- Add focused state/strategy tests and documented live demonstration instructions.
+- Add focused state/strategy tests and documented live demonstration instructions. The memory-agent calls and repair attempt are included in provider-only usage and elapsed-time comparisons.
 
 ## Capabilities
 
@@ -21,4 +21,4 @@ None. Production chat and core agent behavior remain unchanged.
 
 ## Impact
 
-Only branch-local demo code, its asset, tests, documentation, and OpenSpec/state artifacts change. The browser relay keeps the DeepSeek key server-side. The demo does not change normal chat, implement semantic fact extraction, or use estimates for visible cost.
+Only branch-local demo code, its asset, tests, documentation, and OpenSpec/state artifacts change. The browser relay keeps the DeepSeek key server-side. The demo does not change normal chat or use estimates for visible cost. The user approved semantic fact extraction through a second agent; both roles share one model and reasoning configuration.

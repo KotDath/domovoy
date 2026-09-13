@@ -25,6 +25,7 @@ class Day10DemoApp extends StatefulWidget {
 class _Day10DemoAppState extends State<Day10DemoApp> {
   Day10DemoEngine? _engine;
   String? _loadError;
+  final _freeInput = TextEditingController();
 
   @override
   void initState() {
@@ -52,6 +53,7 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
   @override
   void dispose() {
     _engine?.dispose();
+    _freeInput.dispose();
     unawaited(widget.dependencies.close());
     super.dispose();
   }
@@ -69,6 +71,10 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
   Widget _usage(Day10Branch branch) {
     final total = branch.newSpend;
     final cache = total.cacheHitRatio;
+    final main = branch.spendFor('main');
+    final memory = branch.spendFor('memory');
+    final mainCalls = branch.invocations.where((row) => row.role == 'main');
+    final memoryCalls = branch.invocations.where((row) => row.role == 'memory');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -83,6 +89,18 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
           'запись ${_dimension(total.cacheWrite)}, '
           'попадание ${cache == null ? '—' : '${(cache.value * 100).toStringAsFixed(1)}%'}',
         ),
+        if (branch.strategy == Day10Strategy.facts) ...[
+          Text(
+            'Ответы: ${mainCalls.length} вызовов · ввод ${_dimension(main.requestContext)} '
+            '· вывод ${_dimension(main.responseGenerated)} · всего ${_dimension(main.overall)} '
+            '· ${mainCalls.fold<int>(0, (sum, row) => sum + row.elapsedMs)} мс',
+          ),
+          Text(
+            'Память: ${memoryCalls.length} вызовов · ввод ${_dimension(memory.requestContext)} '
+            '· вывод ${_dimension(memory.responseGenerated)} · всего ${_dimension(memory.overall)} '
+            '· ${memoryCalls.fold<int>(0, (sum, row) => sum + row.elapsedMs)} мс',
+          ),
+        ],
       ],
     );
   }
@@ -113,14 +131,35 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
               ),
             if (branch.strategy == Day10Strategy.facts) ...[
               const SizedBox(height: 6),
-              const Text('Явно сохранённые факты:'),
+              const Text('Факты агента памяти и источники:'),
               SelectableText(
                 branch.facts.isEmpty
                     ? '—'
-                    : branch.facts.entries
-                          .map((entry) => '${entry.key}: ${entry.value}')
+                    : branch.facts
+                          .map(
+                            (fact) =>
+                                '${fact.key}: ${fact.value} · ${fact.id} · '
+                                'источник ${fact.sourceMessageIds.join(', ')}',
+                          )
                           .join('\n'),
               ),
+              const Text('Изменения памяти:'),
+              SelectableText(
+                branch.factEdits.isEmpty
+                    ? '—'
+                    : branch.factEdits
+                          .map(
+                            (edit) =>
+                                '${edit.operation} ${edit.key}: ${edit.before ?? '—'} → '
+                                '${edit.after ?? '—'} · ${edit.sourceMessageIds.join(', ')}',
+                          )
+                          .join('\n'),
+              ),
+              if (branch.pendingMemoryPrompt != null)
+                SelectableText(
+                  'Память обновлена, ответ ожидает повтора · '
+                  '${branch.pendingMemoryUserId}: ${branch.pendingMemoryPrompt}',
+                ),
             ],
             const SizedBox(height: 8),
             _usage(branch),
@@ -129,6 +168,20 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
               Text(isFinal ? 'Итоговое ТЗ:' : 'Последний ответ:'),
               SelectableText(last.assistant),
             ],
+            if (branch.pairs.isNotEmpty)
+              ExpansionTile(
+                title: const Text('История сообщений и ID источников'),
+                children: [
+                  for (final pair in branch.pairs)
+                    Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: SelectableText(
+                        '${pair.userId} · пользователь: ${pair.user}\n'
+                        '${pair.assistantId} · ассистент: ${pair.assistant}',
+                      ),
+                    ),
+                ],
+              ),
           ],
         ),
       ),
@@ -227,11 +280,13 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
         columns: const [
           DataColumn(label: Text('Стратегия/ветка')),
           DataColumn(label: Text('Вызов')),
+          DataColumn(label: Text('Роль')),
           DataColumn(label: Text('Итог')),
           DataColumn(label: Text('Ввод')),
           DataColumn(label: Text('Вывод')),
           DataColumn(label: Text('Кэш')),
           DataColumn(label: Text('Всего')),
+          DataColumn(label: Text('Время, мс')),
         ],
         rows: [
           for (final branch in all)
@@ -240,6 +295,7 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
                 cells: [
                   DataCell(Text(branch.label)),
                   DataCell(Text(row.id)),
+                  DataCell(Text(row.role == 'memory' ? 'Память' : 'Ответ')),
                   DataCell(Text(row.outcome)),
                   DataCell(
                     Text(row.usage.requestContext?.value.toString() ?? '—'),
@@ -249,6 +305,7 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
                   ),
                   DataCell(Text(row.usage.cacheRead?.value.toString() ?? '—')),
                   DataCell(Text(row.usage.overall?.value.toString() ?? '—')),
+                  DataCell(Text('${row.elapsedMs}')),
                 ],
               ),
         ],
@@ -343,6 +400,31 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
                         ),
                       ],
                     ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            key: const ValueKey('day10-free-input'),
+                            controller: _freeInput,
+                            decoration: const InputDecoration(
+                              labelText: 'Своё сообщение выбранной стратегии',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.tonal(
+                          key: const ValueKey('day10-free-send'),
+                          onPressed: engine.busy
+                              ? null
+                              : () {
+                                  final value = _freeInput.text;
+                                  if (value.trim().isEmpty) return;
+                                  unawaited(engine.runFreeInput(value));
+                                },
+                          child: const Text('Отправить'),
+                        ),
+                      ],
+                    ),
                     if (engine.busy) const LinearProgressIndicator(),
                     const SizedBox(height: 10),
                     Text(engine.status, key: const ValueKey('day10-status')),
@@ -388,9 +470,9 @@ class _Day10DemoAppState extends State<Day10DemoApp> {
                     _ledger(engine),
                     const SizedBox(height: 12),
                     const Text(
-                      'Явные факты распознаются только по указанным '
-                      'полям вида «Ключ: значение». Их изменение видно до '
-                      'вызова модели. Ветки A/B считают лишь новые вызовы.',
+                      'Отдельный агент извлекает факты из нового сообщения перед ответом. '
+                      'Факты, изменения и источники видны выше. Его вызовы входят '
+                      'в общий расход. Ветки A/B считают лишь новые вызовы.',
                     ),
                   ],
                 );
