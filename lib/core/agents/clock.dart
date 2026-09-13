@@ -91,13 +91,17 @@ final class _FakeTimer implements AgentTimer {
 }
 
 final class AgentIdFactory {
-  AgentIdFactory({String prefix = 'id'}) : _prefix = prefix;
+  AgentIdFactory({String prefix = 'id', String? namespace})
+    : _prefix = prefix,
+      _namespace = namespace;
 
   final String _prefix;
+  final String? _namespace;
   var _n = 0;
 
   String next([String? kind]) {
     _n += 1;
-    return '${kind ?? _prefix}-$_n';
+    final label = kind ?? _prefix;
+    return _namespace == null ? '$label-$_n' : '$_namespace-$label-$_n';
   }
 }

@@ -1,0 +1,24 @@
+## Context
+
+The production runtime already supports replaceable triggers/compactors, validated generated prefixes, JSONL session records, and model-aware physical-call accounting. Its default production compaction is pressure based. Day 9 must leave that default intact and demonstrate a separate message-count policy against an uncompacted control.
+
+## Goals / Non-Goals
+
+**Goals:** a reproducible 14-prompt comparison, two durable sessions, cadence checkpoints that survive summary replacement/restart, and an API-only cost breakdown with visible answers and summary text.
+
+**Non-Goals:** changing the normal chat policy, inventing token savings, extracting general facts, editing provider protocols, or adding a pricing estimator.
+
+## Decisions
+
+1. **Inject branch-local compaction factories into production composition.** An optional trigger and a compactor factory receive the already-built provider registry/estimator. Defaults stay unchanged; the baseline stack disables proactive compaction, while the summarized stack installs Day 9 extensions. Both share one repository instance and one HTTP client with distinct, generated Day 9 session IDs, avoiding independent concurrent storage writers. The active pair pointer restores those IDs. Production-built runtimes receive a unique ID namespace so new messages cannot collide with IDs in a restored JSONL transcript; directly constructed core runtimes keep their existing default IDs. Alternative: duplicate provider wiring in demo code, which risks drift.
+2. **Count raw completed user/assistant messages in the trigger.** A final interaction group ending in assistant identifies the post-answer safe boundary. The trigger excludes generated/protected prefix, expands complete groups to raw messages, and reads `day9RawUaTotal` and `day9RetainedRawUa` from prior accepted provenance. It fires when the new raw count reaches 10 and never on a pending user. The wrapper copies a delegated structured-summary candidate with all generated text, legal boundary, message IDs, reports, and metadata, then writes the new absolute count/retained count as candidate metadata. Since runtime merges candidate metadata last, the accepted checkpoint is durable. No-change has no candidate and commits no checkpoint. Alternative: count current transcript length, which resets when old turns are summarized.
+3. **Use existing structured-summary semantics with a focused Day 9 instruction.** Delegate to `OpenCodeSummaryCompactor(recentGroupCount: 2)` with configurable user and system instructions plus a safe output cap. The normal compactor keeps its original defaults; this branch asks the model to preserve exact user decisions, including names, numbers, dates, exclusions, and later replacements, in terse JSON. A continuity checklist names categories to retain without injecting scenario answers or values. Runtime stores the summary as generated prefix/provenance and the final two pairs as raw suffix; JSONL validates/commits this atomically. Assistant and compaction provider reports remain separate ledger kinds.
+4. **Compare two sessions on identical data.** Store the 14 prompts as an application asset. Two acceptance-check turns after the original step 11 add no product decisions and let repeated API requests expose the measured amortization of summary overhead. The UI runs one prompt at a time through each mode or repeats that step loop in one-click mode. It restores the active pair IDs on startup and derives progress from durable transcript/provenance, checking the uncompacted user prompts against the current asset so an earlier 12-step pair requests an explicit reset instead of silently continuing a changed scenario. A reset clears only those dedicated sessions and creates a new pair. Usage is projected from physical ledger entries, with unknown/partial handling; summaries and final answers are read from actual session snapshots.
+5. **Reuse the safe browser relay.** The browser entry holds semantics and constructs the same two production stacks through a public credential marker; Python retains the real key. Build to an external directory to keep Flutter web assets complete.
+
+## Risks / Trade-offs
+
+- **Summary overhead can exceed saved assistant input on a short brief** → display assistant totals, summary overhead, and combined totals separately; report observed latest-request reduction without an automatic “savings” claim.
+- **A provider failure after one mode completes a step can leave asymmetric progress** → preserve both JSONL records and measured usage, show the mismatch, and require explicit reset before proceeding.
+- **A provider may return a verbose/ineffective summary** → preserve runtime candidate validation and surface the compaction error; never hand-edit the persisted prefix or ledger.
+- **A previously saved pair may contain incompatible records** → version the saved pointer and offer an explicit reset limited to that Day 9 pair.
