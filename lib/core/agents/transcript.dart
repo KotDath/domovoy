@@ -5,10 +5,31 @@ import 'compaction.dart';
 import 'definition.dart';
 import 'events.dart';
 import 'ids.dart';
+import 'token_accounting.dart';
 
 final class AgentTranscript {
-  AgentTranscript({List<LlmMessage> messages = const <LlmMessage>[]})
-    : messages = List<LlmMessage>.unmodifiable(List<LlmMessage>.from(messages));
+  AgentTranscript({
+    List<LlmMessage> messages = const <LlmMessage>[],
+    List<AgentTranscriptMessageId?>? messageIds,
+  }) : messages = List<LlmMessage>.unmodifiable(
+         List<LlmMessage>.from(messages),
+       ),
+       messageIds = List<AgentTranscriptMessageId?>.unmodifiable(
+         messageIds ??
+             List<AgentTranscriptMessageId?>.filled(messages.length, null),
+       ) {
+    if (this.messageIds.length != this.messages.length) {
+      throw ArgumentError(
+        'Transcript message identities must align with messages.',
+      );
+    }
+    final assigned = <AgentTranscriptMessageId>{};
+    if (this.messageIds.whereType<AgentTranscriptMessageId>().any(
+      (id) => !assigned.add(id),
+    )) {
+      throw ArgumentError('Transcript message identities must be unique.');
+    }
+  }
 
   factory AgentTranscript.fromJson(Object? json) {
     final map = decodeTypedJson(json, type: jsonType);
@@ -20,10 +41,18 @@ final class AgentTranscript {
   static const jsonType = 'agent.transcript';
 
   final List<LlmMessage> messages;
+  final List<AgentTranscriptMessageId?> messageIds;
 
-  AgentTranscript append(LlmMessage message) {
-    return AgentTranscript(messages: <LlmMessage>[...messages, message]);
-  }
+  AgentTranscript append(
+    LlmMessage message, {
+    AgentTranscriptMessageId? messageId,
+  }) => AgentTranscript(
+    messages: <LlmMessage>[...messages, message],
+    messageIds: <AgentTranscriptMessageId?>[...messageIds, messageId],
+  );
+
+  AgentTranscript withMessageIds(List<AgentTranscriptMessageId?> identities) =>
+      AgentTranscript(messages: messages, messageIds: identities);
 
   Map<String, Object?> toJson() => typedJson(
     type: jsonType,
@@ -35,10 +64,13 @@ final class AgentTranscript {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is AgentTranscript && listEquals(other.messages, messages);
+      other is AgentTranscript &&
+          listEquals(other.messages, messages) &&
+          listEquals(other.messageIds, messageIds);
 
   @override
-  int get hashCode => Object.hashAll(messages);
+  int get hashCode =>
+      Object.hash(Object.hashAll(messages), Object.hashAll(messageIds));
 }
 
 final class AgentSessionSnapshot {
@@ -52,7 +84,15 @@ final class AgentSessionSnapshot {
     required this.toolAttempts,
     required this.revision,
     required this.compactionState,
-  });
+    AgentTokenAccountingSnapshot? tokenAccounting,
+  }) : tokenAccounting =
+           tokenAccounting ??
+           const AgentTokenAccountingProjector().project(
+             state: AgentTokenAccountingState.legacy(
+               transcriptMessageCount: transcript.messages.length,
+               usage: usage,
+             ),
+           );
 
   final AgentSessionId id;
   final AgentDefinition definition;
@@ -63,6 +103,7 @@ final class AgentSessionSnapshot {
   final int toolAttempts;
   final int revision;
   final AgentCompactionState? compactionState;
+  final AgentTokenAccountingSnapshot tokenAccounting;
 
   int get compactionGeneration => compactionState?.generation ?? 0;
 }

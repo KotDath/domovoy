@@ -28,13 +28,47 @@ void main() {
           ],
         ],
       );
-      final events = await testRuntime(
-        provider: provider,
-      ).agent(testDefinition()).run('hi').events.toList();
+      final session = await testRuntime(provider: provider)
+          .agent(testDefinition(budget: AgentTokenBudget(totalTokens: 4)))
+          .createSession();
+      final run = session.run('hi');
+      final events = await run.events.toList();
       expect(events.whereType<AgentReasoningDelta>(), hasLength(1));
       expect(events.whereType<AgentAnswerDelta>().single.text, 'done');
+      final usageEvent = events.whereType<AgentUsageUpdated>().single;
+      expect(usageEvent.usage.totalTokens, 3);
+      expect(usageEvent.tokenAccounting, isNotNull);
+      expect(usageEvent.tokenAccounting!.currentRequest!.active, isTrue);
+      expect(usageEvent.tokenAccounting!.ledger, isEmpty);
       expect(events.where((event) => event.isTerminal), hasLength(1));
-      expect(events.last, isA<AgentRunCompleted>());
+      final completed = events.last as AgentRunCompleted;
+      final accounting = completed.tokenAccounting!;
+      expect(completed.usage?.totalTokens, 3);
+      expect(accounting.ledger, hasLength(1));
+      final entry = accounting.ledger.single.entry;
+      expect(entry.runId, run.id);
+      expect(entry.outcome, AgentModelInvocationOutcome.completed);
+      expect(entry.retryOrdinal, 0);
+      expect(entry.usage.totalTokens, 3);
+      expect(entry.requestMessageId, session.snapshot.transcript.messageIds[0]);
+      expect(
+        entry.responseMessageId,
+        session.snapshot.transcript.messageIds[1],
+      );
+      expect(
+        accounting.latestResponse?.responseMessageId,
+        entry.responseMessageId,
+      );
+      expect(accounting.contextRevision, 2);
+      expect(
+        accounting.retainedContext.provenance,
+        LlmUsageMetricProvenance.estimated,
+      );
+      expect(
+        session.snapshot.tokenAccounting.ledger.single.entry,
+        accounting.ledger.single.entry,
+      );
+      await session.close();
     });
 
     test('tool continuation is sequential and unlimited by default', () async {
@@ -67,9 +101,19 @@ void main() {
         id: BuiltInLlmCatalog.deepSeek,
         wireFamily: LlmWireFamily.openaiChatCompletions,
         turns: <List<LlmEvent>>[
-          toolTurn(name: 'lookup', callId: 'c1', arguments: '{"n":1}'),
-          toolTurn(name: 'lookup', callId: 'c2', arguments: '{"n":2}'),
-          textTurn('final'),
+          toolTurn(
+            name: 'lookup',
+            callId: 'c1',
+            arguments: '{"n":1}',
+            usage: LlmUsage(totalTokens: 1),
+          ),
+          toolTurn(
+            name: 'lookup',
+            callId: 'c2',
+            arguments: '{"n":2}',
+            usage: LlmUsage(totalTokens: 2),
+          ),
+          textTurn('final', usage: LlmUsage(totalTokens: 3)),
         ],
       );
       final events = await testRuntime(provider: provider, tools: tools)
@@ -81,6 +125,25 @@ void main() {
       expect(events.whereType<AgentAnswerDelta>().last.text, 'final');
       expect(events.last, isA<AgentRunCompleted>());
       expect(provider.requests, hasLength(3));
+      final ledger = events.last is AgentRunCompleted
+          ? (events.last as AgentRunCompleted).tokenAccounting!.ledger
+          : const <AgentModelUsageEntryView>[];
+      expect(ledger, hasLength(3));
+      expect(ledger.map((view) => view.entry.runId).toSet(), hasLength(1));
+      expect(ledger.map((view) => view.entry.turnId).toSet(), hasLength(3));
+      expect(ledger.map((view) => view.entry.attemptId).toSet(), hasLength(3));
+      expect(
+        ledger.map((view) => view.entry.responseMessageId).toSet(),
+        hasLength(3),
+      );
+      expect(
+        ledger.fold<int>(
+          0,
+          (sum, view) => sum + (view.entry.usage.totalTokens ?? 0),
+        ),
+        6,
+      );
+      expect((events.last as AgentRunCompleted).usage?.totalTokens, 6);
     });
 
     test('zero tool allowance stops without executing', () async {
@@ -196,6 +259,56 @@ void main() {
         );
       },
     );
+
+    test('token guards count cache and reasoning dimensions once', () async {
+      final usage = LlmUsage(
+        input: LlmUsageMetric.providerReported(2),
+        cacheRead: LlmUsageMetric.providerReported(3),
+        cacheWrite: LlmUsageMetric.providerReported(4),
+        output: LlmUsageMetric.providerReported(5),
+        reasoning: LlmUsageMetric.providerReported(6),
+      );
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[textTurn('ok', usage: usage)],
+      );
+      final events = await testRuntime(provider: provider)
+          .agent(
+            testDefinition(
+              budget: AgentTokenBudget(
+                inputTokens: 10,
+                outputTokens: 12,
+                totalTokens: 21,
+              ),
+            ),
+          )
+          .run('go')
+          .events
+          .toList();
+      final completed = events.last as AgentRunCompleted;
+      expect(completed.usage?.inputTokens, 9);
+      expect(completed.usage?.outputTokens, 11);
+      expect(completed.usage?.totalTokens, 20);
+      expect(completed.tokenAccounting!.session.overall.knownSubtotal, 20);
+      expect(events.whereType<AgentUsageUpdated>(), hasLength(1));
+    });
+
+    test('runtime retained-context estimator failure stays labelled', () async {
+      final session = await testRuntime(
+        provider: QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: const <List<LlmEvent>>[],
+        ),
+        contextEstimator: _FailingContextEstimator(),
+      ).agent(testDefinition()).createSession();
+      final retained = session.snapshot.tokenAccounting.retainedContext;
+      expect(retained.value, isNull);
+      expect(retained.sourceId, 'failing-fixture');
+      expect(retained.sourceVersion, 3);
+      await session.close();
+    });
 
     test('unverifiable budget fails before continuation', () async {
       final executor = ScriptedToolExecutor((
@@ -366,6 +479,16 @@ void main() {
         (events.last as AgentRunStopped).reason,
         AgentStopReason.idleTimeout,
       );
+      final stopped = events.last as AgentRunStopped;
+      expect(stopped.tokenAccounting!.ledger, hasLength(1));
+      expect(
+        stopped.tokenAccounting!.ledger.single.entry.outcome,
+        AgentModelInvocationOutcome.stopped,
+      );
+      expect(
+        stopped.tokenAccounting!.ledger.single.entry.responseMessageId,
+        isNull,
+      );
       gate.complete();
     });
 
@@ -475,6 +598,16 @@ void main() {
       expect(
         (events.last as AgentRunStopped).reason,
         AgentStopReason.durationLimit,
+      );
+      final stopped = events.last as AgentRunStopped;
+      expect(stopped.tokenAccounting!.ledger, hasLength(1));
+      expect(
+        stopped.tokenAccounting!.ledger.single.entry.outcome,
+        AgentModelInvocationOutcome.stopped,
+      );
+      expect(
+        stopped.tokenAccounting!.ledger.single.entry.usage.isEmpty,
+        isTrue,
       );
       gate.complete();
     });
@@ -616,6 +749,16 @@ void main() {
           AgentStopReason.totalBudget,
         );
         expect((events.last as AgentRunStopped).usage?.totalTokens, 50);
+        final stopped = events.last as AgentRunStopped;
+        expect(stopped.tokenAccounting!.ledger, hasLength(1));
+        expect(
+          stopped.tokenAccounting!.ledger.single.entry.outcome,
+          AgentModelInvocationOutcome.stopped,
+        );
+        expect(
+          stopped.tokenAccounting!.ledger.single.entry.responseMessageId,
+          isNull,
+        );
         expect(session.snapshot.usage.totalTokens, 50);
         expect(
           events.whereType<AgentUsageUpdated>().last.usage.totalTokens,
@@ -648,6 +791,11 @@ void main() {
       final events = await session.run('go').events.toList();
       expect(events.last, isA<AgentRunFailed>());
       expect(session.snapshot.usage.totalTokens, 7);
+      final entry =
+          (events.last as AgentRunFailed).tokenAccounting!.ledger.single.entry;
+      expect(entry.outcome, AgentModelInvocationOutcome.failed);
+      expect(entry.responseMessageId, isNull);
+      expect(session.snapshot.transcript.messages, hasLength(1));
       await session.close();
     });
 
@@ -671,6 +819,14 @@ void main() {
       final events = await run.events.toList();
       expect(events.last, isA<AgentRunCancelled>());
       expect(session.snapshot.usage.totalTokens, 4);
+      final entry = (events.last as AgentRunCancelled)
+          .tokenAccounting!
+          .ledger
+          .single
+          .entry;
+      expect(entry.outcome, AgentModelInvocationOutcome.cancelled);
+      expect(entry.responseMessageId, isNull);
+      expect(session.snapshot.transcript.messages, hasLength(1));
       gate.complete();
       await session.close();
     });
@@ -1083,15 +1239,18 @@ void main() {
           final trigger = _OverflowRecoveryTrigger(recover: true, target: 100);
           final estimator = _LoopMessageEstimator();
           final compactor = _CountingCompactor(
-            RecentInteractionGroupsCompactor(1),
+            _ReportingCandidateCompactor(LlmUsage(totalTokens: 4)),
           );
           final provider = QueueScriptedLlmProvider(
             id: BuiltInLlmCatalog.deepSeek,
             wireFamily: LlmWireFamily.openaiChatCompletions,
             turns: <List<LlmEvent>>[
               textTurn('old answer'),
-              _overflowTurn(),
-              textTurn('recovered'),
+              <LlmEvent>[
+                LlmUsageUpdate(LlmUsage(totalTokens: 3)),
+                ..._overflowTurn(),
+              ],
+              textTurn('recovered', usage: LlmUsage(totalTokens: 5)),
             ],
           );
           final session = await testRuntime(
@@ -1101,7 +1260,8 @@ void main() {
             historyCompactor: compactor,
           ).agent(testDefinition()).createSession();
           await session.run('old').events.drain<void>();
-          final events = await session.run('new').events.toList();
+          final run = session.run('new');
+          final events = await run.events.toList();
           final automatic = events
               .whereType<AgentAutomaticCompactionEvent>()
               .map((event) => event.compaction)
@@ -1141,6 +1301,56 @@ void main() {
           expect(compactor.calls, 1);
           expect(events.last, isA<AgentRunCompleted>());
           expect(events.where((event) => event.isTerminal), hasLength(1));
+          final operationEntries = session.snapshot.tokenAccounting.ledger
+              .map((view) => view.entry)
+              .where((entry) => entry.runId == run.id)
+              .toList();
+          expect(operationEntries, hasLength(3));
+          expect(
+            operationEntries.map((entry) => entry.operationKind),
+            <AgentModelOperationKind>[
+              AgentModelOperationKind.assistant,
+              AgentModelOperationKind.compaction,
+              AgentModelOperationKind.assistant,
+            ],
+          );
+          final runEntries = operationEntries
+              .where(
+                (entry) =>
+                    entry.operationKind == AgentModelOperationKind.assistant,
+              )
+              .toList();
+          expect(
+            runEntries.map((entry) => entry.outcome),
+            <AgentModelInvocationOutcome>[
+              AgentModelInvocationOutcome.overflow,
+              AgentModelInvocationOutcome.completed,
+            ],
+          );
+          expect(runEntries.map((entry) => entry.retryOrdinal), <int>[0, 1]);
+          expect(runEntries.map((entry) => entry.turnId).toSet(), hasLength(1));
+          expect(
+            runEntries.map((entry) => entry.attemptId).toSet(),
+            hasLength(2),
+          );
+          expect(
+            runEntries.fold<int>(
+              0,
+              (sum, entry) => sum + (entry.usage.totalTokens ?? 0),
+            ),
+            8,
+          );
+          expect(runEntries.first.responseMessageId, isNull);
+          expect(runEntries.last.responseMessageId, isNotNull);
+          final compactionEntry = operationEntries[1];
+          expect(compactionEntry.invocationOrdinal, 0);
+          expect(compactionEntry.usage.totalTokens, 4);
+          expect(compactionEntry.responseMessageId, isNull);
+          expect(succeeded.reports, hasLength(1));
+          expect(
+            runEntries.first.contextRevision,
+            lessThan(runEntries.last.contextRevision),
+          );
           expect(automatic.toString(), isNot(contains('old answer')));
           await session.close();
         },
@@ -1360,8 +1570,44 @@ void main() {
           expect(session.snapshot.usage.outputTokens, 8);
           expect(session.snapshot.usage.totalTokens, 14);
           expect(session.snapshot.usage.cacheHitTokens, 13);
-          expect(session.snapshot.usage.cacheMissTokens, 16);
+          // Cache miss remains per-invocation evidence and is never aggregated
+          // into the compatibility session projection.
+          expect(session.snapshot.usage.cacheMissTokens, isNull);
+          final compactionEntry = session.snapshot.tokenAccounting.ledger
+              .map((view) => view.entry)
+              .where(
+                (entry) =>
+                    entry.operationKind == AgentModelOperationKind.compaction,
+              )
+              .single;
+          expect(compactionEntry.model, testDefinition().model);
+          expect(compactionEntry.usage, summaryUsage);
+          expect(compactionEntry.invocationOrdinal, 0);
+          expect(compactionEntry.responseMessageId, isNull);
+          expect(
+            session
+                .snapshot
+                .tokenAccounting
+                .assistantConversation
+                .overall
+                .value,
+            7,
+          );
+          expect(session.snapshot.tokenAccounting.compaction.overall.value, 7);
+          expect(session.snapshot.tokenAccounting.session.overall.value, 14);
           expect(session.snapshot.modelTurns, 2);
+          expect(
+            session.snapshot.transcript.messageIds
+                .whereType<AgentTranscriptMessageId>(),
+            hasLength(session.snapshot.transcript.messages.length),
+          );
+          expect(
+            session.snapshot.transcript.messageIds
+                .whereType<AgentTranscriptMessageId>()
+                .toSet(),
+            hasLength(session.snapshot.transcript.messages.length),
+          );
+          expect(session.snapshot.tokenAccounting.contextRevision, 5);
           expect(provider.requests, hasLength(3));
           expect(
             events.whereType<AgentUsageUpdated>().any(
@@ -1537,8 +1783,21 @@ void main() {
           expect(failed.error.kind, AgentErrorKind.compaction);
           expect(failed.error.message, isNot(contains('provider-secret')));
           expect(session.snapshot.usage.totalTokens, 5);
-          expect(session.snapshot.usage.inputTokens, 4);
-          expect(session.snapshot.usage.cacheHitTokens, 2);
+          expect(session.snapshot.usage.inputTokens, isNull);
+          expect(session.snapshot.usage.cacheHitTokens, isNull);
+          expect(
+            session
+                .snapshot
+                .tokenAccounting
+                .session
+                .requestContext
+                .knownSubtotal,
+            4,
+          );
+          expect(
+            session.snapshot.tokenAccounting.session.cacheRead.knownSubtotal,
+            2,
+          );
           expect(events.last, isA<AgentRunFailed>());
           expect(events.toString(), isNot(contains('provider-secret')));
           await session.close();
@@ -1663,7 +1922,11 @@ final class _OverflowRecoveryTrigger implements AgentCompactionTrigger {
 }
 
 final class _LoopMessageEstimator implements AgentContextEstimator {
+  @override
   final String id = 'loop-message-count';
+
+  @override
+  int get version => 1;
 
   @override
   AgentContextEstimate estimate(AgentContextEstimateInput input) {
@@ -1672,6 +1935,19 @@ final class _LoopMessageEstimator implements AgentContextEstimator {
       estimatorId: id,
       estimatorVersion: 1,
     );
+  }
+}
+
+final class _FailingContextEstimator implements AgentContextEstimator {
+  @override
+  String get id => 'failing-fixture';
+
+  @override
+  int get version => 3;
+
+  @override
+  AgentContextEstimate estimate(AgentContextEstimateInput input) {
+    throw StateError('private estimator detail');
   }
 }
 
@@ -1695,6 +1971,36 @@ final class _CountingCompactor implements AgentHistoryCompactor {
     calls += 1;
     return delegate.compact(context, decision);
   }
+}
+
+final class _ReportingCandidateCompactor implements AgentHistoryCompactor {
+  _ReportingCandidateCompactor(this.usage);
+
+  final LlmUsage usage;
+
+  @override
+  String get id => 'reporting-candidate-test';
+
+  @override
+  int get version => 1;
+
+  @override
+  Future<AgentCompactionStrategyResult> compact(
+    AgentCompactionContext context,
+    AgentCompactionDecision decision,
+  ) async => AgentCompactionCandidate(
+    strategyId: id,
+    strategyVersion: version,
+    retainedSuffixBoundaryId: context.interactionGroups.last.suffixBoundaryId,
+    reports: <AgentCompactionInvocationReport>[
+      AgentCompactionInvocationReport(
+        invocationOrdinal: 0,
+        model: context.selectedModel.ref,
+        outcome: AgentModelInvocationOutcome.completed,
+        usage: usage,
+      ),
+    ],
+  );
 }
 
 final class _NoChangeCompactor implements AgentHistoryCompactor {

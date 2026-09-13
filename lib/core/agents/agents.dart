@@ -14,4 +14,5 @@ export 'runtime.dart';
 export 'schema.dart';
 export 'summary_compactor.dart';
 export 'tools.dart';
+export 'token_accounting.dart';
 export 'transcript.dart';

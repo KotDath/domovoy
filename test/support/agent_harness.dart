@@ -146,6 +146,7 @@ List<LlmEvent> toolTurn({
   required String callId,
   String arguments = '{}',
   String? answer,
+  LlmUsage? usage,
 }) {
   return <LlmEvent>[
     if (answer != null) LlmTextDelta(answer),
@@ -155,7 +156,8 @@ List<LlmEvent> toolTurn({
       name: name,
       argumentsFragment: arguments,
     ),
-    const LlmCompleted(finishReason: LlmFinishReason.toolCalls),
+    if (usage != null) LlmUsageUpdate(usage),
+    LlmCompleted(finishReason: LlmFinishReason.toolCalls, usage: usage),
   ];
 }
 

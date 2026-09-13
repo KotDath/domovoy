@@ -7,6 +7,7 @@ import 'package:domovoy/infrastructure/agents/jsonl/jsonl.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/agent_harness.dart';
+import '../../../support/scripted_llm_provider.dart';
 
 void main() {
   group('JSONL envelope and replay', () {
@@ -299,6 +300,74 @@ void main() {
       expect((await store.load(initial.id))!.revision, 1);
       expect(storage.activeText(_key(initial.id))!.split('\n'), hasLength(3));
     });
+
+    test(
+      'fresh runtime after simulated process loss invents no active attempt',
+      () async {
+        final sourceStorage = _FakeJsonlStorage();
+        final sourceStore = JsonlAgentSessionStore(storage: sourceStorage);
+        final gate = Completer<void>();
+        final provider = ScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          events: <LlmEvent>[LlmUsageUpdate(LlmUsage(totalTokens: 9))],
+          gate: gate,
+        );
+        final sourceRuntime = testRuntime(
+          provider: provider,
+          repository: sourceStore,
+        );
+        final sourceSession = await sourceRuntime
+            .agent(testDefinition())
+            .createSession(persistence: SessionPersistence.repository);
+        final run = sourceSession.run('active');
+        final eventsFuture = run.events.toList();
+        while (provider.requests.isEmpty ||
+            sourceSession
+                    .snapshot
+                    .tokenAccounting
+                    .currentRequest
+                    ?.usage
+                    .totalTokens !=
+                9) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        expect(sourceSession.snapshot.tokenAccounting.ledger, isEmpty);
+
+        final crashStorage = _FakeJsonlStorage();
+        final key = _key(sourceSession.id);
+        crashStorage.injectActive(key, sourceStorage.activeText(key)!);
+        final restartedStore = JsonlAgentSessionStore(
+          storage: crashStorage,
+          recordCodec: const AgentSessionCodec(),
+        );
+        final restartedRuntime = testRuntime(
+          provider: QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: const <List<LlmEvent>>[],
+          ),
+          repository: restartedStore,
+        );
+        final restored = await restartedRuntime
+            .agent(testDefinition())
+            .restoreSession(sourceSession.id);
+        expect(restored.snapshot.tokenAccounting.ledger, isEmpty);
+        expect(restored.snapshot.tokenAccounting.currentRequest, isNull);
+        expect(restored.snapshot.transcript.messages, hasLength(1));
+        expect(
+          restored.snapshot.transcript.messages.single.role,
+          LlmMessageRole.user,
+        );
+        await restored.close();
+        await restartedRuntime.close();
+
+        await run.cancel();
+        await eventsFuture;
+        await sourceSession.close();
+        await sourceRuntime.close();
+      },
+    );
   });
 
   group('JSONL recovery and isolation', () {
@@ -368,6 +437,53 @@ void main() {
         await expectLater(
           store.load(bad.id),
           _agentError(AgentErrorKind.persistence),
+        );
+      },
+    );
+
+    test(
+      'malformed accounting ledger is quarantined on fresh replay',
+      () async {
+        final storage = _FakeJsonlStorage();
+        final store = JsonlAgentSessionStore(
+          storage: storage,
+          recordCodec: const AgentSessionCodec(),
+        );
+        final record = _accountingRecord('bad-accounting');
+        await store.save(
+          record,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+        storage.mutateActiveJson(_key(record.id), (envelope) {
+          final encodedRecord = Map<String, Object?>.from(
+            envelope['record']! as Map,
+          );
+          final accounting = Map<String, Object?>.from(
+            encodedRecord['tokenAccounting']! as Map,
+          );
+          final entries = List<Object?>.from(accounting['entries']! as List);
+          entries.add(entries.single);
+          accounting['entries'] = entries;
+          encodedRecord['tokenAccounting'] = accounting;
+          envelope['record'] = encodedRecord;
+        });
+
+        final restarted = JsonlAgentSessionStore(
+          storage: storage,
+          recordCodec: const AgentSessionCodec(),
+        );
+        await expectLater(
+          restarted.load(record.id),
+          _agentError(AgentErrorKind.persistence),
+        );
+        final catalog = await restarted.list();
+        expect(catalog.available, isEmpty);
+        expect(catalog.issues, hasLength(1));
+        expect(catalog.issues.single.id, record.id);
+        expect(
+          catalog.issues.single.reason.message,
+          isNot(contains('attempt')),
         );
       },
     );
@@ -720,6 +836,41 @@ AgentSessionRecord _richRecord(String id, {required int updatedAtMicros}) {
       decisionMetadata: const <String, Object?>{'mode': 'safe'},
       updatedAtMicros: updatedAtMicros,
     ),
+  );
+}
+
+AgentSessionRecord _accountingRecord(String id) {
+  final accounting = AgentTokenAccountingState(
+    generation: 1,
+    contextRevision: 0,
+    messageIds: const <AgentTranscriptMessageId?>[],
+    legacyBaseline: LlmUsage(),
+    entries: <AgentModelUsageEntry>[
+      AgentModelUsageEntry.compaction(
+        sequence: 1,
+        attemptId: ProviderAttemptId('accounting-attempt'),
+        model: BuiltInLlmCatalog.gpt4oMiniModel.ref,
+        outcome: AgentModelInvocationOutcome.completed,
+        usage: LlmUsage(totalTokens: 3),
+        contextRevision: 0,
+        compactionOperationId: AgentCompactionOperationId(
+          'accounting-operation',
+        ),
+        invocationOrdinal: 0,
+      ),
+    ],
+  );
+  return AgentSessionRecord(
+    id: AgentSessionId(id),
+    revision: 0,
+    definition: testDefinition(),
+    transcript: AgentTranscript(),
+    usage: accounting.compatibilityUsage,
+    modelTurns: 0,
+    toolAttempts: 0,
+    createdAtMicros: 1,
+    updatedAtMicros: 1,
+    tokenAccounting: accounting,
   );
 }
 

@@ -79,6 +79,159 @@ void main() {
       }
     });
 
+    test('normalizes inclusive DeepSeek usage without double counting', () async {
+      final events = await _deepSeek(
+        RecordingClient(
+          (_) => sseResponse(
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"input_tokens":10,"completion_tokens":8,"output_tokens":8,"total_tokens":18,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":6,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":2}}}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      final usage = events.whereType<LlmUsageUpdate>().single.usage;
+
+      expect(usage.input?.value, 6);
+      expect(usage.cacheRead?.value, 4);
+      expect(usage.cacheWrite, isNull);
+      expect(usage.output?.value, 6);
+      expect(usage.reasoning?.value, 2);
+      expect(usage.reportedInputTotalTokens, 10);
+      expect(usage.reportedOutputTotalTokens, 8);
+      expect(usage.reportedOverallTokens, 18);
+      expect(
+        usage.input?.provenance,
+        LlmUsageMetricProvenance.derivedFromProvider,
+      );
+      expect(
+        usage.cacheRead?.provenance,
+        LlmUsageMetricProvenance.providerReported,
+      );
+      expect(
+        usage.output?.provenance,
+        LlmUsageMetricProvenance.derivedFromProvider,
+      );
+      expect(
+        usage.reasoning?.provenance,
+        LlmUsageMetricProvenance.providerReported,
+      );
+      expect(
+        usage.parentSemantics.inputCacheRead,
+        LlmUsageChildInclusion.included,
+      );
+      expect(
+        usage.parentSemantics.outputReasoning,
+        LlmUsageChildInclusion.included,
+      );
+      expect(usage.totalTokens, 18);
+      expect((events.last as LlmCompleted).usage, usage);
+    });
+
+    test('emits repeated wire usage as cumulative snapshots', () async {
+      final events = await _deepSeek(
+        RecordingClient(
+          (_) => sseResponse(
+            'data: {"choices":[],"usage":{"prompt_tokens":5,"prompt_cache_hit_tokens":2,"prompt_cache_miss_tokens":3}}\n\n'
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":6}}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      final updates = events.whereType<LlmUsageUpdate>().toList();
+      final accumulator = LlmUsageSnapshotAccumulator();
+      for (final update in updates) {
+        accumulator.reconcile(update.usage);
+      }
+      final finalized = accumulator.finalize(
+        (events.last as LlmCompleted).usage,
+      );
+
+      expect(updates, hasLength(2));
+      expect(updates.first.usage.inputTokens, 5);
+      expect(updates.last.usage.inputTokens, 10);
+      expect(finalized.inputTokens, 10);
+      expect(finalized.outputTokens, 3);
+      expect(finalized.totalTokens, 13);
+    });
+
+    test('uses only explicitly configured cache-write paths', () async {
+      final providerId = ProviderId('cache-writer');
+      final model = LlmModel(
+        providerId: providerId,
+        id: ModelId('cache-model'),
+        name: 'Cache model',
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        capabilities: ModelCapabilities(
+          supportsTextInput: true,
+          reasoning: ModelReasoningCapability.unsupported,
+          supportsTools: false,
+        ),
+        contextBound: 100,
+        outputBound: 20,
+      );
+      final dialect = ChatCompletionsDialect(
+        reasoningDeltaField: 'reasoning_content',
+        reasoningProtocol: ChatCompletionsReasoningProtocol.none,
+        usage: ChatCompletionsUsageDialect(
+          cacheWritePaths: <LlmUsageFieldPath>[
+            LlmUsageFieldPath.topLevel('cache_creation_tokens'),
+          ],
+          inputIncludesCacheWrite: true,
+          outputIncludesReasoning: false,
+        ),
+      );
+      final provider = OpenAiChatCompletionsLlmProvider(
+        profile: OpenAiCompatibleProfile.custom(
+          id: providerId,
+          endpoint: Uri.parse('https://cache.example.test/chat/completions'),
+          environmentVariable: 'CACHE_KEY',
+          models: <LlmModel>[model],
+          dialect: dialect,
+        ),
+        client: RecordingClient(
+          (_) => sseResponse(
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":3},"cache_creation_tokens":2}}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        ),
+        credentials: DefaultProviderCredentialResolver(
+          store: MemoryProviderCredentialStore(<ProviderId, String>{
+            providerId: 'secret',
+          }),
+          readEnvironment: (_) => null,
+        ),
+      );
+      final events = await provider
+          .stream(
+            LlmRequest(
+              model: model.ref,
+              generation: LlmGenerationConfig(
+                reasoningMode: ReasoningMode.disabled,
+              ),
+              context: LlmContext(
+                messages: <LlmMessage>[
+                  LlmMessage(
+                    role: LlmMessageRole.user,
+                    parts: <LlmContentPart>[LlmTextPart('hello')],
+                  ),
+                ],
+              ),
+            ),
+            cancellation: CancellationSource().token,
+          )
+          .toList();
+      final usage = events.whereType<LlmUsageUpdate>().single.usage;
+
+      expect(usage.input?.value, 5);
+      expect(usage.cacheRead?.value, 3);
+      expect(usage.cacheWrite?.value, 2);
+      expect(
+        usage.parentSemantics.inputCacheWrite,
+        LlmUsageChildInclusion.included,
+      );
+      expect(usage.output?.value, 2);
+      expect(usage.totalTokens, 12);
+    });
+
     test('uses Moonshot endpoint and per-model reasoning fields', () async {
       Future<Map<String, dynamic>> bodyFor(LlmModel model) async {
         final client = RecordingClient((_) => sseResponse('data: [DONE]\n\n'));
@@ -642,16 +795,104 @@ void main() {
       expect((protocol.single as LlmFailed).error.kind, LlmErrorKind.protocol);
     });
 
-    test('rejects negative usage counters as protocol failures', () async {
-      final events = await _deepSeek(
-        RecordingClient(
-          (_) => sseResponse(
-            'data: {"choices":[{"delta":{"content":"x"}}],"usage":{"prompt_tokens":-1}}\n\n'
-            'data: [DONE]\n\n',
+    test(
+      'negative optional usage preserves valid completion and facts',
+      () async {
+        final events = await _deepSeek(
+          RecordingClient(
+            (_) => sseResponse(
+              'data: {"choices":[{"delta":{"content":"x"}}],"usage":{"prompt_tokens":-1}}\n\n'
+              'data: [DONE]\n\n',
+            ),
           ),
+        ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+        final usage = events.whereType<LlmUsageUpdate>().single.usage;
+        expect(events.last, isA<LlmCompleted>());
+        expect(usage.reportedInputTotal, isNull);
+        expect(
+          usage.hasAnomaly(
+            LlmUsageAnomalyKind.invalidValue,
+            metric: LlmUsageMetricKind.reportedInputTotal,
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test('malformed usage isolates aliases, details, and arithmetic', () async {
+      Future<LlmUsage> streamed(Map<String, Object?> rawUsage) async {
+        final payload = jsonEncode(<String, Object?>{
+          'choices': <Object?>[
+            <String, Object?>{
+              'delta': <String, Object?>{'content': 'ok'},
+              'finish_reason': 'stop',
+            },
+          ],
+          'usage': rawUsage,
+        });
+        final events = await _deepSeek(
+          RecordingClient(
+            (_) => sseResponse('data: $payload\n\ndata: [DONE]\n\n'),
+          ),
+        ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+        expect(events.last, isA<LlmCompleted>());
+        return events.whereType<LlmUsageUpdate>().single.usage;
+      }
+
+      final aliasConflict = await streamed(<String, Object?>{
+        'prompt_tokens': 10,
+        'input_tokens': 11,
+        'completion_tokens': 5,
+      });
+      expect(aliasConflict.reportedInputTotal, isNull);
+      expect(aliasConflict.reportedOutputTotalTokens, 5);
+      expect(
+        aliasConflict.hasAnomaly(
+          LlmUsageAnomalyKind.aliasConflict,
+          metric: LlmUsageMetricKind.reportedInputTotal,
         ),
-      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
-      expect((events.last as LlmFailed).error.kind, LlmErrorKind.protocol);
+        isTrue,
+      );
+
+      final invalidDetail = await streamed(<String, Object?>{
+        'prompt_tokens': 10,
+        'completion_tokens': 5,
+        'total_tokens': 15,
+        'prompt_tokens_details': <String, Object?>{'cached_tokens': 2.5},
+      });
+      expect(invalidDetail.cacheRead, isNull);
+      expect(invalidDetail.totalTokens, 15);
+      expect(
+        invalidDetail.hasAnomaly(
+          LlmUsageAnomalyKind.invalidValue,
+          metric: LlmUsageMetricKind.cacheRead,
+        ),
+        isTrue,
+      );
+
+      final impossible = await streamed(<String, Object?>{
+        'prompt_tokens': 7,
+        'completion_tokens': 3,
+        'completion_tokens_details': <String, Object?>{'reasoning_tokens': 4},
+      });
+      expect(impossible.reasoning?.value, 4);
+      expect(impossible.output, isNull);
+      expect(impossible.responseGenerated, isNull);
+
+      final inconsistent = await streamed(<String, Object?>{
+        'prompt_tokens': 7,
+        'completion_tokens': 5,
+        'total_tokens': 10,
+      });
+      expect(inconsistent.reportedOverallTokens, 10);
+      expect(inconsistent.totalTokens, 12);
+      expect(
+        inconsistent.hasAnomaly(
+          LlmUsageAnomalyKind.inconsistentTotal,
+          metric: LlmUsageMetricKind.reportedOverall,
+        ),
+        isTrue,
+      );
     });
 
     test(

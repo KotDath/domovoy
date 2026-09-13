@@ -14,6 +14,7 @@ import '../../../core/llm/provider.dart';
 import '../../../core/llm/request.dart';
 import '../../../core/llm/tools.dart';
 import '../../../core/llm/usage.dart';
+import '../usage_extraction.dart';
 import 'chat_completions_dialect.dart';
 import 'openai_compatible_profile.dart';
 import 'stream_session.dart';
@@ -116,7 +117,7 @@ final class _ChatCompletionsParseState {
       return;
     }
 
-    final parsedUsage = usageFrom(payload['usage']);
+    final parsedUsage = usageFrom(payload['usage'], dialect.usage);
     if (parsedUsage != null) {
       usage = parsedUsage;
       sink.add(LlmUsageUpdate(parsedUsage));
@@ -348,59 +349,33 @@ LlmFinishReason? finishReasonFrom(Object? value) {
   return LlmFinishReason.fromWireName(value);
 }
 
-LlmUsage? usageFrom(Object? value) {
+LlmUsage? usageFrom(
+  Object? value, [
+  ChatCompletionsUsageDialect dialect = const ChatCompletionsUsageDialect(),
+]) {
   if (value == null) {
     return null;
   }
   final map = asJsonObject(value);
   if (map == null) {
-    throwLlm(LlmErrorKind.protocol, 'Expected a usage object.');
+    return normalizeLlmUsage(
+      additionalAnomalies: const <LlmUsageAnomaly>[
+        LlmUsageAnomaly(
+          LlmUsageAnomalyKind.invalidValue,
+          metric: LlmUsageMetricKind.usage,
+        ),
+      ],
+    );
   }
-  final input =
-      readNonNegativeInt(map['prompt_tokens'], field: 'prompt_tokens') ??
-      readNonNegativeInt(map['input_tokens'], field: 'input_tokens');
-  final output =
-      readNonNegativeInt(
-        map['completion_tokens'],
-        field: 'completion_tokens',
-      ) ??
-      readNonNegativeInt(map['output_tokens'], field: 'output_tokens');
-  final total = readNonNegativeInt(map['total_tokens'], field: 'total_tokens');
-  final cacheHit =
-      readNonNegativeInt(
-        map['prompt_cache_hit_tokens'],
-        field: 'prompt_cache_hit_tokens',
-      ) ??
-      readNonNegativeInt(map['cached_tokens'], field: 'cached_tokens') ??
-      _cachedTokensFromDetails(map);
-  final cacheMiss = readNonNegativeInt(
-    map['prompt_cache_miss_tokens'],
-    field: 'prompt_cache_miss_tokens',
+  final parsed = normalizeLlmUsage(
+    reportedInputTotal: extractUsageCounter(map, dialect.inputPaths),
+    reportedOutputTotal: extractUsageCounter(map, dialect.outputPaths),
+    reportedOverall: extractUsageCounter(map, dialect.overallPaths),
+    cacheRead: extractUsageCounter(map, dialect.cacheReadPaths),
+    cacheWrite: extractUsageCounter(map, dialect.cacheWritePaths),
+    cacheMiss: extractUsageCounter(map, dialect.cacheMissPaths),
+    reasoning: extractUsageCounter(map, dialect.reasoningPaths),
+    semantics: dialect.normalizationSemantics,
   );
-  if (input == null &&
-      output == null &&
-      total == null &&
-      cacheHit == null &&
-      cacheMiss == null) {
-    return null;
-  }
-  return LlmUsage(
-    inputTokens: input,
-    outputTokens: output,
-    totalTokens: total,
-    cacheHitTokens: cacheHit,
-    cacheMissTokens: cacheMiss,
-  );
-}
-
-int? _cachedTokensFromDetails(Map<String, Object?> usage) {
-  final rawDetails = usage['prompt_tokens_details'];
-  if (rawDetails == null) {
-    return null;
-  }
-  final details = asJsonObject(rawDetails);
-  if (details == null) {
-    throwLlm(LlmErrorKind.protocol, 'Expected prompt_tokens_details object.');
-  }
-  return readNonNegativeInt(details['cached_tokens'], field: 'cached_tokens');
+  return parsed.isEmpty ? null : parsed;
 }

@@ -13,6 +13,7 @@ import '../llm/usage.dart';
 import 'compaction.dart';
 import 'errors.dart';
 import 'schema.dart';
+import 'token_accounting.dart';
 
 abstract interface class AgentSummaryLlmInvocation {
   LlmModel resolve(ModelRef model);
@@ -162,94 +163,101 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
       ),
     );
     final output = StringBuffer();
-    var usage = LlmUsage();
+    final usage = LlmUsageSnapshotAccumulator();
     var completed = false;
+    AgentCompactionInvocationReport report(
+      AgentModelInvocationOutcome outcome,
+    ) => AgentCompactionInvocationReport(
+      invocationOrdinal: 0,
+      model: selectedModel.ref,
+      outcome: outcome,
+      usage: usage.finalize(),
+    );
+    AgentCompactionStrategyException failed() =>
+        AgentCompactionStrategyException.failed(
+          reports: <AgentCompactionInvocationReport>[
+            report(AgentModelInvocationOutcome.failed),
+          ],
+        );
+    AgentCompactionStrategyException cancelled() =>
+        AgentCompactionStrategyException.cancelled(
+          reports: <AgentCompactionInvocationReport>[
+            report(AgentModelInvocationOutcome.cancelled),
+          ],
+        );
     try {
       await for (final event in llm.stream(
         request,
         cancellation: context.cancellation,
       )) {
-        _throwIfCancelled(context, usage: _nonEmptyUsage(usage));
+        if (context.cancellation.isCancelled) {
+          throw cancelled();
+        }
         switch (event) {
           case LlmTextDelta(:final text):
             output.write(text);
             if (output.length > maxOutputCharacters) {
-              throw AgentCompactionStrategyException.failed(
-                usage: _nonEmptyUsage(usage),
-              );
+              throw failed();
             }
           case LlmReasoningDelta():
           // Reasoning is intentionally neither persisted nor summarized.
           case LlmToolCallDelta():
-            throw AgentCompactionStrategyException.failed(
-              usage: _nonEmptyUsage(usage),
-            );
+            throw failed();
           case LlmUsageUpdate(usage: final update):
-            usage = _mergeUsage(usage, update);
+            usage.reconcile(update);
           case LlmCompleted(
             :final finishReason,
             usage: final completedUsage,
             :final turnState,
           ):
             if (completedUsage != null) {
-              usage = _mergeUsage(usage, completedUsage);
+              usage.reconcile(completedUsage);
             }
             completed = true;
             if (turnState != null ||
                 finishReason == LlmFinishReason.length ||
                 finishReason == LlmFinishReason.contentFilter ||
                 finishReason == LlmFinishReason.toolCalls) {
-              throw AgentCompactionStrategyException.failed(
-                usage: _nonEmptyUsage(usage),
-              );
+              throw failed();
             }
           case LlmFailed():
-            throw AgentCompactionStrategyException.failed(
-              usage: _nonEmptyUsage(usage),
-            );
+            throw failed();
           case LlmCancelled():
-            throw AgentCompactionStrategyException.cancelled(
-              usage: _nonEmptyUsage(usage),
-            );
+            throw cancelled();
         }
       }
     } on AgentCompactionStrategyException {
       rethrow;
     } on LlmException {
       if (context.cancellation.isCancelled) {
-        throw AgentCompactionStrategyException.cancelled(
-          usage: _nonEmptyUsage(usage),
-        );
+        throw cancelled();
       }
-      throw AgentCompactionStrategyException.failed(
-        usage: _nonEmptyUsage(usage),
-      );
+      throw failed();
     } on Object {
       if (context.cancellation.isCancelled) {
-        throw AgentCompactionStrategyException.cancelled(
-          usage: _nonEmptyUsage(usage),
-        );
+        throw cancelled();
       }
-      throw AgentCompactionStrategyException.failed(
-        usage: _nonEmptyUsage(usage),
-      );
+      throw failed();
     }
-    _throwIfCancelled(context, usage: _nonEmptyUsage(usage));
+    if (context.cancellation.isCancelled) {
+      throw cancelled();
+    }
     if (!completed) {
-      throw AgentCompactionStrategyException.failed(
-        usage: _nonEmptyUsage(usage),
-      );
+      throw failed();
     }
-    final summary = _decodeSummary(output.toString(), usage);
+    late final Map<String, Object?> summary;
+    try {
+      summary = _decodeSummary(output.toString());
+    } on Object {
+      throw failed();
+    }
     final encodedSummary = canonicalJsonEncode(<String, Object?>{
       'type': summaryType,
       'version': summaryVersion,
       ...summary,
     });
     if (encodedSummary.length > maxOutputCharacters) {
-      throw AgentCompactionStrategyException.failed(
-        usage: _nonEmptyUsage(usage),
-      );
+      throw failed();
     }
     final generated = LlmMessage(
       role: LlmMessageRole.assistant,
@@ -266,7 +274,9 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
         'summarizedGroupCount': cut,
         'retainedGroupCount': retainedCount,
       },
-      usage: _nonEmptyUsage(usage),
+      reports: <AgentCompactionInvocationReport>[
+        report(AgentModelInvocationOutcome.completed),
+      ],
     );
   }
 
@@ -323,12 +333,10 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
         .toList(growable: false),
   };
 
-  Map<String, Object?> _decodeSummary(String raw, LlmUsage usage) {
+  Map<String, Object?> _decodeSummary(String raw) {
     final text = raw.trim();
     if (text.isEmpty || text.length > maxOutputCharacters) {
-      throw AgentCompactionStrategyException.failed(
-        usage: _nonEmptyUsage(usage),
-      );
+      throw const FormatException();
     }
     try {
       final decoded = jsonDecode(text);
@@ -362,28 +370,14 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
             .toList(growable: false);
       }
       return result;
-    } on AgentCompactionStrategyException {
-      rethrow;
     } on Object {
-      throw AgentCompactionStrategyException.failed(
-        usage: _nonEmptyUsage(usage),
-      );
+      throw const FormatException();
     }
   }
 
-  void _throwIfCancelled(AgentCompactionContext context, {LlmUsage? usage}) {
+  void _throwIfCancelled(AgentCompactionContext context) {
     if (context.cancellation.isCancelled) {
-      throw AgentCompactionStrategyException.cancelled(usage: usage);
+      throw AgentCompactionStrategyException.cancelled();
     }
   }
 }
-
-LlmUsage _mergeUsage(LlmUsage current, LlmUsage incoming) => LlmUsage(
-  inputTokens: incoming.inputTokens ?? current.inputTokens,
-  outputTokens: incoming.outputTokens ?? current.outputTokens,
-  totalTokens: incoming.totalTokens ?? current.totalTokens,
-  cacheHitTokens: incoming.cacheHitTokens ?? current.cacheHitTokens,
-  cacheMissTokens: incoming.cacheMissTokens ?? current.cacheMissTokens,
-);
-
-LlmUsage? _nonEmptyUsage(LlmUsage usage) => usage.isEmpty ? null : usage;

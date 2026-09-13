@@ -49,10 +49,14 @@ void main() {
           id: BuiltInLlmCatalog.openAi,
           wireFamily: LlmWireFamily.openaiResponses,
           turns: <List<LlmEvent>>[
-            textTurn(
-              _summaryPayload(objective: 'Keep the recent answer'),
-              usage: usage,
-            ),
+            <LlmEvent>[
+              LlmUsageUpdate(LlmUsage(totalTokens: 10)),
+              LlmUsageUpdate(usage),
+              LlmTextDelta(
+                _summaryPayload(objective: 'Keep the recent answer'),
+              ),
+              LlmCompleted(finishReason: LlmFinishReason.stop, usage: usage),
+            ],
           ],
         );
         final registry = _registry(provider);
@@ -82,6 +86,14 @@ void main() {
                 as AgentCompactionCandidate;
         expect(candidate.strategyId, compactor.id);
         expect(candidate.usage, usage);
+        expect(candidate.reports, hasLength(1));
+        expect(candidate.reports.single.invocationOrdinal, 0);
+        expect(candidate.reports.single.model, context.selectedModel.ref);
+        expect(
+          candidate.reports.single.outcome,
+          AgentModelInvocationOutcome.completed,
+        );
+        expect(candidate.reports.single.usage, usage);
         expect(
           candidate.retainedSuffixBoundaryId,
           context.interactionGroups.last.suffixBoundaryId,
@@ -155,6 +167,7 @@ void main() {
         result.metadata,
         containsPair('summaryModelProvider', BuiltInLlmCatalog.openAi.value),
       );
+      expect(result.reports.single.model, BuiltInLlmCatalog.gpt4oMiniModel.ref);
     });
 
     test(
@@ -196,6 +209,11 @@ void main() {
         ]);
         expect(empty.error.kind, AgentErrorKind.compaction);
         expect(empty.usage, billed);
+        expect(empty.reports.single.model, context.selectedModel.ref);
+        expect(
+          empty.reports.single.outcome,
+          AgentModelInvocationOutcome.failed,
+        );
 
         final invalid = await failureFor(<LlmEvent>[
           const LlmTextDelta('{"objective":"missing sections"}'),
@@ -214,6 +232,7 @@ void main() {
         ]);
         expect(failed.toString(), isNot(contains('provider-secret-detail')));
         expect(failed.usage, billed);
+        expect(failed.reports, hasLength(1));
 
         final oversized = await failureFor(<LlmEvent>[
           const LlmTextDelta('0123456789'),
@@ -338,8 +357,8 @@ void main() {
             triggerVersion: null,
             strategyId: 'older-summary',
             strategyVersion: 1,
-            estimatorId: Utf8FramingAgentContextEstimator.id,
-            estimatorVersion: Utf8FramingAgentContextEstimator.version,
+            estimatorId: Utf8FramingAgentContextEstimator.defaultId,
+            estimatorVersion: Utf8FramingAgentContextEstimator.defaultVersion,
             removedMessageCount: 2,
             beforeEstimate: 1000,
             afterEstimate: 500,
@@ -400,37 +419,39 @@ void main() {
       final provider = ScriptedLlmProvider(
         id: BuiltInLlmCatalog.deepSeek,
         wireFamily: LlmWireFamily.openaiChatCompletions,
+        events: <LlmEvent>[LlmUsageUpdate(LlmUsage(totalTokens: 4))],
         gate: gate,
       );
       final registry = _registry(provider);
       final cancellation = CancellationSource();
-      final future =
-          OpenCodeSummaryCompactor(
-            llm: RegistryAgentSummaryLlmInvocation(registry),
-          ).compact(
-            _context(
-              messages: <LlmMessage>[
-                _text(LlmMessageRole.user, 'old'),
-                _text(LlmMessageRole.assistant, 'answer'),
-                _text(LlmMessageRole.user, 'recent'),
-              ],
-              cancellation: cancellation.token,
-            ),
-            AgentCompactionDecision.manual(),
-          );
+      final context = _context(
+        messages: <LlmMessage>[
+          _text(LlmMessageRole.user, 'old'),
+          _text(LlmMessageRole.assistant, 'answer'),
+          _text(LlmMessageRole.user, 'recent'),
+        ],
+        cancellation: cancellation.token,
+      );
+      final future = OpenCodeSummaryCompactor(
+        llm: RegistryAgentSummaryLlmInvocation(registry),
+      ).compact(context, AgentCompactionDecision.manual());
       await Future<void>.delayed(Duration.zero);
       expect(provider.requests, hasLength(1));
       cancellation.cancel();
-      await expectLater(
-        future,
-        throwsA(
-          isA<AgentCompactionStrategyException>().having(
-            (error) => error.error.kind,
-            'kind',
-            AgentErrorKind.cancelled,
-          ),
-        ),
-      );
+      try {
+        await future;
+        fail('Expected summary compaction cancellation.');
+      } on AgentCompactionStrategyException catch (error) {
+        expect(error.error.kind, AgentErrorKind.cancelled);
+        expect(error.reports, hasLength(1));
+        expect(error.reports.single.model, context.selectedModel.ref);
+        expect(error.reports.single.invocationOrdinal, 0);
+        expect(
+          error.reports.single.outcome,
+          AgentModelInvocationOutcome.cancelled,
+        );
+        expect(error.reports.single.usage.totalTokens, 4);
+      }
     });
 
     test('summary, recent-N, and custom no-LLM share one contract', () async {
@@ -467,6 +488,9 @@ void main() {
       );
       expect((results[1] as AgentCompactionCandidate).generatedPrefix, isEmpty);
       expect((results[2] as AgentCompactionCandidate).generatedPrefix, isEmpty);
+      expect(results.first.reports, hasLength(1));
+      expect(results[1].reports, isEmpty);
+      expect(results[2].reports, isEmpty);
       expect(provider.requests, hasLength(1));
     });
   });

@@ -6,6 +6,7 @@ import 'compaction.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'policies.dart';
+import 'token_accounting.dart';
 
 enum AgentStopReason {
   modelTurnLimit,
@@ -74,7 +75,7 @@ final class AgentCompactionStarted extends AgentCompactionEvent {
 }
 
 final class AgentCompactionSucceeded extends AgentCompactionEvent {
-  const AgentCompactionSucceeded({
+  AgentCompactionSucceeded({
     required super.operationId,
     required super.sessionId,
     super.runId,
@@ -89,16 +90,18 @@ final class AgentCompactionSucceeded extends AgentCompactionEvent {
     super.targetEstimate,
     required this.afterEstimate,
     required this.generation,
-    this.usage,
-  });
+    List<AgentCompactionInvocationReport> reports =
+        const <AgentCompactionInvocationReport>[],
+  }) : reports = List<AgentCompactionInvocationReport>.unmodifiable(reports);
 
   final int afterEstimate;
   final int generation;
-  final LlmUsage? usage;
+  final List<AgentCompactionInvocationReport> reports;
+  LlmUsage? get usage => aggregateAgentCompactionUsage(reports);
 }
 
 final class AgentCompactionNoChangeEvent extends AgentCompactionEvent {
-  const AgentCompactionNoChangeEvent({
+  AgentCompactionNoChangeEvent({
     required super.operationId,
     required super.sessionId,
     super.runId,
@@ -111,14 +114,16 @@ final class AgentCompactionNoChangeEvent extends AgentCompactionEvent {
     required super.estimatorVersion,
     required super.beforeEstimate,
     super.targetEstimate,
-    this.usage,
-  });
+    List<AgentCompactionInvocationReport> reports =
+        const <AgentCompactionInvocationReport>[],
+  }) : reports = List<AgentCompactionInvocationReport>.unmodifiable(reports);
 
-  final LlmUsage? usage;
+  final List<AgentCompactionInvocationReport> reports;
+  LlmUsage? get usage => aggregateAgentCompactionUsage(reports);
 }
 
 final class AgentCompactionFailed extends AgentCompactionEvent {
-  const AgentCompactionFailed({
+  AgentCompactionFailed({
     required super.operationId,
     required super.sessionId,
     super.runId,
@@ -132,15 +137,17 @@ final class AgentCompactionFailed extends AgentCompactionEvent {
     required super.beforeEstimate,
     super.targetEstimate,
     required this.error,
-    this.usage,
-  });
+    List<AgentCompactionInvocationReport> reports =
+        const <AgentCompactionInvocationReport>[],
+  }) : reports = List<AgentCompactionInvocationReport>.unmodifiable(reports);
 
   final AgentError error;
-  final LlmUsage? usage;
+  final List<AgentCompactionInvocationReport> reports;
+  LlmUsage? get usage => aggregateAgentCompactionUsage(reports);
 }
 
 final class AgentCompactionCancelled extends AgentCompactionEvent {
-  const AgentCompactionCancelled({
+  AgentCompactionCancelled({
     required super.operationId,
     required super.sessionId,
     super.runId,
@@ -153,10 +160,12 @@ final class AgentCompactionCancelled extends AgentCompactionEvent {
     required super.estimatorVersion,
     required super.beforeEstimate,
     super.targetEstimate,
-    this.usage,
-  });
+    List<AgentCompactionInvocationReport> reports =
+        const <AgentCompactionInvocationReport>[],
+  }) : reports = List<AgentCompactionInvocationReport>.unmodifiable(reports);
 
-  final LlmUsage? usage;
+  final List<AgentCompactionInvocationReport> reports;
+  LlmUsage? get usage => aggregateAgentCompactionUsage(reports);
 }
 
 sealed class AgentRunEvent {
@@ -249,9 +258,10 @@ final class AgentToolFinished extends AgentRunEvent {
 }
 
 final class AgentUsageUpdated extends AgentRunEvent {
-  const AgentUsageUpdated(this.usage);
+  const AgentUsageUpdated(this.usage, {this.tokenAccounting});
 
   final LlmUsage usage;
+  final AgentTokenAccountingSnapshot? tokenAccounting;
 }
 
 final class AgentNoProgressWarning extends AgentRunEvent {
@@ -261,27 +271,36 @@ final class AgentNoProgressWarning extends AgentRunEvent {
 }
 
 final class AgentRunCompleted extends AgentRunEvent {
-  const AgentRunCompleted({this.finishReason, this.usage});
+  const AgentRunCompleted({
+    this.finishReason,
+    this.usage,
+    this.tokenAccounting,
+  });
 
   final LlmFinishReason? finishReason;
   final LlmUsage? usage;
+  final AgentTokenAccountingSnapshot? tokenAccounting;
 }
 
 final class AgentRunStopped extends AgentRunEvent {
-  const AgentRunStopped(this.reason, {this.usage});
+  const AgentRunStopped(this.reason, {this.usage, this.tokenAccounting});
 
   final AgentStopReason reason;
   final LlmUsage? usage;
+  final AgentTokenAccountingSnapshot? tokenAccounting;
 }
 
 final class AgentRunFailed extends AgentRunEvent {
-  const AgentRunFailed(this.error);
+  const AgentRunFailed(this.error, {this.tokenAccounting});
 
   final AgentError error;
+  final AgentTokenAccountingSnapshot? tokenAccounting;
 }
 
 final class AgentRunCancelled extends AgentRunEvent {
-  const AgentRunCancelled();
+  const AgentRunCancelled({this.tokenAccounting});
+
+  final AgentTokenAccountingSnapshot? tokenAccounting;
 }
 
 AgentError agentErrorFromLlm(LlmError error) {

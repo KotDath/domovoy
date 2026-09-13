@@ -19,6 +19,7 @@ import '../../../core/llm/tools.dart';
 import '../../../core/llm/usage.dart';
 import '../openai_compatible/sse_decoder.dart';
 import '../openai_compatible/stream_session.dart';
+import '../usage_extraction.dart';
 import 'openai_responses_profile.dart';
 
 final class OpenAiResponsesLlmProvider implements LlmProvider {
@@ -68,6 +69,7 @@ final class OpenAiResponsesLlmProvider implements LlmProvider {
     final session = _ResponsesParseState(
       model: model,
       generation: request.generation,
+      usageDialect: profile.usage,
     );
     return runLlmHttpStream(
       providerId: id,
@@ -288,10 +290,15 @@ final class _FunctionCallRef {
 }
 
 final class _ResponsesParseState {
-  _ResponsesParseState({required this.model, required this.generation});
+  _ResponsesParseState({
+    required this.model,
+    required this.generation,
+    required this.usageDialect,
+  });
 
   final LlmModel model;
   final LlmGenerationConfig generation;
+  final OpenAiResponsesUsageDialect usageDialect;
   LlmUsage? usage;
   final Map<String, _FunctionCallRef> _callsByItemId =
       <String, _FunctionCallRef>{};
@@ -621,38 +628,29 @@ final class _ResponsesParseState {
     }
     final usageMap = asJsonObject(rawUsage);
     if (usageMap == null) {
-      throwLlm(LlmErrorKind.protocol, 'Expected a usage object.');
+      return normalizeLlmUsage(
+        additionalAnomalies: const <LlmUsageAnomaly>[
+          LlmUsageAnomaly(
+            LlmUsageAnomalyKind.invalidValue,
+            metric: LlmUsageMetricKind.usage,
+          ),
+        ],
+      );
     }
-    final rawDetails = usageMap['input_tokens_details'];
-    Map<String, Object?>? details;
-    if (rawDetails != null) {
-      details = asJsonObject(rawDetails);
-      if (details == null) {
-        throwLlm(
-          LlmErrorKind.protocol,
-          'Expected input_tokens_details object.',
-        );
-      }
-    }
-    final parsed = LlmUsage(
-      inputTokens: readNonNegativeInt(
-        usageMap['input_tokens'],
-        field: 'input_tokens',
+    final parsed = normalizeLlmUsage(
+      reportedInputTotal: extractUsageCounter(
+        usageMap,
+        usageDialect.inputPaths,
       ),
-      outputTokens: readNonNegativeInt(
-        usageMap['output_tokens'],
-        field: 'output_tokens',
+      reportedOutputTotal: extractUsageCounter(
+        usageMap,
+        usageDialect.outputPaths,
       ),
-      totalTokens: readNonNegativeInt(
-        usageMap['total_tokens'],
-        field: 'total_tokens',
-      ),
-      cacheHitTokens: details == null
-          ? null
-          : readNonNegativeInt(
-              details['cached_tokens'],
-              field: 'cached_tokens',
-            ),
+      reportedOverall: extractUsageCounter(usageMap, usageDialect.overallPaths),
+      cacheRead: extractUsageCounter(usageMap, usageDialect.cacheReadPaths),
+      cacheWrite: extractUsageCounter(usageMap, usageDialect.cacheWritePaths),
+      reasoning: extractUsageCounter(usageMap, usageDialect.reasoningPaths),
+      semantics: usageDialect.normalizationSemantics,
     );
     if (parsed.isEmpty) {
       return null;

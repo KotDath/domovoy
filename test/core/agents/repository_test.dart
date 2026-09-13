@@ -282,14 +282,26 @@ void main() {
         persistence: SessionPersistence.repository,
       );
       final events = await session.run('hello').events.toList();
-      expect(events.last, isA<AgentRunCompleted>());
+      final completed = events.last as AgentRunCompleted;
+      expect(completed.tokenAccounting!.ledger, hasLength(1));
       expect(session.snapshot.usage.totalTokens, 9);
       expect(session.snapshot.modelTurns, 1);
+      final before = session.snapshot.tokenAccounting;
       await session.close();
       final restored = await agent.restoreSession(session.id);
       expect(restored.snapshot.usage.totalTokens, 9);
       expect(restored.snapshot.modelTurns, 1);
       expect(restored.snapshot.transcript.messages, isNotEmpty);
+      expect(
+        restored.snapshot.tokenAccounting.ledger.single.entry,
+        before.ledger.single.entry,
+      );
+      expect(restored.snapshot.tokenAccounting.contextRevision, 2);
+      expect(
+        restored.snapshot.transcript.messageIds
+            .whereType<AgentTranscriptMessageId>(),
+        hasLength(2),
+      );
       await restored.close();
     });
 
@@ -586,7 +598,7 @@ void main() {
         wireFamily: LlmWireFamily.openaiChatCompletions,
         turns: <List<LlmEvent>>[textTurn('done')],
       );
-      final repo = _FailingRepository(failOn: 4);
+      final repo = _FailingRepository(failOn: 3);
       final runtime = testRuntime(provider: provider, repository: repo);
       final session = await runtime
           .agent(testDefinition())
@@ -597,6 +609,14 @@ void main() {
         (events.last as AgentRunFailed).error.kind,
         AgentErrorKind.persistence,
       );
+      expect(provider.requests, hasLength(1));
+      expect(
+        (events.last as AgentRunFailed).tokenAccounting!.ledger,
+        hasLength(1),
+      );
+      final acknowledged = await repo.load(session.id);
+      expect(acknowledged!.tokenAccounting.entries, isEmpty);
+      expect(acknowledged.transcript.messages, hasLength(1));
     });
 
     test('malformed stored JSON fails at the codec boundary', () async {

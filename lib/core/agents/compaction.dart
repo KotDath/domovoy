@@ -4,6 +4,7 @@ import '../llm/cancellation.dart';
 import '../llm/capabilities.dart';
 import '../llm/continuation.dart';
 import '../llm/errors.dart';
+import '../llm/identifiers.dart';
 import '../llm/json.dart';
 import '../llm/messages.dart';
 import '../llm/request.dart';
@@ -11,6 +12,7 @@ import '../llm/usage.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'schema.dart';
+import 'token_accounting.dart';
 import 'tools.dart';
 
 enum AgentCompactionReason { preRequest, providerOverflow, manual }
@@ -55,15 +57,25 @@ final class AgentContextEstimate {
 }
 
 abstract interface class AgentContextEstimator {
+  String get id;
+
+  int get version;
+
   AgentContextEstimate estimate(AgentContextEstimateInput input);
 }
 
 final class Utf8FramingAgentContextEstimator implements AgentContextEstimator {
   const Utf8FramingAgentContextEstimator();
 
-  static const id = 'utf8-framing';
-  static const version = 1;
+  static const defaultId = 'utf8-framing';
+  static const defaultVersion = 1;
   static const requestFramingUnits = 16;
+
+  @override
+  String get id => defaultId;
+
+  @override
+  int get version => defaultVersion;
 
   @override
   AgentContextEstimate estimate(AgentContextEstimateInput input) {
@@ -574,6 +586,7 @@ final class AgentCompactionContext {
     required List<LlmMessage> generatedPrefix,
     required List<AgentInteractionGroup> interactionGroups,
     required List<LlmContinuationEntry> continuationEntries,
+    List<AgentTranscriptMessageId?>? messageIds,
     required this.priorState,
     required this.currentEstimate,
     required this.targetEstimate,
@@ -600,11 +613,24 @@ final class AgentCompactionContext {
          continuationEntries.map(
            (entry) => LlmContinuationEntry.fromJson(entry.toJson()),
          ),
+       ),
+       messageIds = List<AgentTranscriptMessageId?>.unmodifiable(
+         messageIds ??
+             List<AgentTranscriptMessageId?>.filled(
+               request.context.messages.length,
+               null,
+             ),
        ) {
     if (targetEstimate != null && targetEstimate! < 0) {
       throwAgent(
         AgentErrorKind.configuration,
         'Compaction target must be non-negative.',
+      );
+    }
+    if (this.messageIds.length != this.request.context.messages.length) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Compaction message identities do not align with the request.',
       );
     }
     _validateContextShape(this);
@@ -620,6 +646,7 @@ final class AgentCompactionContext {
   final List<LlmMessage> generatedPrefix;
   final List<AgentInteractionGroup> interactionGroups;
   final List<LlmContinuationEntry> continuationEntries;
+  final List<AgentTranscriptMessageId?> messageIds;
   final AgentCompactionState? priorState;
   final AgentContextEstimate currentEstimate;
   final int? targetEstimate;
@@ -643,6 +670,7 @@ final class AgentCompactionContext {
     generatedPrefix: generatedPrefix,
     interactionGroups: interactionGroups,
     continuationEntries: continuationEntries,
+    messageIds: messageIds,
     priorState: priorState,
     currentEstimate: currentEstimate,
     targetEstimate: target,
@@ -650,14 +678,45 @@ final class AgentCompactionContext {
   );
 }
 
+/// One provider invocation performed by a compaction strategy.
+final class AgentCompactionInvocationReport {
+  AgentCompactionInvocationReport({
+    required this.invocationOrdinal,
+    required this.model,
+    required this.outcome,
+    required this.usage,
+  }) {
+    if (invocationOrdinal < 0) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Compaction invocation ordinal must be non-negative.',
+      );
+    }
+    if (outcome == AgentModelInvocationOutcome.overflow ||
+        outcome == AgentModelInvocationOutcome.stopped) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Compaction invocation outcome is invalid.',
+      );
+    }
+  }
+
+  final int invocationOrdinal;
+  final ModelRef model;
+  final AgentModelInvocationOutcome outcome;
+  final LlmUsage usage;
+}
+
 sealed class AgentCompactionStrategyResult {
   AgentCompactionStrategyResult({
     required String strategyId,
     required this.strategyVersion,
     required Map<String, Object?> metadata,
-    this.usage,
+    List<AgentCompactionInvocationReport> reports =
+        const <AgentCompactionInvocationReport>[],
   }) : strategyId = _nonBlank(strategyId, 'Strategy id'),
-       metadata = _sanitizedMetadata(metadata) {
+       metadata = _sanitizedMetadata(metadata),
+       reports = _validatedInvocationReports(reports) {
     if (strategyVersion <= 0) {
       throwAgent(
         AgentErrorKind.configuration,
@@ -669,7 +728,10 @@ sealed class AgentCompactionStrategyResult {
   final String strategyId;
   final int strategyVersion;
   final Map<String, Object?> metadata;
-  final LlmUsage? usage;
+  final List<AgentCompactionInvocationReport> reports;
+
+  /// Coarse compatibility projection. Per-invocation [reports] are authoritative.
+  LlmUsage? get usage => aggregateAgentCompactionUsage(reports);
 }
 
 final class AgentCompactionNoChange extends AgentCompactionStrategyResult {
@@ -677,7 +739,7 @@ final class AgentCompactionNoChange extends AgentCompactionStrategyResult {
     required super.strategyId,
     required super.strategyVersion,
     super.metadata = const <String, Object?>{},
-    super.usage,
+    super.reports,
   });
 }
 
@@ -687,18 +749,34 @@ final class AgentCompactionCandidate extends AgentCompactionStrategyResult {
     required super.strategyVersion,
     required String retainedSuffixBoundaryId,
     List<LlmMessage> generatedPrefix = const <LlmMessage>[],
+    List<AgentTranscriptMessageId?>? generatedPrefixMessageIds,
     super.metadata = const <String, Object?>{},
-    super.usage,
+    super.reports,
   }) : retainedSuffixBoundaryId = _nonBlank(
          retainedSuffixBoundaryId,
          'Retained suffix boundary id',
        ),
        generatedPrefix = List<LlmMessage>.unmodifiable(
          List<LlmMessage>.from(generatedPrefix),
-       );
+       ),
+       generatedPrefixMessageIds = List<AgentTranscriptMessageId?>.unmodifiable(
+         generatedPrefixMessageIds ??
+             List<AgentTranscriptMessageId?>.filled(
+               generatedPrefix.length,
+               null,
+             ),
+       ) {
+    if (this.generatedPrefixMessageIds.length != this.generatedPrefix.length) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Generated compaction message identities do not align.',
+      );
+    }
+  }
 
   final String retainedSuffixBoundaryId;
   final List<LlmMessage> generatedPrefix;
+  final List<AgentTranscriptMessageId?> generatedPrefixMessageIds;
 }
 
 abstract interface class AgentHistoryCompactor {
@@ -713,22 +791,44 @@ abstract interface class AgentHistoryCompactor {
 }
 
 final class AgentCompactionStrategyException implements Exception {
-  AgentCompactionStrategyException._({required this.error, this.usage});
-
-  factory AgentCompactionStrategyException.failed({LlmUsage? usage}) =>
-      AgentCompactionStrategyException._(
-        error: sanitizedCompactionError(),
-        usage: usage,
+  AgentCompactionStrategyException._({
+    required this.error,
+    required List<AgentCompactionInvocationReport> reports,
+  }) : reports = _validatedInvocationReports(reports) {
+    final last = this.reports.lastOrNull;
+    if (last != null &&
+        ((error.kind == AgentErrorKind.cancelled &&
+                last.outcome != AgentModelInvocationOutcome.cancelled) ||
+            (error.kind != AgentErrorKind.cancelled &&
+                last.outcome != AgentModelInvocationOutcome.failed))) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Compaction failure reports contradict the terminal outcome.',
       );
+    }
+  }
 
-  factory AgentCompactionStrategyException.cancelled({LlmUsage? usage}) =>
-      AgentCompactionStrategyException._(
-        error: AgentError(kind: AgentErrorKind.cancelled, message: 'cancelled'),
-        usage: usage,
-      );
+  factory AgentCompactionStrategyException.failed({
+    List<AgentCompactionInvocationReport> reports =
+        const <AgentCompactionInvocationReport>[],
+  }) => AgentCompactionStrategyException._(
+    error: sanitizedCompactionError(),
+    reports: reports,
+  );
+
+  factory AgentCompactionStrategyException.cancelled({
+    List<AgentCompactionInvocationReport> reports =
+        const <AgentCompactionInvocationReport>[],
+  }) => AgentCompactionStrategyException._(
+    error: AgentError(kind: AgentErrorKind.cancelled, message: 'cancelled'),
+    reports: reports,
+  );
 
   final AgentError error;
-  final LlmUsage? usage;
+  final List<AgentCompactionInvocationReport> reports;
+
+  /// Coarse compatibility projection. Per-invocation [reports] are authoritative.
+  LlmUsage? get usage => aggregateAgentCompactionUsage(reports);
 
   @override
   String toString() => error.toString();
@@ -782,21 +882,22 @@ final class PreparedAgentCompaction {
   PreparedAgentCompaction({
     required List<LlmMessage> messages,
     required List<LlmContinuationEntry> continuationEntries,
+    required List<AgentTranscriptMessageId?> messageIds,
     required this.state,
     required this.afterEstimate,
-    required this.usage,
   }) : messages = List<LlmMessage>.unmodifiable(
          List<LlmMessage>.from(messages),
        ),
        continuationEntries = List<LlmContinuationEntry>.unmodifiable(
          List<LlmContinuationEntry>.from(continuationEntries),
-       );
+       ),
+       messageIds = List<AgentTranscriptMessageId?>.unmodifiable(messageIds);
 
   final List<LlmMessage> messages;
   final List<LlmContinuationEntry> continuationEntries;
+  final List<AgentTranscriptMessageId?> messageIds;
   final AgentCompactionState state;
   final AgentContextEstimate afterEstimate;
-  final LlmUsage? usage;
 }
 
 PreparedAgentCompaction prepareAgentCompaction({
@@ -826,6 +927,20 @@ PreparedAgentCompaction prepareAgentCompaction({
     ...candidate.generatedPrefix,
     ...oldMessages.sublist(boundary),
   ];
+  final newMessageIds = <AgentTranscriptMessageId?>[
+    ...context.messageIds.take(prefixCount),
+    ...candidate.generatedPrefixMessageIds,
+    ...context.messageIds.skip(boundary),
+  ];
+  final uniqueIds = <AgentTranscriptMessageId>{};
+  if (newMessageIds.whereType<AgentTranscriptMessageId>().any(
+    (id) => !uniqueIds.add(id),
+  )) {
+    throwAgent(
+      AgentErrorKind.compaction,
+      'Compaction produced duplicate transcript message identities.',
+    );
+  }
   final remapped = <LlmContinuationEntry>[];
   final oldGeneratedEnd = prefixCount + context.generatedPrefix.length;
   for (final entry in context.continuationEntries) {
@@ -940,9 +1055,52 @@ PreparedAgentCompaction prepareAgentCompaction({
   return PreparedAgentCompaction(
     messages: newMessages,
     continuationEntries: remapped,
+    messageIds: newMessageIds,
     state: state,
     afterEstimate: after,
-    usage: candidate.usage,
+  );
+}
+
+List<AgentCompactionInvocationReport> _validatedInvocationReports(
+  List<AgentCompactionInvocationReport> reports,
+) {
+  final frozen = List<AgentCompactionInvocationReport>.unmodifiable(reports);
+  for (var index = 0; index < frozen.length; index++) {
+    if (frozen[index].invocationOrdinal != index) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Compaction invocation reports must be contiguous and source ordered.',
+      );
+    }
+  }
+  return frozen;
+}
+
+LlmUsage? aggregateAgentCompactionUsage(
+  List<AgentCompactionInvocationReport> reports,
+) {
+  if (reports.isEmpty) {
+    return null;
+  }
+  if (reports.length == 1) {
+    return reports.single.usage;
+  }
+  final aggregate = AgentUsageAggregate.fromUsages(
+    reports.map((report) => report.usage),
+  );
+  LlmUsageMetric? metric(AgentUsageDimensionAggregate dimension) =>
+      dimension.value == null
+      ? null
+      : LlmUsageMetric.derivedFromProvider(dimension.value!);
+  return LlmUsage(
+    input: metric(aggregate.input),
+    cacheRead: metric(aggregate.cacheRead),
+    cacheWrite: metric(aggregate.cacheWrite),
+    reportedInputTotal: metric(aggregate.requestContext),
+    output: metric(aggregate.output),
+    reasoning: metric(aggregate.reasoning),
+    reportedOutputTotal: metric(aggregate.responseGenerated),
+    reportedOverall: metric(aggregate.overall),
   );
 }
 

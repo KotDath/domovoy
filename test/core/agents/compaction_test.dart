@@ -46,6 +46,43 @@ void main() {
         ),
         throwsA(isA<AgentException>()),
       );
+      expect(
+        () => AgentCompactionInvocationReport(
+          invocationOrdinal: -1,
+          model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+          outcome: AgentModelInvocationOutcome.completed,
+          usage: LlmUsage(),
+        ),
+        throwsA(isA<AgentException>()),
+      );
+      expect(
+        () => AgentCompactionNoChange(
+          strategyId: 'ordered',
+          strategyVersion: 1,
+          reports: <AgentCompactionInvocationReport>[
+            AgentCompactionInvocationReport(
+              invocationOrdinal: 1,
+              model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+              outcome: AgentModelInvocationOutcome.completed,
+              usage: LlmUsage(),
+            ),
+          ],
+        ),
+        throwsA(isA<AgentException>()),
+      );
+      expect(
+        () => AgentCompactionStrategyException.cancelled(
+          reports: <AgentCompactionInvocationReport>[
+            AgentCompactionInvocationReport(
+              invocationOrdinal: 0,
+              model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+              outcome: AgentModelInvocationOutcome.failed,
+              usage: LlmUsage(),
+            ),
+          ],
+        ),
+        throwsA(isA<AgentException>()),
+      );
 
       final context = _context(messages: input.request.context.messages);
       expect(context.request.context.messages, hasLength(1));
@@ -744,10 +781,78 @@ void main() {
       expect(await operation.result, AgentCompactionOutcome.noChange);
       final terminal = (await eventFuture).last as AgentCompactionNoChangeEvent;
       expect(terminal.usage, usage);
-      expect(session.snapshot.usage, usage);
+      expect(terminal.reports, hasLength(1));
+      expect(session.snapshot.usage.inputTokens, usage.inputTokens);
+      expect(session.snapshot.usage.outputTokens, usage.outputTokens);
+      expect(session.snapshot.usage.totalTokens, usage.totalTokens);
+      expect(session.snapshot.usage.cacheHitTokens, usage.cacheHitTokens);
+      expect(session.snapshot.usage.cacheMissTokens, isNull);
+      final entry = session.snapshot.tokenAccounting.ledger.single.entry;
+      expect(entry.operationKind, AgentModelOperationKind.compaction);
+      expect(entry.model, BuiltInLlmCatalog.deepSeekV4FlashModel.ref);
+      expect(entry.compactionOperationId, operation.id);
+      expect(entry.responseMessageId, isNull);
       expect(session.snapshot.compactionState, isNull);
       await session.close();
     });
+
+    test(
+      'manual multi-model reports become ordered separate entries',
+      () async {
+        final session = await testRuntime(
+          provider: QueueScriptedLlmProvider(
+            id: BuiltInLlmCatalog.deepSeek,
+            wireFamily: LlmWireFamily.openaiChatCompletions,
+            turns: const <List<LlmEvent>>[],
+          ),
+          historyCompactor: _MultiInvocationNoChangeCompactor(),
+        ).agent(testDefinition()).createSession();
+
+        final operation = session.compact();
+        final eventsFuture = operation.events.toList();
+        expect(await operation.result, AgentCompactionOutcome.noChange);
+        final terminal =
+            (await eventsFuture).last as AgentCompactionNoChangeEvent;
+        expect(terminal.reports, hasLength(2));
+        expect(
+          () => terminal.reports.add(terminal.reports.first),
+          throwsUnsupportedError,
+        );
+        final entries = session.snapshot.tokenAccounting.ledger
+            .map((view) => view.entry)
+            .toList();
+        expect(entries, hasLength(2));
+        expect(entries.map((entry) => entry.sequence), <int>[1, 2]);
+        expect(entries.map((entry) => entry.invocationOrdinal), <int>[0, 1]);
+        expect(entries.map((entry) => entry.model), <ModelRef>[
+          BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+          BuiltInLlmCatalog.gpt4oMiniModel.ref,
+        ]);
+        expect(
+          entries.map((entry) => entry.outcome),
+          <AgentModelInvocationOutcome>[
+            AgentModelInvocationOutcome.completed,
+            AgentModelInvocationOutcome.failed,
+          ],
+        );
+        expect(
+          entries.map((entry) => entry.compactionOperationId).toSet(),
+          <AgentCompactionOperationId>{operation.id},
+        );
+        expect(
+          entries.every((entry) => entry.responseMessageId == null),
+          isTrue,
+        );
+        expect(
+          session.snapshot.tokenAccounting.assistantConversation.overall.value,
+          0,
+        );
+        expect(session.snapshot.tokenAccounting.compaction.overall.value, 5);
+        expect(session.snapshot.tokenAccounting.session.overall.value, 5);
+        expect(session.snapshot.tokenAccounting.byModel, hasLength(2));
+        await session.close();
+      },
+    );
 
     test(
       'manual compactor usage exhausts operation quota before candidate commit',
@@ -786,7 +891,11 @@ void main() {
         final failed = (await eventFuture).last as AgentCompactionFailed;
         expect(failed.usage, compactionUsage);
         expect(session.snapshot.usage.totalTokens, 7);
-        expect(session.snapshot.usage.cacheHitTokens, 2);
+        expect(session.snapshot.usage.cacheHitTokens, isNull);
+        expect(
+          session.snapshot.tokenAccounting.session.cacheRead.knownSubtotal,
+          2,
+        );
         expect(session.snapshot.transcript, before);
         expect(session.snapshot.compactionState, isNull);
         await session.close();
@@ -865,9 +974,15 @@ void main() {
           ),
         );
         expect(compactor.cancelled, isTrue);
-        expect(events.whereType<AgentCompactionCancelled>(), hasLength(1));
+        final cancelled = events.whereType<AgentCompactionCancelled>().single;
+        expect(cancelled.reports, hasLength(1));
         expect(events.where((event) => event.isTerminal), hasLength(1));
         expect(session.snapshot.transcript, before.transcript);
+        final entry = session.snapshot.tokenAccounting.ledger.single.entry;
+        expect(entry.operationKind, AgentModelOperationKind.compaction);
+        expect(entry.outcome, AgentModelInvocationOutcome.cancelled);
+        expect(entry.usage.totalTokens, 2);
+        expect(entry.responseMessageId, isNull);
         expect(session.lifecycle, AgentSessionLifecycle.idle);
         await session.close();
       },
@@ -905,7 +1020,7 @@ void main() {
         final runtime = testRuntime(
           provider: provider,
           repository: repository,
-          historyCompactor: RecentInteractionGroupsCompactor(1),
+          historyCompactor: _UsageCandidateCompactor(LlmUsage(totalTokens: 3)),
         );
         final agent = runtime.agent(testDefinition());
         final session = await agent.createSession(
@@ -922,10 +1037,19 @@ void main() {
         expect(stored?.revision, session.snapshot.revision);
         expect(stored?.transcript, session.snapshot.transcript);
         expect(stored?.compactionState, session.snapshot.compactionState);
+        expect(
+          stored?.tokenAccounting.entries.last.operationKind,
+          AgentModelOperationKind.compaction,
+        );
+        expect(stored?.tokenAccounting.entries.last.usage.totalTokens, 3);
         await session.close();
         final restored = await agent.restoreSession(session.id);
         expect(restored.snapshot.transcript, session.snapshot.transcript);
         expect(restored.snapshot.compactionState?.generation, 1);
+        expect(
+          restored.snapshot.tokenAccounting.ledger.last.entry,
+          session.snapshot.tokenAccounting.ledger.last.entry,
+        );
         await restored.close();
       },
     );
@@ -982,35 +1106,46 @@ void main() {
       await bad.close();
     });
 
-    test('generic checkpoint failure is sanitized and rolls back', () async {
-      final repository = _FailNextRepository();
-      final provider = QueueScriptedLlmProvider(
-        id: BuiltInLlmCatalog.deepSeek,
-        wireFamily: LlmWireFamily.openaiChatCompletions,
-        turns: <List<LlmEvent>>[textTurn('a'), textTurn('b')],
-      );
-      final session =
-          await testRuntime(
-                provider: provider,
-                repository: repository,
-                historyCompactor: RecentInteractionGroupsCompactor(1),
-              )
-              .agent(testDefinition())
-              .createSession(persistence: SessionPersistence.repository);
-      await session.run('one').events.drain<void>();
-      await session.run('two').events.drain<void>();
-      final before = session.snapshot;
-      repository.failNext = true;
-      final operation = session.compact();
-      final eventsFuture = operation.events.toList();
-      await expectLater(operation.result, throwsA(isA<AgentException>()));
-      final failed = (await eventsFuture).last as AgentCompactionFailed;
-      expect(failed.error.kind, AgentErrorKind.persistence);
-      expect(failed.error.message, isNot(contains('secret')));
-      expect(session.snapshot.transcript, before.transcript);
-      expect(session.snapshot.revision, before.revision);
-      await session.close();
-    });
+    test(
+      'failed candidate checkpoint still acknowledges its provider report',
+      () async {
+        final repository = _FailNextRepository();
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[textTurn('a'), textTurn('b')],
+        );
+        final session =
+            await testRuntime(
+                  provider: provider,
+                  repository: repository,
+                  historyCompactor: _UsageCandidateCompactor(
+                    LlmUsage(totalTokens: 4),
+                  ),
+                )
+                .agent(testDefinition())
+                .createSession(persistence: SessionPersistence.repository);
+        await session.run('one').events.drain<void>();
+        await session.run('two').events.drain<void>();
+        final before = session.snapshot;
+        repository.failNext = true;
+        final operation = session.compact();
+        final eventsFuture = operation.events.toList();
+        await expectLater(operation.result, throwsA(isA<AgentException>()));
+        final failed = (await eventsFuture).last as AgentCompactionFailed;
+        expect(failed.error.kind, AgentErrorKind.persistence);
+        expect(failed.error.message, isNot(contains('secret')));
+        expect(session.snapshot.transcript, before.transcript);
+        expect(session.snapshot.revision, before.revision + 1);
+        final entry = session.snapshot.tokenAccounting.ledger.last.entry;
+        expect(entry.operationKind, AgentModelOperationKind.compaction);
+        expect(entry.usage.totalTokens, 4);
+        final stored = await repository.load(session.id);
+        expect(stored?.transcript, before.transcript);
+        expect(stored?.tokenAccounting.entries.last, entry);
+        await session.close();
+      },
+    );
 
     test('repository commit wins later caller cancellation', () async {
       final repository = _CommitWinsCompactionRepository();
@@ -1343,8 +1478,8 @@ AgentCompactionContext _context({
           )
         : AgentContextEstimate(
             value: estimateValue,
-            estimatorId: Utf8FramingAgentContextEstimator.id,
-            estimatorVersion: Utf8FramingAgentContextEstimator.version,
+            estimatorId: Utf8FramingAgentContextEstimator.defaultId,
+            estimatorVersion: Utf8FramingAgentContextEstimator.defaultVersion,
           ),
     targetEstimate: null,
     cancellation: cancellation.token,
@@ -1395,8 +1530,12 @@ final class _MessageCountEstimator implements AgentContextEstimator {
   _MessageCountEstimator({this.multiplier = 100});
 
   final int multiplier;
+  @override
   final String id = 'message-count';
   var calls = 0;
+
+  @override
+  int get version => 1;
 
   @override
   AgentContextEstimate estimate(AgentContextEstimateInput input) {
@@ -1501,7 +1640,16 @@ final class _CancellationCompactor implements AgentHistoryCompactor {
     started.complete();
     await context.cancellation.whenCancelled;
     cancelled = true;
-    throwAgent(AgentErrorKind.cancelled, 'cancelled');
+    throw AgentCompactionStrategyException.cancelled(
+      reports: <AgentCompactionInvocationReport>[
+        AgentCompactionInvocationReport(
+          invocationOrdinal: 0,
+          model: context.selectedModel.ref,
+          outcome: AgentModelInvocationOutcome.cancelled,
+          usage: LlmUsage(totalTokens: 2),
+        ),
+      ],
+    );
   }
 }
 
@@ -1541,7 +1689,14 @@ final class _UsageNoChangeCompactor implements AgentHistoryCompactor {
   ) async => AgentCompactionNoChange(
     strategyId: id,
     strategyVersion: version,
-    usage: reportedUsage,
+    reports: <AgentCompactionInvocationReport>[
+      AgentCompactionInvocationReport(
+        invocationOrdinal: 0,
+        model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        outcome: AgentModelInvocationOutcome.completed,
+        usage: reportedUsage,
+      ),
+    ],
   );
 }
 
@@ -1564,7 +1719,45 @@ final class _UsageCandidateCompactor implements AgentHistoryCompactor {
     strategyId: id,
     strategyVersion: version,
     retainedSuffixBoundaryId: context.interactionGroups.last.suffixBoundaryId,
-    usage: reportedUsage,
+    reports: <AgentCompactionInvocationReport>[
+      AgentCompactionInvocationReport(
+        invocationOrdinal: 0,
+        model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        outcome: AgentModelInvocationOutcome.completed,
+        usage: reportedUsage,
+      ),
+    ],
+  );
+}
+
+final class _MultiInvocationNoChangeCompactor implements AgentHistoryCompactor {
+  @override
+  String get id => 'multi-invocation-no-change';
+
+  @override
+  int get version => 1;
+
+  @override
+  Future<AgentCompactionStrategyResult> compact(
+    AgentCompactionContext context,
+    AgentCompactionDecision decision,
+  ) async => AgentCompactionNoChange(
+    strategyId: id,
+    strategyVersion: version,
+    reports: <AgentCompactionInvocationReport>[
+      AgentCompactionInvocationReport(
+        invocationOrdinal: 0,
+        model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        outcome: AgentModelInvocationOutcome.completed,
+        usage: LlmUsage(totalTokens: 2),
+      ),
+      AgentCompactionInvocationReport(
+        invocationOrdinal: 1,
+        model: BuiltInLlmCatalog.gpt4oMiniModel.ref,
+        outcome: AgentModelInvocationOutcome.failed,
+        usage: LlmUsage(totalTokens: 3),
+      ),
+    ],
   );
 }
 

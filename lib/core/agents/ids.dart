@@ -159,6 +159,66 @@ final class AgentCompactionOperationId {
   String toString() => value;
 }
 
+final class ProviderAttemptId {
+  ProviderAttemptId(String value)
+    : value = _validate(value, 'Provider attempt id');
+
+  factory ProviderAttemptId.fromJson(Object? json) {
+    final map = decodeTypedJson(json, type: jsonType);
+    return ProviderAttemptId(requireString(map, 'value'));
+  }
+
+  static const jsonType = 'agent.provider_attempt_id';
+
+  final String value;
+
+  Map<String, Object?> toJson() =>
+      typedJson(type: jsonType, fields: <String, Object?>{'value': value});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProviderAttemptId && other.value == value;
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() => value;
+}
+
+/// Stable identity for one transcript message across compaction and restore.
+///
+/// This is deliberately separate from [MessageId], which identifies inbound
+/// mailbox delivery rather than a retained chat message.
+final class AgentTranscriptMessageId {
+  AgentTranscriptMessageId(String value)
+    : value = _validate(value, 'Transcript message id');
+
+  factory AgentTranscriptMessageId.fromJson(Object? json) {
+    final map = decodeTypedJson(json, type: jsonType);
+    return AgentTranscriptMessageId(requireString(map, 'value'));
+  }
+
+  static const jsonType = 'agent.transcript_message_id';
+
+  final String value;
+
+  Map<String, Object?> toJson() =>
+      typedJson(type: jsonType, fields: <String, Object?>{'value': value});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AgentTranscriptMessageId && other.value == value;
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() => value;
+}
+
 final class TurnId {
   TurnId(String value) : value = _validate(value, 'Turn id');
 

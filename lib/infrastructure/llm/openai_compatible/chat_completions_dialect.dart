@@ -2,6 +2,8 @@ import '../../../core/llm/catalog.dart';
 import '../../../core/llm/errors.dart';
 import '../../../core/llm/generation.dart';
 import '../../../core/llm/identifiers.dart';
+import '../../../core/llm/usage.dart';
+import '../usage_extraction.dart';
 
 enum ChatCompletionsReasoningProtocol {
   none,
@@ -20,12 +22,14 @@ final class ChatCompletionsDialect {
     required this.reasoningProtocol,
     this.outputTokenField = ChatCompletionsOutputTokenField.maxTokens,
     this.includeReasoningContentInHistory = true,
+    this.usage = const ChatCompletionsUsageDialect(),
   });
 
   static const deepSeek = ChatCompletionsDialect(
     reasoningDeltaField: 'reasoning_content',
     reasoningProtocol: ChatCompletionsReasoningProtocol.deepSeekThinking,
     outputTokenField: ChatCompletionsOutputTokenField.maxTokens,
+    usage: ChatCompletionsUsageDialect.deepSeek,
   );
 
   static const moonshotK26 = ChatCompletionsDialect(
@@ -58,6 +62,7 @@ final class ChatCompletionsDialect {
   final ChatCompletionsReasoningProtocol reasoningProtocol;
   final ChatCompletionsOutputTokenField outputTokenField;
   final bool includeReasoningContentInHistory;
+  final ChatCompletionsUsageDialect usage;
 
   String get outputTokenFieldName => switch (outputTokenField) {
     ChatCompletionsOutputTokenField.maxTokens => 'max_tokens',
@@ -159,4 +164,67 @@ final class ChatCompletionsDialect {
     }
     return generic;
   }
+}
+
+/// Typed wire semantics for Chat Completions usage extraction.
+final class ChatCompletionsUsageDialect {
+  const ChatCompletionsUsageDialect({
+    this.inputPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['prompt_tokens']),
+      LlmUsageFieldPath(<String>['input_tokens']),
+    ],
+    this.outputPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['completion_tokens']),
+      LlmUsageFieldPath(<String>['output_tokens']),
+    ],
+    this.overallPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['total_tokens']),
+      LlmUsageFieldPath(<String>['total']),
+    ],
+    this.cacheReadPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['prompt_cache_hit_tokens']),
+      LlmUsageFieldPath(<String>['cached_tokens']),
+      LlmUsageFieldPath(<String>['prompt_tokens_details', 'cached_tokens']),
+    ],
+    this.cacheWritePaths = const <LlmUsageFieldPath>[],
+    this.cacheMissPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['prompt_cache_miss_tokens']),
+    ],
+    this.reasoningPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['reasoning_tokens']),
+      LlmUsageFieldPath(<String>[
+        'completion_tokens_details',
+        'reasoning_tokens',
+      ]),
+      LlmUsageFieldPath(<String>['output_tokens_details', 'reasoning_tokens']),
+    ],
+    this.inputIncludesCacheRead = true,
+    this.inputIncludesCacheWrite = false,
+    this.outputIncludesReasoning = true,
+    this.cacheMissPartitionsInput = false,
+  });
+
+  static const deepSeek = ChatCompletionsUsageDialect(
+    cacheMissPartitionsInput: true,
+  );
+
+  final List<LlmUsageFieldPath> inputPaths;
+  final List<LlmUsageFieldPath> outputPaths;
+  final List<LlmUsageFieldPath> overallPaths;
+  final List<LlmUsageFieldPath> cacheReadPaths;
+  final List<LlmUsageFieldPath> cacheWritePaths;
+  final List<LlmUsageFieldPath> cacheMissPaths;
+  final List<LlmUsageFieldPath> reasoningPaths;
+  final bool inputIncludesCacheRead;
+  final bool inputIncludesCacheWrite;
+  final bool outputIncludesReasoning;
+  final bool cacheMissPartitionsInput;
+
+  LlmUsageNormalizationSemantics get normalizationSemantics =>
+      LlmUsageNormalizationSemantics(
+        inputIncludesCacheRead: inputIncludesCacheRead,
+        inputIncludesCacheWrite: inputIncludesCacheWrite,
+        outputIncludesReasoning: outputIncludesReasoning,
+        cacheMissPartitionsInput: cacheMissPartitionsInput,
+      );
 }

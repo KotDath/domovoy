@@ -277,6 +277,119 @@ void main() {
     );
 
     test(
+      'fresh production codec, JSONL store, and runtime restore mixed accounting',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'domovoy-accounting-restart-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        final expected = _mixedAccountingRecord();
+
+        final firstClient = http.Client();
+        final firstStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+          recordCodec: const AgentSessionCodec(),
+        );
+        final first = _buildStackWithPersistence(firstClient, firstStore);
+        await first.repository.save(
+          expected,
+          expectedRevision: 0,
+          cancellation: _openToken(),
+        );
+        await first.runtime.close();
+        firstClient.close();
+
+        final secondClient = http.Client();
+        final secondStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+          recordCodec: const AgentSessionCodec(),
+        );
+        final second = _buildStackWithPersistence(secondClient, secondStore);
+        final decoded = await second.repository.load(expected.id);
+        expect(decoded, expected);
+        final restored = await second.runtime
+            .agent(expected.definition)
+            .restoreSession(expected.id);
+        final accounting = restored.snapshot.tokenAccounting;
+        expect(
+          accounting.ledger.map((view) => view.entry).toList(),
+          expected.tokenAccounting.entries,
+        );
+        expect(accounting.contextRevision, 12);
+        expect(accounting.legacyBaseline, LlmUsage(totalTokens: 10));
+        expect(accounting.currentRequest?.attemptId.value, 'failed-attempt');
+        expect(accounting.latestResponse?.responseMessageRetained, isFalse);
+        expect(
+          accounting.latestResponse?.responseMessageId.value,
+          'retry-response',
+        );
+        expect(accounting.assistantConversation.contributorCount, 6);
+        expect(accounting.assistantConversation.overall.knownSubtotal, 20);
+        expect(
+          accounting.assistantConversation.overall.completeness,
+          LlmUsageCompleteness.partial,
+        );
+        expect(accounting.compaction.contributorCount, 2);
+        expect(accounting.compaction.overall.knownSubtotal, 7);
+        expect(
+          accounting.compaction.overall.completeness,
+          LlmUsageCompleteness.partial,
+        );
+        expect(accounting.session.contributorCount, 9);
+        expect(accounting.session.overall.knownSubtotal, 37);
+        expect(accounting.byModel, hasLength(2));
+        expect(
+          accounting
+              .byModel[BuiltInLlmCatalog.deepSeekV4FlashModel.ref]
+              ?.session
+              .overall
+              .knownSubtotal,
+          27,
+        );
+        expect(
+          accounting
+              .byModel[BuiltInLlmCatalog.gpt4oMiniModel.ref]
+              ?.session
+              .overall
+              .completeness,
+          LlmUsageCompleteness.unavailable,
+        );
+        expect(
+          accounting.retainedContext.provenance,
+          LlmUsageMetricProvenance.estimated,
+        );
+        expect(
+          accounting.ledger
+              .where(
+                (view) =>
+                    view.entry.operationKind ==
+                    AgentModelOperationKind.compaction,
+              )
+              .every((view) => view.entry.responseMessageId == null),
+          isTrue,
+        );
+        expect(
+          accounting.ledger
+              .where(
+                (view) => view.entry.responseMessageId?.value == 'old-response',
+              )
+              .single
+              .responseMessageRetained,
+          isFalse,
+        );
+        expect(
+          accounting.session.overall.completeness,
+          LlmUsageCompleteness.partial,
+        );
+        expect(restored.snapshot.compactionState?.generation, 1);
+        expect(restored.snapshot.transcript, expected.transcript);
+        await restored.close();
+        await second.runtime.close();
+        secondClient.close();
+      },
+    );
+
+    test(
       'injected durable failures are surfaced without memory fallback',
       () async {
         final client = http.Client();
@@ -713,6 +826,167 @@ AgentSessionRecord _richRecord(
       decisionMetadata: const <String, Object?>{'mode': 'safe'},
       updatedAtMicros: updatedAtMicros,
     ),
+  );
+}
+
+AgentSessionRecord _mixedAccountingRecord() {
+  final summaryId = AgentTranscriptMessageId('summary-message');
+  final requestId = AgentTranscriptMessageId('current-request');
+  final responseId = AgentTranscriptMessageId('current-response');
+  final transcript = AgentTranscript(
+    messages: <LlmMessage>[
+      LlmMessage(
+        role: LlmMessageRole.assistant,
+        parts: <LlmContentPart>[LlmTextPart('summary')],
+      ),
+      LlmMessage(
+        role: LlmMessageRole.user,
+        parts: <LlmContentPart>[LlmTextPart('current request')],
+      ),
+      LlmMessage(
+        role: LlmMessageRole.assistant,
+        parts: <LlmContentPart>[LlmTextPart('current answer')],
+      ),
+    ],
+    messageIds: <AgentTranscriptMessageId?>[summaryId, requestId, responseId],
+  );
+  final deepSeek = BuiltInLlmCatalog.deepSeekV4FlashModel.ref;
+  final alternate = BuiltInLlmCatalog.gpt4oMiniModel.ref;
+  final entries = <AgentModelUsageEntry>[
+    AgentModelUsageEntry.assistant(
+      sequence: 1,
+      attemptId: ProviderAttemptId('normal-attempt'),
+      model: deepSeek,
+      outcome: AgentModelInvocationOutcome.completed,
+      usage: LlmUsage(totalTokens: 3),
+      contextRevision: 1,
+      runId: RunId('normal-run'),
+      turnId: TurnId('normal-turn'),
+      retryOrdinal: 0,
+      requestMessageId: AgentTranscriptMessageId('old-request'),
+      responseMessageId: AgentTranscriptMessageId('old-response'),
+    ),
+    AgentModelUsageEntry.assistant(
+      sequence: 2,
+      attemptId: ProviderAttemptId('tool-call-attempt'),
+      model: deepSeek,
+      outcome: AgentModelInvocationOutcome.completed,
+      usage: LlmUsage(totalTokens: 4),
+      contextRevision: 3,
+      runId: RunId('tool-run'),
+      turnId: TurnId('tool-call-turn'),
+      retryOrdinal: 0,
+      requestMessageId: AgentTranscriptMessageId('tool-request'),
+      responseMessageId: AgentTranscriptMessageId('tool-call-response'),
+    ),
+    AgentModelUsageEntry.assistant(
+      sequence: 3,
+      attemptId: ProviderAttemptId('tool-answer-attempt'),
+      model: deepSeek,
+      outcome: AgentModelInvocationOutcome.completed,
+      usage: LlmUsage(totalTokens: 5),
+      contextRevision: 5,
+      runId: RunId('tool-run'),
+      turnId: TurnId('tool-answer-turn'),
+      retryOrdinal: 0,
+      requestMessageId: requestId,
+      responseMessageId: responseId,
+    ),
+    AgentModelUsageEntry.assistant(
+      sequence: 4,
+      attemptId: ProviderAttemptId('overflow-attempt'),
+      model: deepSeek,
+      outcome: AgentModelInvocationOutcome.overflow,
+      usage: LlmUsage(totalTokens: 2),
+      contextRevision: 7,
+      runId: RunId('retry-run'),
+      turnId: TurnId('retry-turn'),
+      retryOrdinal: 0,
+      requestMessageId: AgentTranscriptMessageId('retry-request'),
+    ),
+    AgentModelUsageEntry.assistant(
+      sequence: 5,
+      attemptId: ProviderAttemptId('retry-attempt'),
+      model: deepSeek,
+      outcome: AgentModelInvocationOutcome.completed,
+      usage: LlmUsage(totalTokens: 6),
+      contextRevision: 9,
+      runId: RunId('retry-run'),
+      turnId: TurnId('retry-turn'),
+      retryOrdinal: 1,
+      requestMessageId: AgentTranscriptMessageId('retry-request'),
+      responseMessageId: AgentTranscriptMessageId('retry-response'),
+    ),
+    AgentModelUsageEntry.assistant(
+      sequence: 6,
+      attemptId: ProviderAttemptId('failed-attempt'),
+      model: deepSeek,
+      outcome: AgentModelInvocationOutcome.failed,
+      usage: LlmUsage(),
+      contextRevision: 10,
+      runId: RunId('failed-run'),
+      turnId: TurnId('failed-turn'),
+      retryOrdinal: 0,
+      requestMessageId: AgentTranscriptMessageId('failed-request'),
+    ),
+    AgentModelUsageEntry.compaction(
+      sequence: 7,
+      attemptId: ProviderAttemptId('same-model-compaction'),
+      model: deepSeek,
+      outcome: AgentModelInvocationOutcome.completed,
+      usage: LlmUsage(totalTokens: 7),
+      contextRevision: 10,
+      compactionOperationId: AgentCompactionOperationId('mixed-compaction'),
+      invocationOrdinal: 0,
+      runId: RunId('retry-run'),
+    ),
+    AgentModelUsageEntry.compaction(
+      sequence: 8,
+      attemptId: ProviderAttemptId('alternate-model-compaction'),
+      model: alternate,
+      outcome: AgentModelInvocationOutcome.cancelled,
+      usage: LlmUsage(inputTokens: 8),
+      contextRevision: 10,
+      compactionOperationId: AgentCompactionOperationId('mixed-compaction'),
+      invocationOrdinal: 1,
+      runId: RunId('retry-run'),
+    ),
+  ];
+  final tokenAccounting = AgentTokenAccountingState(
+    generation: 1,
+    contextRevision: 12,
+    messageIds: transcript.messageIds,
+    legacyBaseline: LlmUsage(totalTokens: 10),
+    entries: entries,
+  );
+  return AgentSessionRecord(
+    id: AgentSessionId('mixed-accounting'),
+    revision: 0,
+    definition: testDefinition(),
+    transcript: transcript,
+    usage: tokenAccounting.compatibilityUsage,
+    modelTurns: 6,
+    toolAttempts: 1,
+    createdAtMicros: 1,
+    updatedAtMicros: 2,
+    compactionState: AgentCompactionState(
+      generation: 1,
+      generatedPrefixStart: 0,
+      generatedPrefixCount: 1,
+      reason: AgentCompactionReason.providerOverflow,
+      triggerId: 'restart-trigger',
+      triggerVersion: 1,
+      strategyId: 'restart-summary',
+      strategyVersion: 1,
+      estimatorId: 'utf8-framing',
+      estimatorVersion: 1,
+      removedMessageCount: 8,
+      beforeEstimate: 100,
+      afterEstimate: 20,
+      decisionMetadata: const <String, Object?>{},
+      updatedAtMicros: 2,
+    ),
+    tokenAccounting: tokenAccounting,
   );
 }
 

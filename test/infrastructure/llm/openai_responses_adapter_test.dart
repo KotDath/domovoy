@@ -61,6 +61,98 @@ void main() {
       }
     });
 
+    test('normalizes cached input and reasoning output exactly once', () async {
+      final events =
+          await _openAi(
+                RecordingClient(
+                  (_) => sseResponse(
+                    'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"prompt_tokens":10,"output_tokens":8,"completion_tokens":8,"total_tokens":18,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":2}}}}\n\n',
+                  ),
+                ),
+              )
+              .stream(
+                _prompt(BuiltInLlmCatalog.gpt5MiniModel),
+                cancellation: CancellationSource().token,
+              )
+              .toList();
+      final usage = events.whereType<LlmUsageUpdate>().single.usage;
+
+      expect(usage.input?.value, 6);
+      expect(usage.cacheRead?.value, 4);
+      expect(usage.cacheWrite, isNull);
+      expect(usage.output?.value, 6);
+      expect(usage.reasoning?.value, 2);
+      expect(usage.reportedInputTotalTokens, 10);
+      expect(usage.reportedOutputTotalTokens, 8);
+      expect(usage.reportedOverallTokens, 18);
+      expect(
+        usage.input?.provenance,
+        LlmUsageMetricProvenance.derivedFromProvider,
+      );
+      expect(
+        usage.reasoning?.provenance,
+        LlmUsageMetricProvenance.providerReported,
+      );
+      expect(
+        usage.parentSemantics.inputCacheRead,
+        LlmUsageChildInclusion.included,
+      );
+      expect(
+        usage.parentSemantics.outputReasoning,
+        LlmUsageChildInclusion.included,
+      );
+      expect(usage.totalTokens, 18);
+      expect((events.last as LlmCompleted).usage, usage);
+    });
+
+    test('Responses cache write requires configured detail semantics', () async {
+      final profile = OpenAiResponsesProfile(
+        snapshot: BuiltInLlmCatalog.openAiProfile,
+        models: <LlmModel>[BuiltInLlmCatalog.gpt4oMiniModel],
+        usage: OpenAiResponsesUsageDialect(
+          cacheWritePaths: <LlmUsageFieldPath>[
+            LlmUsageFieldPath.nested(
+              'input_tokens_details',
+              'cache_creation_tokens',
+            ),
+          ],
+          inputIncludesCacheWrite: true,
+          outputIncludesReasoning: false,
+        ),
+      );
+      final provider = OpenAiResponsesLlmProvider(
+        profile: profile,
+        client: RecordingClient(
+          (_) => sseResponse(
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"input_tokens_details":{"cached_tokens":3,"cache_creation_tokens":2}}}}\n\n',
+          ),
+        ),
+        credentials: DefaultProviderCredentialResolver(
+          store: MemoryProviderCredentialStore(<ProviderId, String>{
+            BuiltInLlmCatalog.openAi: 'secret',
+          }),
+          readEnvironment: (_) => null,
+        ),
+      );
+      final events = await provider
+          .stream(
+            _prompt(BuiltInLlmCatalog.gpt4oMiniModel),
+            cancellation: CancellationSource().token,
+          )
+          .toList();
+      final usage = events.whereType<LlmUsageUpdate>().single.usage;
+
+      expect(usage.input?.value, 5);
+      expect(usage.cacheRead?.value, 3);
+      expect(usage.cacheWrite?.value, 2);
+      expect(
+        usage.parentSemantics.inputCacheWrite,
+        LlmUsageChildInclusion.included,
+      );
+      expect(usage.output?.value, 2);
+      expect(usage.totalTokens, 12);
+    });
+
     test('translates instructions, history, tools, and output bounds', () {
       final provider = _openAi(RecordingClient((_) => sseResponse('')));
       final body = provider.requestBody(
@@ -485,25 +577,111 @@ void main() {
       expect(await reasonFor('server_busy'), LlmFinishReason.unknown);
     });
 
-    test('malformed numeric usage and deltas are protocol failures', () async {
-      final negative = await _openAi(
-        RecordingClient(
-          (_) => sseResponse(
-            'data: {"type":"response.completed","response":{"usage":{"output_tokens":-3}}}\n\n',
+    test(
+      'malformed optional usage preserves completion but bad deltas fail',
+      () async {
+        final negative = await _openAi(
+          RecordingClient(
+            (_) => sseResponse(
+              'data: {"type":"response.completed","response":{"usage":{"output_tokens":-3}}}\n\n',
+            ),
           ),
-        ),
-      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
-      expect((negative.single as LlmFailed).error.kind, LlmErrorKind.protocol);
+        ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+        expect(negative.last, isA<LlmCompleted>());
+        final negativeUsage = negative.whereType<LlmUsageUpdate>().single.usage;
+        expect(negativeUsage.output, isNull);
+        expect(
+          negativeUsage.hasAnomaly(
+            LlmUsageAnomalyKind.invalidValue,
+            metric: LlmUsageMetricKind.reportedOutputTotal,
+          ),
+          isTrue,
+        );
 
-      final badDelta = await _openAi(
-        RecordingClient(
-          (_) => sseResponse(
-            'data: {"type":"response.output_text.delta","delta":12}\n\n',
+        final badDelta = await _openAi(
+          RecordingClient(
+            (_) => sseResponse(
+              'data: {"type":"response.output_text.delta","delta":12}\n\n',
+            ),
           ),
-        ),
-      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
-      expect((badDelta.single as LlmFailed).error.kind, LlmErrorKind.protocol);
-    });
+        ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+        expect(
+          (badDelta.single as LlmFailed).error.kind,
+          LlmErrorKind.protocol,
+        );
+      },
+    );
+
+    test(
+      'Responses malformed usage isolates affected semantic facts',
+      () async {
+        Future<LlmUsage> streamed(Map<String, Object?> rawUsage) async {
+          final payload = jsonEncode(<String, Object?>{
+            'type': 'response.completed',
+            'response': <String, Object?>{'usage': rawUsage},
+          });
+          final events =
+              await _openAi(
+                    RecordingClient((_) => sseResponse('data: $payload\n\n')),
+                  )
+                  .stream(
+                    _prompt(BuiltInLlmCatalog.gpt5MiniModel),
+                    cancellation: CancellationSource().token,
+                  )
+                  .toList();
+          expect(events.last, isA<LlmCompleted>());
+          return events.whereType<LlmUsageUpdate>().single.usage;
+        }
+
+        final conflict = await streamed(<String, Object?>{
+          'input_tokens': 8,
+          'prompt_tokens': 9,
+          'output_tokens': 3,
+        });
+        expect(conflict.reportedInputTotal, isNull);
+        expect(conflict.reportedOutputTotalTokens, 3);
+        expect(
+          conflict.hasAnomaly(
+            LlmUsageAnomalyKind.aliasConflict,
+            metric: LlmUsageMetricKind.reportedInputTotal,
+          ),
+          isTrue,
+        );
+
+        final malformedDetails = await streamed(<String, Object?>{
+          'input_tokens': 8,
+          'output_tokens': 3,
+          'total_tokens': 11,
+          'input_tokens_details': 'bad',
+        });
+        expect(malformedDetails.cacheRead, isNull);
+        expect(malformedDetails.totalTokens, 11);
+        expect(
+          malformedDetails.hasAnomaly(
+            LlmUsageAnomalyKind.invalidValue,
+            metric: LlmUsageMetricKind.cacheRead,
+          ),
+          isTrue,
+        );
+
+        final impossible = await streamed(<String, Object?>{
+          'input_tokens': 8,
+          'output_tokens': 3,
+          'output_tokens_details': <String, Object?>{'reasoning_tokens': 4},
+        });
+        expect(impossible.reasoning?.value, 4);
+        expect(impossible.output, isNull);
+        expect(impossible.responseGenerated, isNull);
+
+        final inconsistent = await streamed(<String, Object?>{
+          'input_tokens': 8,
+          'output_tokens': 3,
+          'total_tokens': 10,
+        });
+        expect(inconsistent.reportedOverallTokens, 10);
+        expect(inconsistent.totalTokens, 11);
+      },
+    );
 
     test(
       'hanging credential resolution is cancelled without dispatch',

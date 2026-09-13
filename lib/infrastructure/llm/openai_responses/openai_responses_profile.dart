@@ -3,11 +3,14 @@ import '../../../core/llm/catalog.dart';
 import '../../../core/llm/errors.dart';
 import '../../../core/llm/identifiers.dart';
 import '../../../core/llm/provider.dart';
+import '../../../core/llm/usage.dart';
+import '../usage_extraction.dart';
 
 final class OpenAiResponsesProfile {
   OpenAiResponsesProfile({
     required this.snapshot,
     required List<LlmModel> models,
+    this.usage = const OpenAiResponsesUsageDialect(),
   }) : models = List<LlmModel>.unmodifiable(List<LlmModel>.from(models)) {
     if (this.models.isEmpty) {
       throwLlm(
@@ -57,6 +60,7 @@ final class OpenAiResponsesProfile {
 
   final LlmProviderProfile snapshot;
   final List<LlmModel> models;
+  final OpenAiResponsesUsageDialect usage;
 
   ProviderId get id => snapshot.id;
 
@@ -71,4 +75,49 @@ final class OpenAiResponsesProfile {
       'Model ${id.value} is not registered on provider ${snapshot.id.value}.',
     );
   }
+}
+
+/// Typed wire semantics for Responses usage extraction.
+final class OpenAiResponsesUsageDialect {
+  const OpenAiResponsesUsageDialect({
+    this.inputPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['input_tokens']),
+      LlmUsageFieldPath(<String>['prompt_tokens']),
+    ],
+    this.outputPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['output_tokens']),
+      LlmUsageFieldPath(<String>['completion_tokens']),
+    ],
+    this.overallPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['total_tokens']),
+      LlmUsageFieldPath(<String>['total']),
+    ],
+    this.cacheReadPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['input_tokens_details', 'cached_tokens']),
+    ],
+    this.cacheWritePaths = const <LlmUsageFieldPath>[],
+    this.reasoningPaths = const <LlmUsageFieldPath>[
+      LlmUsageFieldPath(<String>['output_tokens_details', 'reasoning_tokens']),
+    ],
+    this.inputIncludesCacheRead = true,
+    this.inputIncludesCacheWrite = false,
+    this.outputIncludesReasoning = true,
+  });
+
+  final List<LlmUsageFieldPath> inputPaths;
+  final List<LlmUsageFieldPath> outputPaths;
+  final List<LlmUsageFieldPath> overallPaths;
+  final List<LlmUsageFieldPath> cacheReadPaths;
+  final List<LlmUsageFieldPath> cacheWritePaths;
+  final List<LlmUsageFieldPath> reasoningPaths;
+  final bool inputIncludesCacheRead;
+  final bool inputIncludesCacheWrite;
+  final bool outputIncludesReasoning;
+
+  LlmUsageNormalizationSemantics get normalizationSemantics =>
+      LlmUsageNormalizationSemantics(
+        inputIncludesCacheRead: inputIncludesCacheRead,
+        inputIncludesCacheWrite: inputIncludesCacheWrite,
+        outputIncludesReasoning: outputIncludesReasoning,
+      );
 }

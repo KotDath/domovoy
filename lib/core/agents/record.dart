@@ -3,11 +3,13 @@ import '../llm/continuation.dart';
 import '../llm/errors.dart';
 import '../llm/identifiers.dart';
 import '../llm/json.dart';
+import '../llm/messages.dart';
 import '../llm/usage.dart';
 import 'compaction.dart';
 import 'definition.dart';
 import 'errors.dart';
 import 'ids.dart';
+import 'token_accounting.dart';
 import 'transcript.dart';
 
 final class AgentSessionRecord {
@@ -24,7 +26,14 @@ final class AgentSessionRecord {
     List<LlmContinuationEntry> continuationEntries =
         const <LlmContinuationEntry>[],
     this.compactionState,
-  }) : continuationEntries = List<LlmContinuationEntry>.unmodifiable(
+    AgentTokenAccountingState? tokenAccounting,
+  }) : tokenAccounting =
+           tokenAccounting ??
+           AgentTokenAccountingState.legacy(
+             transcriptMessageCount: transcript.messages.length,
+             usage: usage,
+           ),
+       continuationEntries = List<LlmContinuationEntry>.unmodifiable(
          List<LlmContinuationEntry>.from(continuationEntries),
        ) {
     if (revision < 0) {
@@ -59,15 +68,60 @@ final class AgentSessionRecord {
         continuationEntries: this.continuationEntries,
       );
     }
+    if (this.tokenAccounting.messageIds.length != transcript.messages.length ||
+        !listEquals(this.tokenAccounting.messageIds, transcript.messageIds)) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Accounting message identities do not align with the transcript.',
+      );
+    }
+    if (this.tokenAccounting.compatibilityUsage != usage) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Compatibility usage disagrees with token accounting.',
+      );
+    }
+    final retainedRoles = <AgentTranscriptMessageId, LlmMessageRole>{};
+    for (var index = 0; index < transcript.messages.length; index += 1) {
+      final messageId = transcript.messageIds[index];
+      if (messageId != null) {
+        retainedRoles[messageId] = transcript.messages[index].role;
+      }
+    }
+    for (final entry in this.tokenAccounting.entries) {
+      final responseId = entry.responseMessageId;
+      final responseRole = responseId == null
+          ? null
+          : retainedRoles[responseId];
+      if (responseRole != null && responseRole != LlmMessageRole.assistant) {
+        throwAgent(
+          AgentErrorKind.configuration,
+          'A retained response identity must reference an assistant message.',
+        );
+      }
+    }
   }
 
   factory AgentSessionRecord.fromJson(Object? json) {
     final map = decodeTypedJson(json, type: jsonType);
+    var transcript = AgentTranscript.fromJson(map['transcript']);
+    final accounting = map['tokenAccounting'] == null
+        ? null
+        : AgentTokenAccountingState.fromJson(map['tokenAccounting']);
+    if (accounting != null) {
+      if (accounting.messageIds.length != transcript.messages.length) {
+        throwAgent(
+          AgentErrorKind.configuration,
+          'Accounting message identities do not align with the transcript.',
+        );
+      }
+      transcript = transcript.withMessageIds(accounting.messageIds);
+    }
     return AgentSessionRecord(
       id: AgentSessionId.fromJson(map['id']),
       revision: requireInt(map, 'revision'),
       definition: AgentDefinition.fromJson(map['definition']),
-      transcript: AgentTranscript.fromJson(map['transcript']),
+      transcript: transcript,
       usage: LlmUsage.fromJson(map['usage']),
       modelTurns: requireInt(map, 'modelTurns'),
       toolAttempts: requireInt(map, 'toolAttempts'),
@@ -82,6 +136,7 @@ final class AgentSessionRecord {
       compactionState: map['compactionState'] == null
           ? null
           : AgentCompactionState.fromJson(map['compactionState']),
+      tokenAccounting: accounting,
     );
   }
 
@@ -98,8 +153,20 @@ final class AgentSessionRecord {
   final int updatedAtMicros;
   final List<LlmContinuationEntry> continuationEntries;
   final AgentCompactionState? compactionState;
+  final AgentTokenAccountingState tokenAccounting;
 
   int get compactionGeneration => compactionState?.generation ?? 0;
+  int get accountingGeneration => tokenAccounting.generation;
+  int get contextRevision => tokenAccounting.contextRevision;
+
+  AgentTokenAccountingSnapshot projectTokenAccounting({
+    AgentActiveModelUsage? activeAssistant,
+    AgentRetainedContextMeasurement? retainedContextMeasurement,
+  }) => const AgentTokenAccountingProjector().project(
+    state: tokenAccounting,
+    activeAssistant: activeAssistant,
+    retainedContextMeasurement: retainedContextMeasurement,
+  );
 
   AgentSessionRecord copyWith({
     int? revision,
@@ -111,13 +178,24 @@ final class AgentSessionRecord {
     List<LlmContinuationEntry>? continuationEntries,
     AgentCompactionState? compactionState,
     bool clearCompactionState = false,
+    AgentTokenAccountingState? tokenAccounting,
   }) {
+    final nextTranscript = transcript ?? this.transcript;
+    final nextUsage = usage ?? this.usage;
+    final nextAccounting =
+        tokenAccounting ??
+        (this.tokenAccounting.generation == 0
+            ? AgentTokenAccountingState.legacy(
+                transcriptMessageCount: nextTranscript.messages.length,
+                usage: nextUsage,
+              )
+            : this.tokenAccounting);
     return AgentSessionRecord(
       id: id,
       revision: revision ?? this.revision,
       definition: definition,
-      transcript: transcript ?? this.transcript,
-      usage: usage ?? this.usage,
+      transcript: nextTranscript,
+      usage: nextUsage,
       modelTurns: modelTurns ?? this.modelTurns,
       toolAttempts: toolAttempts ?? this.toolAttempts,
       createdAtMicros: createdAtMicros,
@@ -126,6 +204,7 @@ final class AgentSessionRecord {
       compactionState: clearCompactionState
           ? null
           : (compactionState ?? this.compactionState),
+      tokenAccounting: nextAccounting,
     );
   }
 
@@ -147,6 +226,9 @@ final class AgentSessionRecord {
     if (compactionState != null) {
       fields['compactionState'] = compactionState!.toJson();
     }
+    if (tokenAccounting.generation > 0) {
+      fields['tokenAccounting'] = tokenAccounting.toJson();
+    }
     return typedJson(type: jsonType, fields: fields);
   }
 
@@ -164,7 +246,8 @@ final class AgentSessionRecord {
           other.createdAtMicros == createdAtMicros &&
           other.updatedAtMicros == updatedAtMicros &&
           listEquals(other.continuationEntries, continuationEntries) &&
-          other.compactionState == compactionState;
+          other.compactionState == compactionState &&
+          other.tokenAccounting == tokenAccounting;
 
   @override
   int get hashCode => Object.hash(
@@ -179,13 +262,15 @@ final class AgentSessionRecord {
     updatedAtMicros,
     Object.hashAll(continuationEntries),
     compactionState,
+    tokenAccounting,
   );
 
   @override
   String toString() =>
       'AgentSessionRecord(${id.value}, rev=$revision, '
       'continuations: ${continuationEntries.length}, '
-      'compaction: ${compactionState?.generation ?? 0})';
+      'compaction: ${compactionState?.generation ?? 0}, '
+      'accounting: ${tokenAccounting.generation})';
 }
 
 LlmWireFamily _wireFamilyFor(
