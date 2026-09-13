@@ -5,9 +5,9 @@ import '../../support/scripted_llm_provider.dart';
 
 void main() {
   group('built-in catalog', () {
-    test('enumerates exactly three profiles and eight models', () {
+    test('enumerates curated startup profiles and models', () {
       expect(BuiltInLlmCatalog.profiles, hasLength(3));
-      expect(BuiltInLlmCatalog.models, hasLength(8));
+      expect(BuiltInLlmCatalog.models, hasLength(9));
       expect(
         BuiltInLlmCatalog.profiles.map((profile) => profile.id.value),
         <String>['deepseek', 'moonshotai', 'openai'],
@@ -15,6 +15,7 @@ void main() {
       expect(
         BuiltInLlmCatalog.models.map((model) => model.id.value).toList(),
         <String>[
+          'deepseek-flash',
           'deepseek-v4-flash',
           'deepseek-v4-pro',
           'kimi-k2.6',
@@ -40,6 +41,7 @@ void main() {
       expect(
         groups.expand((group) => group.models).map((model) => model.id),
         <ModelId>[
+          BuiltInLlmCatalog.deepSeekFlash,
           BuiltInLlmCatalog.deepSeekV4Flash,
           BuiltInLlmCatalog.deepSeekV4Pro,
           BuiltInLlmCatalog.kimiK26,
@@ -52,7 +54,7 @@ void main() {
       );
       expect(() => groups.clear(), throwsUnsupportedError);
       expect(() => groups.first.models.clear(), throwsUnsupportedError);
-      expect(registry.providerGroups.first.models, hasLength(2));
+      expect(registry.providerGroups.first.models, hasLength(3));
     });
 
     test('custom provider grouping uses metadata without id branches', () {

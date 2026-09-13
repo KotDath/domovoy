@@ -322,5 +322,9 @@ AgentError agentErrorFromLlm(LlmError error) {
     LlmErrorKind.interrupted => AgentErrorKind.provider,
     LlmErrorKind.unknown => AgentErrorKind.unknown,
   };
-  return AgentError(kind: kind, message: error.message);
+  return AgentError(
+    kind: kind,
+    message: error.message,
+    safeProviderMessage: error.safeForDisplay,
+  );
 }

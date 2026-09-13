@@ -16,8 +16,11 @@ enum AgentErrorKind {
 }
 
 final class AgentError implements Exception {
-  AgentError({required this.kind, required String message})
-    : message = message.trim() {
+  AgentError({
+    required this.kind,
+    required String message,
+    this.safeProviderMessage = false,
+  }) : message = message.trim() {
     if (this.message.isEmpty) {
       throw ArgumentError.value(
         message,
@@ -39,6 +42,7 @@ final class AgentError implements Exception {
     return AgentError(
       kind: kind,
       message: requireNonBlankString(map, 'message'),
+      safeProviderMessage: map['safeProviderMessage'] == true,
     );
   }
 
@@ -46,19 +50,27 @@ final class AgentError implements Exception {
 
   final AgentErrorKind kind;
   final String message;
+  final bool safeProviderMessage;
 
   Map<String, Object?> toJson() => typedJson(
     type: jsonType,
-    fields: <String, Object?>{'kind': kind.name, 'message': message},
+    fields: <String, Object?>{
+      'kind': kind.name,
+      'message': message,
+      if (safeProviderMessage) 'safeProviderMessage': true,
+    },
   );
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is AgentError && other.kind == kind && other.message == message;
+      other is AgentError &&
+          other.kind == kind &&
+          other.message == message &&
+          other.safeProviderMessage == safeProviderMessage;
 
   @override
-  int get hashCode => Object.hash(kind, message);
+  int get hashCode => Object.hash(kind, message, safeProviderMessage);
 
   @override
   String toString() => 'AgentError($kind: $message)';

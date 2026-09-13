@@ -16,6 +16,7 @@ final class LlmStreamSink {
 
   final StreamController<LlmEvent> _controller;
   var terminated = false;
+  String? credentialValue;
 
   bool add(LlmEvent event) {
     if (terminated || _controller.isClosed) {
@@ -40,47 +41,66 @@ LlmError httpStatusError(
   ProviderId providerId,
   int statusCode, {
   Map<String, Object?>? payload,
+  String? credentialValue,
 }) {
+  final providerMessage = _safeProviderMessage(payload, credentialValue);
   if (statusCode == 401 || statusCode == 403) {
     return LlmError(
       kind: LlmErrorKind.authentication,
-      message: 'Провайдер ${providerId.value} отклонил API-ключ.',
+      message:
+          providerMessage ?? 'Провайдер ${providerId.value} отклонил API-ключ.',
+      safeForDisplay: true,
     );
   }
   if (statusCode == 429) {
     return LlmError(
       kind: LlmErrorKind.rateLimit,
       message:
+          providerMessage ??
           'Лимит запросов провайдера ${providerId.value} исчерпан. Попробуйте позже.',
+      safeForDisplay: true,
     );
   }
   if (payload != null && _confirmedContextOverflowCode(payload) != null) {
-    return contextOverflowError(providerId);
+    return contextOverflowError(providerId, providerMessage: providerMessage);
   }
   return LlmError(
     kind: LlmErrorKind.provider,
-    message: 'Провайдер ${providerId.value} вернул ошибку HTTP $statusCode.',
+    message:
+        providerMessage ??
+        'Провайдер ${providerId.value} вернул ошибку HTTP $statusCode.',
+    safeForDisplay: true,
   );
 }
 
 LlmError providerStreamError(
   ProviderId providerId, {
   Map<String, Object?>? payload,
+  String? credentialValue,
 }) {
+  final providerMessage = _safeProviderMessage(payload, credentialValue);
   if (payload != null && _confirmedContextOverflowCode(payload) != null) {
-    return contextOverflowError(providerId);
+    return contextOverflowError(providerId, providerMessage: providerMessage);
   }
   return LlmError(
     kind: LlmErrorKind.provider,
     message:
+        providerMessage ??
         'Провайдер ${providerId.value} сообщил об ошибке во время генерации.',
+    safeForDisplay: true,
   );
 }
 
-LlmError contextOverflowError(ProviderId providerId) {
+LlmError contextOverflowError(
+  ProviderId providerId, {
+  String? providerMessage,
+}) {
   return LlmError(
     kind: LlmErrorKind.contextOverflow,
-    message: 'Контекст запроса превышает лимит провайдера ${providerId.value}.',
+    message:
+        providerMessage ??
+        'Контекст запроса превышает лимит провайдера ${providerId.value}.',
+    safeForDisplay: true,
   );
 }
 
@@ -114,6 +134,7 @@ Stream<LlmEvent> runLlmHttpStream({
   required http.Client client,
   required ProviderCredentialResolver credentials,
   required String environmentVariable,
+  Map<String, String> Function(String credential)? authorizationHeaders,
   required CancellationToken cancellation,
   required Future<void> Function(
     http.StreamedResponse response,
@@ -155,6 +176,7 @@ Stream<LlmEvent> runLlmHttpStream({
             client: client,
             credentials: credentials,
             environmentVariable: environmentVariable,
+            authorizationHeaders: authorizationHeaders,
             cancellation: local.token,
             requested: cancellation,
             consume: consume,
@@ -186,6 +208,8 @@ Future<void> _run({
   required http.Client client,
   required ProviderCredentialResolver credentials,
   required String environmentVariable,
+  required Map<String, String> Function(String credential)?
+  authorizationHeaders,
   required CancellationToken cancellation,
   required CancellationToken requested,
   required Future<void> Function(
@@ -227,6 +251,7 @@ Future<void> _run({
       sink.add(const LlmCancelled());
       return;
     }
+    sink.credentialValue = credential.value;
 
     final request =
         http.AbortableRequest(
@@ -237,9 +262,12 @@ Future<void> _run({
           ..headers.addAll(<String, String>{
             'Accept': 'text/event-stream',
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer ${credential.value}',
+            ...?authorizationHeaders?.call(credential.value),
           })
           ..body = jsonEncode(body);
+    if (authorizationHeaders == null) {
+      request.headers['Authorization'] = 'Bearer ${credential.value}';
+    }
 
     response = await client.send(request);
     if (isCancelled()) {
@@ -259,7 +287,14 @@ Future<void> _run({
         return;
       }
       sink.add(
-        LlmFailed(httpStatusError(providerId, status, payload: payload)),
+        LlmFailed(
+          httpStatusError(
+            providerId,
+            status,
+            payload: payload,
+            credentialValue: credential.value,
+          ),
+        ),
       );
       return;
     }
@@ -330,7 +365,52 @@ String? _confirmedContextOverflowCode(Map<String, Object?> payload) {
   final code = direct is String
       ? direct
       : codeFrom(payload['error']) ?? codeFrom(response?['error']);
-  return code == 'context_length_exceeded' ? code : null;
+  if (code == 'context_length_exceeded') return code;
+  final message = _providerMessage(payload)?.toLowerCase();
+  if (message != null &&
+      (message.contains('maximum context length') &&
+              message.contains('requested') ||
+          message.contains('context length exceeded') ||
+          message.contains('context window exceeded'))) {
+    return 'context_length_exceeded';
+  }
+  return null;
+}
+
+String? _providerMessage(Map<String, Object?>? payload) {
+  if (payload == null) return null;
+  final error = asJsonObject(payload['error']);
+  final response = asJsonObject(payload['response']);
+  final nested = asJsonObject(response?['error']);
+  for (final value in <Object?>[
+    error?['message'],
+    nested?['message'],
+    payload['message'],
+    payload['error_description'],
+  ]) {
+    if (value is String && value.trim().isNotEmpty) return value;
+  }
+  return null;
+}
+
+String? _safeProviderMessage(
+  Map<String, Object?>? payload,
+  String? credentialValue,
+) {
+  var message = _providerMessage(payload)?.trim();
+  if (message == null || message.isEmpty) return null;
+  if (credentialValue != null && credentialValue.isNotEmpty) {
+    message = message.replaceAll(credentialValue, '[REDACTED]');
+  }
+  message = message.replaceAll(
+    RegExp(r'Bearer\s+[^\s,;"\x27]+', caseSensitive: false),
+    'Bearer [REDACTED]',
+  );
+  message = message.replaceAll(
+    RegExp(r'(Authorization\s*:\s*)[^\s,;]+', caseSensitive: false),
+    r'$1[REDACTED]',
+  );
+  return message.length > 2000 ? '${message.substring(0, 2000)}…' : message;
 }
 
 Future<Map<String, Object?>?> _readErrorPayload(

@@ -45,15 +45,18 @@ class _ChatModelSelectorState extends State<ChatModelSelector> {
     );
     final trigger = _trigger(
       label,
-      layout.isDesktop ? _toggleMenu : _openSheet,
+      layout.isDesktop && _modelCount <= 100 ? _toggleMenu : _openSheet,
     );
-    if (!layout.isDesktop) return trigger;
+    if (!layout.isDesktop || _modelCount > 100) return trigger;
     return MenuAnchor(
       controller: _menuController,
       menuChildren: _desktopRows(context),
       builder: (context, controller, child) => trigger,
     );
   }
+
+  int get _modelCount =>
+      widget.groups.fold<int>(0, (count, group) => count + group.models.length);
 
   Widget _trigger(String label, VoidCallback activate) => ConstrainedBox(
     constraints: const BoxConstraints(
@@ -105,45 +108,71 @@ class _ChatModelSelectorState extends State<ChatModelSelector> {
   ];
 
   Future<void> _openSheet() async {
+    var query = '';
+    final search = TextEditingController();
     await showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          key: const ValueKey('model-selector-sheet'),
-          shrinkWrap: true,
-          padding: DomovoyDimensions.compactPageInsets,
-          children: [
-            for (final group in widget.groups) ...[
-              Padding(
-                key: ValueKey('model-provider:${group.providerId.value}'),
-                padding: DomovoyDimensions.controlInsets,
-                child: Text(
-                  group.displayName,
-                  style: Theme.of(sheetContext).textTheme.labelLarge,
-                ),
-              ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          final entries = <(LlmProviderGroup, LlmModel)>[
+            for (final group in widget.groups)
               for (final model in group.models)
-                ListTile(
-                  key: ValueKey(
-                    'model-option:${model.providerId.value}:${model.id.value}',
+                if (query.isEmpty ||
+                    '${group.displayName} ${model.name} ${model.id.value}'
+                        .toLowerCase()
+                        .contains(query))
+                  (group, model),
+          ];
+          return SafeArea(
+            child: SizedBox(
+              height: MediaQuery.sizeOf(sheetContext).height * 0.75,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: DomovoyDimensions.compactPageInsets,
+                    child: TextField(
+                      key: const ValueKey('model-search'),
+                      controller: search,
+                      decoration: const InputDecoration(
+                        labelText: 'Поиск модели или провайдера',
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                      onChanged: (value) => setSheetState(
+                        () => query = value.trim().toLowerCase(),
+                      ),
+                    ),
                   ),
-                  leading: Icon(
-                    model.ref == widget.selection.model
-                        ? Icons.radio_button_checked_rounded
-                        : Icons.radio_button_unchecked_rounded,
+                  Expanded(
+                    child: ListView.builder(
+                      key: const ValueKey('model-selector-sheet'),
+                      itemCount: entries.length,
+                      itemBuilder: (context, index) {
+                        final (group, model) = entries[index];
+                        return ListTile(
+                          key: ValueKey(
+                            'model-option:${model.providerId.value}:${model.id.value}',
+                          ),
+                          title: Text(model.name),
+                          subtitle: Text(group.displayName),
+                          selected: model.ref == widget.selection.model,
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _select(model);
+                          },
+                        );
+                      },
+                    ),
                   ),
-                  title: Text(model.name),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    _select(model);
-                  },
-                ),
-            ],
-          ],
-        ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
+    search.dispose();
     if (mounted) _focusNode.requestFocus();
   }
 

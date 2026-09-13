@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
 import '../../../design_system/design_system.dart';
+import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 import '../application/chat_workspace_state.dart';
 import 'model_selector.dart';
 import 'reasoning_selector.dart';
@@ -20,6 +21,8 @@ class ChatComposer extends StatefulWidget {
     required this.running,
     required this.enabled,
     this.initialDraft,
+    this.providerCatalog,
+    this.onRefreshModels,
     super.key,
   });
 
@@ -32,6 +35,8 @@ class ChatComposer extends StatefulWidget {
   final bool running;
   final bool enabled;
   final String? initialDraft;
+  final ProviderCatalogSnapshot? providerCatalog;
+  final Future<ProviderCatalogSnapshot?> Function()? onRefreshModels;
 
   @override
   State<ChatComposer> createState() => _ChatComposerState();
@@ -182,6 +187,29 @@ class _ChatComposerState extends State<ChatComposer> {
                   ),
                 ],
               ),
+              if (model == null)
+                const Text('Модель больше недоступна. Выберите замену.'),
+              if (widget.providerCatalog case final catalog?)
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Каталог: ${catalog.models.length} моделей · ${catalog.source}'
+                        '${catalog.stale ? ' · частично/офлайн' : ''}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    if (widget.onRefreshModels != null)
+                      IconButton(
+                        key: const ValueKey('refresh-provider-models'),
+                        tooltip: 'Обновить модели',
+                        onPressed: () => unawaited(widget.onRefreshModels!()),
+                        icon: const Icon(Icons.refresh, size: 18),
+                      ),
+                  ],
+                ),
             ],
           ),
         ),
@@ -193,6 +221,7 @@ class _ChatComposerState extends State<ChatComposer> {
       widget.enabled &&
       !widget.running &&
       !_submitting &&
+      modelForSelection(widget.providerGroups, widget.selection) != null &&
       _textController.text.trim().isNotEmpty;
 
   bool get _isComposing {

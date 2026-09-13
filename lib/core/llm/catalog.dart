@@ -10,6 +10,7 @@ abstract final class BuiltInLlmCatalog {
   static final ProviderId openAi = ProviderId('openai');
 
   static final ModelId deepSeekV4Flash = ModelId('deepseek-v4-flash');
+  static final ModelId deepSeekFlash = ModelId('deepseek-flash');
   static final ModelId deepSeekV4Pro = ModelId('deepseek-v4-pro');
   static final ModelId kimiK26 = ModelId('kimi-k2.6');
   static final ModelId kimiK27Code = ModelId('kimi-k2.7-code');
@@ -142,6 +143,16 @@ abstract final class BuiltInLlmCatalog {
     outputBound: 384000,
   );
 
+  static final LlmModel deepSeekFlashModel = LlmModel(
+    providerId: deepSeek,
+    id: deepSeekFlash,
+    name: 'DeepSeek Flash',
+    wireFamily: LlmWireFamily.openaiChatCompletions,
+    capabilities: deepSeekCapabilities,
+    contextBound: 1048576,
+    outputBound: 393216,
+  );
+
   static final LlmModel deepSeekV4ProModel = LlmModel(
     providerId: deepSeek,
     id: deepSeekV4Pro,
@@ -149,7 +160,7 @@ abstract final class BuiltInLlmCatalog {
     wireFamily: LlmWireFamily.openaiChatCompletions,
     capabilities: deepSeekCapabilities,
     contextBound: 1048576,
-    outputBound: 384000,
+    outputBound: 393216,
   );
 
   static final LlmModel kimiK26Model = LlmModel(
@@ -219,6 +230,7 @@ abstract final class BuiltInLlmCatalog {
   ];
 
   static List<LlmModel> get models => <LlmModel>[
+    deepSeekFlashModel,
     deepSeekV4FlashModel,
     deepSeekV4ProModel,
     kimiK26Model,

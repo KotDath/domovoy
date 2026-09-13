@@ -372,7 +372,7 @@ void main() {
       final failed = await _openAi(
         RecordingClient(
           (_) => sseResponse(
-            'data: {"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"secret raw detail"}}}\n\n',
+            'data: {"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"Maximum context length exceeded. openai-secret"}}}\n\n',
           ),
         ),
       ).stream(_prompt(), cancellation: CancellationSource().token).toList();
@@ -382,7 +382,7 @@ void main() {
       );
       expect(
         (failed.single as LlmFailed).error.message,
-        isNot(contains('secret raw detail')),
+        isNot(contains('openai-secret')),
       );
 
       final httpOverflow = await _openAi(

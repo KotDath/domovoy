@@ -119,13 +119,17 @@ final class ModelRef {
 
 enum LlmWireFamily {
   openaiChatCompletions,
-  openaiResponses;
+  openaiResponses,
+  anthropicMessages,
+  geminiGenerateContent;
 
   static const jsonType = 'llm.wire_family';
 
   String get wireName => switch (this) {
     LlmWireFamily.openaiChatCompletions => 'openai_chat_completions',
     LlmWireFamily.openaiResponses => 'openai_responses',
+    LlmWireFamily.anthropicMessages => 'anthropic_messages',
+    LlmWireFamily.geminiGenerateContent => 'gemini_generate_content',
   };
 
   Map<String, Object?> toJson() =>
@@ -137,6 +141,8 @@ enum LlmWireFamily {
     return switch (value) {
       'openai_chat_completions' => LlmWireFamily.openaiChatCompletions,
       'openai_responses' => LlmWireFamily.openaiResponses,
+      'anthropic_messages' => LlmWireFamily.anthropicMessages,
+      'gemini_generate_content' => LlmWireFamily.geminiGenerateContent,
       _ => throwLlm(LlmErrorKind.protocol, 'Unknown wire family "$value".'),
     };
   }

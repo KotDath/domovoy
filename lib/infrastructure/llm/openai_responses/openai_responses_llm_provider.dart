@@ -372,14 +372,28 @@ final class _ResponsesParseState {
         );
       case 'response.failed':
       case 'error':
-        sink.add(LlmFailed(providerStreamError(providerId, payload: payload)));
+        sink.add(
+          LlmFailed(
+            providerStreamError(
+              providerId,
+              payload: payload,
+              credentialValue: sink.credentialValue,
+            ),
+          ),
+        );
       case 'response.refusal.delta':
       case 'response.output_text.refusal':
         sink.add(LlmFailed(providerStreamError(providerId)));
       default:
         if (payload['error'] != null) {
           sink.add(
-            LlmFailed(providerStreamError(providerId, payload: payload)),
+            LlmFailed(
+              providerStreamError(
+                providerId,
+                payload: payload,
+                credentialValue: sink.credentialValue,
+              ),
+            ),
           );
         }
     }

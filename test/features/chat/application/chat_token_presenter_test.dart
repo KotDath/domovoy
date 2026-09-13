@@ -6,77 +6,94 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   const presenter = ChatTokenPresenter();
 
-  test(
-    'presents complete dimensions, provenance, ratio, and retained bound',
-    () {
-      final usage = LlmUsage(
-        input: LlmUsageMetric.providerReported(10),
-        cacheRead: LlmUsageMetric.providerReported(20),
-        cacheWrite: LlmUsageMetric.providerReported(2),
-        output: LlmUsageMetric.providerReported(3),
-        reasoning: LlmUsageMetric.providerReported(4),
-        reportedInputTotal: LlmUsageMetric.providerReported(32),
-        reportedOutputTotal: LlmUsageMetric.providerReported(7),
-        reportedOverall: LlmUsageMetric.providerReported(39),
-        parentSemantics: const LlmUsageParentSemantics(
-          inputCacheRead: LlmUsageChildInclusion.included,
-          inputCacheWrite: LlmUsageChildInclusion.included,
-          outputReasoning: LlmUsageChildInclusion.included,
-        ),
-      );
-      final responseId = AgentTranscriptMessageId('response');
-      final state = AgentTokenAccountingState(
-        generation: 1,
-        contextRevision: 1,
-        messageIds: <AgentTranscriptMessageId?>[
-          AgentTranscriptMessageId('request'),
-          responseId,
-        ],
+  test('empty session shows unavailable API usage, not invented zeros', () {
+    final accounting = const AgentTokenAccountingProjector().project(
+      state: AgentTokenAccountingState(
+        generation: 0,
+        contextRevision: 0,
+        messageIds: const <AgentTranscriptMessageId?>[],
         legacyBaseline: LlmUsage(),
-        entries: <AgentModelUsageEntry>[
-          _assistantEntry(
-            sequence: 1,
-            attempt: 'complete',
-            outcome: AgentModelInvocationOutcome.completed,
-            usage: usage,
-            responseId: responseId,
-          ),
-        ],
-      );
-      final accounting = const AgentTokenAccountingProjector().project(
-        state: state,
-        retainedContextMeasurement: AgentRetainedContextMeasurement(
-          contextRevision: 1,
-          estimatorId: 'test-estimator',
-          estimatorVersion: 1,
-          estimate: 31,
+        entries: const <AgentModelUsageEntry>[],
+      ),
+    );
+    final projection = presenter.present(
+      accounting: accounting,
+      selectedModel: BuiltInLlmCatalog.deepSeekFlashModel,
+    );
+    expect(projection.summaryLabel, 'Токены —');
+    expect(_value(projection.primaryGroups[1], 'Всего').display, '—');
+    expect(
+      _value(projection.primaryGroups[1], 'Ввод').state,
+      ChatTokenValueState.unavailable,
+    );
+  });
+
+  test('presents inclusive provider totals and exclusive breakdown', () {
+    final usage = LlmUsage(
+      input: LlmUsageMetric.providerReported(10),
+      cacheRead: LlmUsageMetric.providerReported(20),
+      cacheWrite: LlmUsageMetric.providerReported(2),
+      output: LlmUsageMetric.providerReported(3),
+      reasoning: LlmUsageMetric.providerReported(4),
+      reportedInputTotal: LlmUsageMetric.providerReported(32),
+      reportedOutputTotal: LlmUsageMetric.providerReported(7),
+      reportedOverall: LlmUsageMetric.providerReported(39),
+      parentSemantics: const LlmUsageParentSemantics(
+        inputCacheRead: LlmUsageChildInclusion.included,
+        inputCacheWrite: LlmUsageChildInclusion.included,
+        outputReasoning: LlmUsageChildInclusion.included,
+      ),
+    );
+    final responseId = AgentTranscriptMessageId('response');
+    final state = AgentTokenAccountingState(
+      generation: 1,
+      contextRevision: 1,
+      messageIds: <AgentTranscriptMessageId?>[
+        AgentTranscriptMessageId('request'),
+        responseId,
+      ],
+      legacyBaseline: LlmUsage(),
+      entries: <AgentModelUsageEntry>[
+        _assistantEntry(
+          sequence: 1,
+          attempt: 'complete',
+          outcome: AgentModelInvocationOutcome.completed,
+          usage: usage,
+          responseId: responseId,
         ),
-      );
+      ],
+    );
+    final accounting = const AgentTokenAccountingProjector().project(
+      state: state,
+      retainedContextMeasurement: AgentRetainedContextMeasurement(
+        contextRevision: 1,
+        estimatorId: 'test-estimator',
+        estimatorVersion: 1,
+        estimate: 31,
+      ),
+    );
 
-      final projection = presenter.present(
-        accounting: accounting,
-        selectedModel: BuiltInLlmCatalog.deepSeekV4FlashModel,
-      );
+    final projection = presenter.present(
+      accounting: accounting,
+      selectedModel: BuiltInLlmCatalog.deepSeekV4FlashModel,
+    );
 
-      final request = projection.primaryGroups.first;
-      expect(_value(request, 'Ввод').display, '10');
-      expect(_value(request, 'Вывод').display, '3');
-      expect(_value(request, 'Рассуждение').display, '4');
-      expect(_value(request, 'Чтение кэша').display, '20');
-      expect(_value(request, 'Запись кэша').display, '2');
-      expect(_value(request, 'Попадание в кэш').display, '62.5%');
-      expect(_value(request, 'Всего').display, '39');
-      expect(_value(request, 'Всего').provenanceLabel, 'сообщено провайдером');
-      expect(projection.retainedContext.display, '32');
-      expect(
-        projection.retainedContext.provenanceLabel,
-        'сообщено провайдером',
-      );
-      expect(projection.contextBound, 1048576);
-      expect(projection.summaryLabel, contains('32 / 1048576'));
-      expect(projection.supplementaryGroups, hasLength(3));
-    },
-  );
+    final request = projection.primaryGroups.first;
+    expect(_value(request, 'Ввод').display, '32');
+    expect(_value(request, 'Вывод').display, '7');
+    expect(_value(request, 'Рассуждение').display, '4');
+    expect(_value(request, 'Чтение кэша').display, '20');
+    expect(_value(request, 'Запись кэша').display, '2');
+    expect(_value(request, 'Попадание в кэш').display, '62.5%');
+    expect(_value(request, 'Всего').display, '39');
+    expect(_value(request, 'Всего').provenanceLabel, 'сообщено провайдером');
+    expect(_value(request, 'Ввод без кэша').display, '10');
+    expect(_value(request, 'Вывод без рассуждения').display, '3');
+    expect(projection.summaryLabel, contains('запрос 32'));
+    expect(projection.summaryLabel, contains('ответ 7'));
+    expect(projection.summaryLabel, isNot(contains('1048576')));
+    expect(projection.supplementaryGroups, hasLength(3));
+  });
 
   test('failed latest request does not replace latest committed response', () {
     final responseId = AgentTranscriptMessageId('committed-response');
@@ -157,10 +174,54 @@ void main() {
       expect(_value(projection.primaryGroups[0], 'Ввод').display, isNot('0'));
       expect(projection.primaryGroups[1].note, contains('legacy'));
       expect(_value(projection.primaryGroups[1], 'Всего').display, '12');
-      expect(projection.retainedContext.display, '—');
+      expect(projection.summaryLabel, isNot(contains('оценка')));
       expect(projection.supplementaryGroups.last.values, isNotEmpty);
     },
   );
+
+  test('DeepSeek reported parent totals remain inclusive of reasoning', () {
+    final usage = normalizeLlmUsage(
+      reportedInputTotal: const LlmUsageCounter.valid(40),
+      reportedOutputTotal: const LlmUsageCounter.valid(17),
+      reportedOverall: const LlmUsageCounter.valid(57),
+      cacheRead: const LlmUsageCounter.valid(0),
+      cacheMiss: const LlmUsageCounter.valid(40),
+      reasoning: const LlmUsageCounter.valid(15),
+      semantics: const LlmUsageNormalizationSemantics(
+        inputIncludesCacheRead: true,
+        outputIncludesReasoning: true,
+        cacheMissPartitionsInput: true,
+      ),
+    );
+    final state = AgentTokenAccountingState(
+      generation: 1,
+      contextRevision: 1,
+      messageIds: <AgentTranscriptMessageId?>[
+        AgentTranscriptMessageId('request'),
+        AgentTranscriptMessageId('response'),
+      ],
+      legacyBaseline: LlmUsage(),
+      entries: <AgentModelUsageEntry>[
+        _assistantEntry(
+          sequence: 1,
+          attempt: 'observed',
+          outcome: AgentModelInvocationOutcome.completed,
+          usage: usage,
+          responseId: AgentTranscriptMessageId('response'),
+        ),
+      ],
+    );
+    final projection = presenter.present(
+      accounting: const AgentTokenAccountingProjector().project(state: state),
+      selectedModel: BuiltInLlmCatalog.deepSeekV4FlashModel,
+    );
+    final values = projection.primaryGroups.first;
+    expect(_value(values, 'Ввод').display, '40');
+    expect(_value(values, 'Вывод').display, '17');
+    expect(_value(values, 'Рассуждение').display, '15');
+    expect(_value(values, 'Вывод без рассуждения').display, '2');
+    expect(_value(values, 'Всего').display, '57');
+  });
 }
 
 AgentModelUsageEntry _assistantEntry({

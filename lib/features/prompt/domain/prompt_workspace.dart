@@ -18,7 +18,7 @@ final class PromptWorkspace {
       id: agentId,
       name: 'Prompt workspace',
       systemPrompt: '',
-      model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+      model: BuiltInLlmCatalog.deepSeekFlashModel.ref,
       generation: LlmGenerationConfig(reasoningMode: reasoningMode),
       enabledTools: const <ToolId>[],
       policy: PolicyId('deny'),

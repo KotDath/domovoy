@@ -1,5 +1,6 @@
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
+import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 
 enum ChatCatalogStatus { loading, ready, failed }
 
@@ -90,6 +91,7 @@ final class ChatLiveRunState {
   ChatLiveRunState({
     required this.runId,
     required this.sessionId,
+    this.model,
     List<ChatRunEventEntry> events = const <ChatRunEventEntry>[],
     this.terminal,
     this.isStopping = false,
@@ -99,6 +101,7 @@ final class ChatLiveRunState {
 
   final RunId runId;
   final AgentSessionId sessionId;
+  final ModelRef? model;
   final List<ChatRunEventEntry> events;
   final AgentRunEvent? terminal;
   final bool isStopping;
@@ -116,6 +119,7 @@ final class ChatLiveRunState {
     return ChatLiveRunState(
       runId: runId,
       sessionId: sessionId,
+      model: model,
       events: next,
       terminal: event.isTerminal ? event : terminal,
       isStopping: isStopping,
@@ -125,6 +129,7 @@ final class ChatLiveRunState {
   ChatLiveRunState markStopping() => ChatLiveRunState(
     runId: runId,
     sessionId: sessionId,
+    model: model,
     events: events,
     terminal: terminal,
     isStopping: true,
@@ -143,6 +148,7 @@ final class ChatWorkspaceState {
     this.activeOperation,
     this.liveRun,
     this.error,
+    this.providerCatalog,
     this.generation = 0,
     this.isDisposed = false,
   }) : chats = List<AgentSessionSummary>.unmodifiable(
@@ -174,6 +180,7 @@ final class ChatWorkspaceState {
   final ChatWorkspaceOperationKind? activeOperation;
   final ChatLiveRunState? liveRun;
   final ChatWorkspaceError? error;
+  final ProviderCatalogSnapshot? providerCatalog;
   final int generation;
   final bool isDisposed;
 
@@ -193,6 +200,7 @@ final class ChatWorkspaceState {
     Object? activeOperation = _keep,
     Object? liveRun = _keep,
     Object? error = _keep,
+    Object? providerCatalog = _keep,
     int? generation,
     bool? isDisposed,
   }) => ChatWorkspaceState(
@@ -211,6 +219,9 @@ final class ChatWorkspaceState {
         ? this.liveRun
         : liveRun as ChatLiveRunState?,
     error: identical(error, _keep) ? this.error : error as ChatWorkspaceError?,
+    providerCatalog: identical(providerCatalog, _keep)
+        ? this.providerCatalog
+        : providerCatalog as ProviderCatalogSnapshot?,
     generation: generation ?? this.generation,
     isDisposed: isDisposed ?? this.isDisposed,
   );

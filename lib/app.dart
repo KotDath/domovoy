@@ -17,10 +17,14 @@ import 'features/settings/data/secure_model_settings_store.dart';
 import 'features/settings/domain/api_key_credentials.dart';
 import 'features/settings/domain/model_settings.dart';
 import 'features/settings/presentation/api_key_settings_dialog.dart';
+import 'features/settings/presentation/provider_api_keys_dialog.dart';
 import 'infrastructure/credentials/credentials.dart';
 import 'infrastructure/agents/jsonl/jsonl.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
+import 'infrastructure/llm/discovery/native_streaming_provider.dart';
+import 'infrastructure/llm/discovery/provider_manifest.dart';
+import 'infrastructure/llm/discovery/provider_model_catalog.dart';
 
 final class ProductionAgentStack {
   ProductionAgentStack({
@@ -30,6 +34,7 @@ final class ProductionAgentStack {
     required this.credentials,
     required this.repository,
     required this.catalog,
+    this.providerModelCatalog,
   });
 
   final LlmProviderRegistry registry;
@@ -38,6 +43,7 @@ final class ProductionAgentStack {
   final ProviderCredentialResolver credentials;
   final AgentSessionRepository repository;
   final AgentSessionCatalog catalog;
+  final ProviderModelCatalog? providerModelCatalog;
 }
 
 ProductionAgentStack buildProductionAgentStack({
@@ -45,6 +51,7 @@ ProductionAgentStack buildProductionAgentStack({
   required ProviderCredentialResolver credentials,
   AgentSessionRepository? repository,
   AgentSessionCatalog? catalog,
+  bool diagnosticNoCompaction = false,
 }) {
   if ((repository == null) != (catalog == null)) {
     throw ArgumentError(
@@ -56,31 +63,77 @@ ProductionAgentStack buildProductionAgentStack({
       : null;
   final resolvedRepository = repository ?? durableStore!;
   final resolvedCatalog = catalog ?? durableStore!;
-  final deepSeek = OpenAiCompatibleProfile.deepSeek();
-  final moonshot = OpenAiCompatibleProfile.moonshotAi();
-  final openAi = OpenAiResponsesProfile.builtIn();
   final registry = LlmProviderRegistry();
-  BuiltInLlmCatalog.registerInto(registry);
-  registry.registerProvider(
-    OpenAiChatCompletionsLlmProvider(
-      profile: deepSeek,
-      client: httpClient,
-      credentials: credentials,
-    ),
-  );
-  registry.registerProvider(
-    OpenAiChatCompletionsLlmProvider(
-      profile: moonshot,
-      client: httpClient,
-      credentials: credentials,
-    ),
-  );
-  registry.registerProvider(
-    OpenAiResponsesLlmProvider(
-      profile: openAi,
-      client: httpClient,
-      credentials: credentials,
-    ),
+  final compatibleProfiles = <String, OpenAiCompatibleProfile>{};
+  final responseProfiles = <String, OpenAiResponsesProfile>{};
+  for (final spec in ApiKeyProviderManifest.entries) {
+    final initial = BuiltInLlmCatalog.models
+        .where((model) => model.providerId.value == spec.id)
+        .toList(growable: false);
+    registry.registerProfile(spec.profile);
+    switch (spec.protocol) {
+      case ApiKeyProviderProtocol.chatCompletions:
+        final profile = OpenAiCompatibleProfile.builtInDynamic(
+          snapshot: spec.profile,
+          models: initial,
+          dialectFor: spec.id == 'deepseek' || spec.id == 'moonshotai'
+              ? ChatCompletionsDialect.forBuiltInModel
+              : (_) => ChatCompletionsDialect.generic,
+        );
+        compatibleProfiles[spec.id] = profile;
+        registry.registerProvider(
+          OpenAiChatCompletionsLlmProvider(
+            profile: profile,
+            client: httpClient,
+            credentials: credentials,
+          ),
+        );
+      case ApiKeyProviderProtocol.responses:
+        final profile = OpenAiResponsesProfile(
+          snapshot: spec.profile,
+          models: initial,
+          allowEmptyModels: true,
+        );
+        responseProfiles[spec.id] = profile;
+        registry.registerProvider(
+          OpenAiResponsesLlmProvider(
+            profile: profile,
+            client: httpClient,
+            credentials: credentials,
+          ),
+        );
+      case ApiKeyProviderProtocol.anthropicMessages:
+      case ApiKeyProviderProtocol.geminiGenerateContent:
+        registry.registerProvider(
+          NativeStreamingLlmProvider(
+            spec: spec,
+            client: httpClient,
+            credentials: credentials,
+          ),
+        );
+    }
+  }
+  registry.replaceModels(BuiltInLlmCatalog.models);
+  final providerModelCatalog = ProviderModelCatalog(
+    client: httpClient,
+    credentials: credentials,
+    publishModels: (models) {
+      registry.replaceModels(models);
+      for (final entry in compatibleProfiles.entries) {
+        entry.value.replaceModels(
+          models
+              .where((model) => model.providerId.value == entry.key)
+              .toList(growable: false),
+        );
+      }
+      for (final entry in responseProfiles.entries) {
+        entry.value.replaceModels(
+          models
+              .where((model) => model.providerId.value == entry.key)
+              .toList(growable: false),
+        );
+      }
+    },
   );
   const contextEstimator = Utf8FramingAgentContextEstimator();
   final compactionTrigger = OpenCodeCompactionTrigger();
@@ -100,9 +153,9 @@ ProductionAgentStack buildProductionAgentStack({
     router: InMemorySessionRouter(),
     profile: AgentRuntimeProfile(),
     contextEstimator: contextEstimator,
-    compactionTrigger: compactionTrigger,
+    compactionTrigger: diagnosticNoCompaction ? null : compactionTrigger,
     modelSwitchFitPolicy: modelSwitchFitPolicy,
-    historyCompactor: historyCompactor,
+    historyCompactor: diagnosticNoCompaction ? null : historyCompactor,
   );
   return ProductionAgentStack(
     registry: registry,
@@ -111,6 +164,7 @@ ProductionAgentStack buildProductionAgentStack({
     credentials: credentials,
     repository: resolvedRepository,
     catalog: resolvedCatalog,
+    providerModelCatalog: providerModelCatalog,
   );
 }
 
@@ -121,6 +175,9 @@ final class DomovoyDependencies {
     required this.promptDefinition,
     required this.repository,
     required this.catalog,
+    this.providerModelCatalog,
+    this.providerCredentialStore,
+    this.environmentReader,
     required this.overrideStore,
     required this.apiKeyResolver,
     DeepSeekModelSettingsStore? modelSettingsStore,
@@ -130,7 +187,10 @@ final class DomovoyDependencies {
            modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
        _httpClient = httpClient;
 
-  factory DomovoyDependencies.production() {
+  factory DomovoyDependencies.production({
+    http.Client? httpClient,
+    ProviderCredentialStore? credentialStore,
+  }) {
     const storage = FlutterSecureStorage();
     final overrideStore = SecureApiKeyOverrideStore(storage);
     final modelSettingsStore = SecureDeepSeekModelSettingsStore(storage);
@@ -139,11 +199,12 @@ final class DomovoyDependencies {
       overrideStore: overrideStore,
       environment: environment,
     );
-    final client = http.Client();
+    final client = httpClient ?? http.Client();
+    final providerCredentialStore =
+        credentialStore ??
+        NamespacedProviderCredentialStore(FlutterSecureStringStore(storage));
     final credentials = DefaultProviderCredentialResolver(
-      store: NamespacedProviderCredentialStore(
-        FlutterSecureStringStore(storage),
-      ),
+      store: providerCredentialStore,
       readEnvironment: environment.read,
     );
     final stack = buildProductionAgentStack(
@@ -156,6 +217,9 @@ final class DomovoyDependencies {
       promptDefinition: stack.promptDefinition,
       repository: stack.repository,
       catalog: stack.catalog,
+      providerModelCatalog: stack.providerModelCatalog,
+      providerCredentialStore: providerCredentialStore,
+      environmentReader: environment.read,
       overrideStore: overrideStore,
       apiKeyResolver: resolver,
       modelSettingsStore: modelSettingsStore,
@@ -168,6 +232,9 @@ final class DomovoyDependencies {
   final AgentDefinition promptDefinition;
   final AgentSessionRepository repository;
   final AgentSessionCatalog catalog;
+  final ProviderModelCatalog? providerModelCatalog;
+  final ProviderCredentialStore? providerCredentialStore;
+  final EnvironmentVariableReader? environmentReader;
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore modelSettingsStore;
@@ -185,6 +252,7 @@ final class DomovoyDependencies {
       firstError = sanitizeCloseFailure(error);
     }
     try {
+      await providerModelCatalog?.close();
       _httpClient?.close();
     } on Object catch (error) {
       firstError ??= sanitizeCloseFailure(error);
@@ -235,11 +303,15 @@ class _DomovoyAppState extends State<DomovoyApp> {
       catalog: dependencies.catalog,
       repository: dependencies.repository,
       registry: dependencies.registry,
+      providerModelCatalog: dependencies.providerModelCatalog,
       settingsLauncher: _ApiKeyDialogLauncher(
         navigatorKey: _navigatorKey,
         overrideStore: dependencies.overrideStore,
         resolver: dependencies.apiKeyResolver,
         modelSettingsStore: dependencies.modelSettingsStore,
+        providerCredentialStore: dependencies.providerCredentialStore,
+        environmentReader: dependencies.environmentReader,
+        providerModelCatalog: dependencies.providerModelCatalog,
       ),
     );
   }
@@ -277,18 +349,32 @@ final class _ApiKeyDialogLauncher implements ChatSettingsLauncher {
     required this.overrideStore,
     required this.resolver,
     required this.modelSettingsStore,
+    this.providerCredentialStore,
+    this.environmentReader,
+    this.providerModelCatalog,
   });
 
   final GlobalKey<NavigatorState> navigatorKey;
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver resolver;
   final DeepSeekModelSettingsStore modelSettingsStore;
+  final ProviderCredentialStore? providerCredentialStore;
+  final EnvironmentVariableReader? environmentReader;
+  final ProviderModelCatalog? providerModelCatalog;
 
   @override
   Future<void> openSettings() {
     final context = navigatorKey.currentContext;
     if (context == null) {
       throw StateError('Workspace navigator is not ready.');
+    }
+    if (providerCredentialStore != null && environmentReader != null) {
+      return showProviderApiKeysDialog(
+        context: context,
+        store: providerCredentialStore!,
+        environment: environmentReader!,
+        catalog: providerModelCatalog,
+      );
     }
     return showApiKeySettingsDialog(
       context: context,

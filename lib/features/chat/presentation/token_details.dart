@@ -67,13 +67,6 @@ class _TokenDetailsContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final retained = projection.retainedContext;
-    final retainedValue = retained.state == ChatTokenValueState.available
-        ? int.tryParse(retained.display)
-        : null;
-    final ratio = retainedValue == null
-        ? null
-        : (retainedValue / projection.contextBound).clamp(0.0, 1.0);
     return Semantics(
       namesRoute: true,
       label: 'Сведения о токенах',
@@ -102,23 +95,6 @@ class _TokenDetailsContent extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: DomovoyDimensions.space4),
-              Text(
-                '${retained.label}: ${retained.display} / '
-                '${projection.contextBound}',
-              ),
-              if (retained.provenanceLabel != null)
-                Text(
-                  retained.provenanceLabel!,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              if (retained.explanation != null)
-                Text(
-                  retained.explanation!,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              const SizedBox(height: DomovoyDimensions.space2),
-              LinearProgressIndicator(value: ratio),
               const SizedBox(height: DomovoyDimensions.space6),
               for (final group in projection.primaryGroups) ...[
                 _TokenGroupCard(group: group),

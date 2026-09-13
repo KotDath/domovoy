@@ -40,8 +40,6 @@ final class ChatTokenGroup {
 final class ChatTokenProjection {
   ChatTokenProjection({
     required this.summaryLabel,
-    required this.retainedContext,
-    required this.contextBound,
     required List<ChatTokenGroup> primaryGroups,
     required List<ChatTokenGroup> supplementaryGroups,
   }) : primaryGroups = List<ChatTokenGroup>.unmodifiable(primaryGroups),
@@ -50,8 +48,6 @@ final class ChatTokenProjection {
        );
 
   final String summaryLabel;
-  final ChatTokenValue retainedContext;
-  final int contextBound;
   final List<ChatTokenGroup> primaryGroups;
   final List<ChatTokenGroup> supplementaryGroups;
 }
@@ -74,27 +70,18 @@ final class ChatTokenPresenter {
           ? null
           : 'Включает legacy-объём без атрибуции.',
     );
-    final retained = _metric(
-      'Сохранённый контекст',
-      accounting.retainedContext.metric,
-      explanation: 'Оценка текущего контекста недоступна.',
-    );
-    final retainedText = retained.state == ChatTokenValueState.available
-        ? retained.display
-        : '—';
-    final requestOverall = request?.usage.overall?.value;
-    final responseOverall = response?.usage.overall?.value;
-    final historyOverall = accounting.session.overall.value;
+    final requestInput = request?.usage.requestContext?.value;
+    final responseOutput = response?.usage.responseGenerated?.value;
+    final historyOverall = accounting.session.overall.contributorCount == 0
+        ? null
+        : accounting.session.overall.value;
     final shortValues = <String>[
-      if (requestOverall != null) 'запрос $requestOverall',
-      if (responseOverall != null) 'ответ $responseOverall',
+      if (requestInput != null) 'запрос $requestInput',
+      if (responseOutput != null) 'ответ $responseOutput',
       if (historyOverall != null) 'история $historyOverall',
     ];
-    final suffix = shortValues.isEmpty ? '' : ' · ${shortValues.join(' · ')}';
     return ChatTokenProjection(
-      summaryLabel: '$retainedText / ${selectedModel.contextBound}$suffix',
-      retainedContext: retained,
-      contextBound: selectedModel.contextBound,
+      summaryLabel: shortValues.isEmpty ? 'Токены —' : shortValues.join(' · '),
       primaryGroups: <ChatTokenGroup>[
         _usageGroup(
           key: 'current-request',
@@ -160,13 +147,15 @@ ChatTokenGroup _usageGroup({
     correlationLabel: correlation,
     note: usage == null ? unavailableNote : null,
     values: <ChatTokenValue>[
-      _metric('Ввод', usage?.input),
-      _metric('Вывод', usage?.output),
+      _metric('Ввод', usage?.requestContext),
+      _metric('Вывод', usage?.responseGenerated),
       _metric('Рассуждение', usage?.reasoning),
       _metric('Чтение кэша', usage?.cacheRead),
       _metric('Запись кэша', usage?.cacheWrite),
       _ratio('Попадание в кэш', usage?.cacheHitRatio),
       _metric('Всего', usage?.overall),
+      _metric('Ввод без кэша', usage?.input),
+      _metric('Вывод без рассуждения', usage?.output),
     ],
   );
 }
@@ -184,13 +173,15 @@ ChatTokenGroup _aggregateGroup({
     modelLabel: model?.toString(),
     note: note,
     values: <ChatTokenValue>[
-      _aggregate('Ввод', aggregate.input),
-      _aggregate('Вывод', aggregate.output),
+      _aggregate('Ввод', aggregate.requestContext),
+      _aggregate('Вывод', aggregate.responseGenerated),
       _aggregate('Рассуждение', aggregate.reasoning),
       _aggregate('Чтение кэша', aggregate.cacheRead),
       _aggregate('Запись кэша', aggregate.cacheWrite),
       _aggregateRatio('Попадание в кэш', aggregate),
       _aggregate('Всего', aggregate.overall),
+      _aggregate('Ввод без кэша', aggregate.input),
+      _aggregate('Вывод без рассуждения', aggregate.output),
     ],
   );
 }
@@ -237,6 +228,14 @@ ChatTokenValue _aggregate(
   String label,
   AgentUsageDimensionAggregate dimension,
 ) {
+  if (dimension.contributorCount == 0) {
+    return ChatTokenValue(
+      label: label,
+      display: '—',
+      state: ChatTokenValueState.unavailable,
+      explanation: 'Вызовов провайдера ещё не было.',
+    );
+  }
   if (dimension.inconsistentContributorCount > 0 &&
       dimension.knownContributorCount == 0) {
     return ChatTokenValue(

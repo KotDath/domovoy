@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
+import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 import '../domain/chat_deletion_intent.dart';
 import 'chat_stream_pacing.dart';
 import 'chat_workspace_state.dart';
@@ -17,6 +18,7 @@ final class ChatWorkspaceController {
     required this.catalog,
     required this.repository,
     required this.registry,
+    this.providerModelCatalog,
     AgentSessionTitlePolicy? titlePolicy,
     this.settingsLauncher,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
@@ -32,6 +34,7 @@ final class ChatWorkspaceController {
   final AgentSessionCatalog catalog;
   final AgentSessionRepository repository;
   final LlmProviderRegistry registry;
+  final ProviderModelCatalog? providerModelCatalog;
   final AgentSessionTitlePolicy titlePolicy;
   final ChatSettingsLauncher? settingsLauncher;
   final ChatStreamPacingPolicy pacingPolicy;
@@ -51,6 +54,7 @@ final class ChatWorkspaceController {
   var _generation = 0;
   var _disposed = false;
   Future<void>? _disposeFuture;
+  StreamSubscription<ProviderCatalogSnapshot>? _providerCatalogSubscription;
   ChatScheduledNotification? _scheduledNotification;
   final Map<String, AgentSessionId> _issuedDeletionIntents =
       <String, AgentSessionId>{};
@@ -85,6 +89,18 @@ final class ChatWorkspaceController {
       _state.copyWith(catalogStatus: ChatCatalogStatus.loading, error: null),
     );
     try {
+      if (providerModelCatalog != null) {
+        _providerCatalogSubscription ??= providerModelCatalog!.updates.listen(
+          (snapshot) => _emit(
+            _state.copyWith(
+              providerGroups: registry.providerGroups,
+              providerCatalog: snapshot,
+            ),
+          ),
+        );
+        await providerModelCatalog!.initialize();
+        unawaited(providerModelCatalog!.refresh());
+      }
       final snapshot = await catalog.list();
       if (!_isCurrent(generation)) {
         return const ChatCommandResult.disposed();
@@ -297,6 +313,14 @@ final class ChatWorkspaceController {
       );
       return Future<ChatCommandResult>.value(ChatCommandResult.failed(error));
     }
+    if (!registry.isModelAvailable(session.snapshot.selection.model)) {
+      final error = ChatWorkspaceError(
+        kind: AgentErrorKind.configuration,
+        message: 'Модель больше недоступна у провайдера. Выберите замену.',
+      );
+      _emit(_state.copyWith(error: error));
+      return Future<ChatCommandResult>.value(ChatCommandResult.failed(error));
+    }
     final generation = _admit(ChatWorkspaceOperationKind.run);
     return _send(session, input, generation);
   }
@@ -315,7 +339,11 @@ final class ChatWorkspaceController {
       _emit(
         _state.copyWith(
           selectedSession: session.snapshot,
-          liveRun: ChatLiveRunState(runId: run.id, sessionId: session.id),
+          liveRun: ChatLiveRunState(
+            runId: run.id,
+            sessionId: session.id,
+            model: session.snapshot.selection.model,
+          ),
           error: null,
         ),
       );
@@ -796,6 +824,7 @@ final class ChatWorkspaceController {
     _disposed = true;
     _generation += 1;
     _cancelScheduledNotification();
+    await _providerCatalogSubscription?.cancel();
     _emit(
       _state.copyWith(
         activeOperation: ChatWorkspaceOperationKind.close,
@@ -826,6 +855,11 @@ final class ChatWorkspaceController {
       await _safelyClose(session);
     }
     await _states.close();
+  }
+
+  Future<ProviderCatalogSnapshot?> refreshProviderModels() async {
+    if (_disposed || providerModelCatalog == null) return null;
+    return providerModelCatalog!.refresh();
   }
 
   Future<void> _recoverSelected(AgentSessionId id, int generation) async {
@@ -1000,8 +1034,11 @@ ChatWorkspaceError _sanitizeWorkspaceError(Object error) {
       'Чат был изменён в другом процессе. Показано актуальное состояние.',
     AgentErrorKind.busy => 'Чат занят другой операцией.',
     AgentErrorKind.compaction => 'Не удалось безопасно подготовить контекст.',
-    AgentErrorKind.protocol ||
-    AgentErrorKind.provider => 'Провайдер не смог завершить запрос.',
+    AgentErrorKind.protocol => 'Провайдер не смог завершить запрос.',
+    AgentErrorKind.provider =>
+      error is AgentException && error.error.safeProviderMessage
+          ? error.error.message
+          : 'Провайдер не смог завершить запрос.',
     AgentErrorKind.budgetUnverifiable =>
       'Не удалось подтвердить лимит токенов для запроса.',
     AgentErrorKind.cancelled => 'Операция остановлена.',

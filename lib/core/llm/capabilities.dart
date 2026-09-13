@@ -118,19 +118,23 @@ final class LlmModel {
     required String name,
     required this.wireFamily,
     required this.capabilities,
-    required this.contextBound,
-    required this.outputBound,
-  }) : name = name.trim() {
+    required int? contextBound,
+    required int? outputBound,
+  }) : name = name.trim(),
+       knownContextBound = contextBound,
+       knownOutputBound = outputBound,
+       contextBound = contextBound ?? unknownBoundGuardCeiling,
+       outputBound = outputBound ?? unknownBoundGuardCeiling {
     if (this.name.isEmpty) {
       throwLlm(LlmErrorKind.configuration, 'Model name must not be blank.');
     }
-    if (contextBound <= 0) {
+    if (contextBound != null && contextBound <= 0) {
       throwLlm(
         LlmErrorKind.configuration,
         'Model context bound must be positive.',
       );
     }
-    if (outputBound <= 0) {
+    if (outputBound != null && outputBound <= 0) {
       throwLlm(
         LlmErrorKind.configuration,
         'Model output bound must be positive.',
@@ -146,12 +150,19 @@ final class LlmModel {
       name: requireString(map, 'name'),
       wireFamily: LlmWireFamily.fromJson(map['wireFamily']),
       capabilities: ModelCapabilities.fromJson(map['capabilities']),
-      contextBound: requirePositiveInt(map, 'contextBound'),
-      outputBound: requirePositiveInt(map, 'outputBound'),
+      contextBound: map['contextBound'] == null
+          ? null
+          : requirePositiveInt(map, 'contextBound'),
+      outputBound: map['outputBound'] == null
+          ? null
+          : requirePositiveInt(map, 'outputBound'),
     );
   }
 
   static const jsonType = 'llm.model';
+
+  /// Internal compatibility ceiling only; never an advertised model limit.
+  static const unknownBoundGuardCeiling = 4503599627370495;
 
   final ProviderId providerId;
   final ModelId id;
@@ -160,6 +171,8 @@ final class LlmModel {
   final ModelCapabilities capabilities;
   final int contextBound;
   final int outputBound;
+  final int? knownContextBound;
+  final int? knownOutputBound;
 
   ModelRef get ref => ModelRef(providerId: providerId, modelId: id);
 
@@ -171,8 +184,8 @@ final class LlmModel {
       'name': name,
       'wireFamily': wireFamily.toJson(),
       'capabilities': capabilities.toJson(),
-      'contextBound': contextBound,
-      'outputBound': outputBound,
+      'contextBound': knownContextBound,
+      'outputBound': knownOutputBound,
     },
   );
 
@@ -186,7 +199,9 @@ final class LlmModel {
           other.wireFamily == wireFamily &&
           other.capabilities == capabilities &&
           other.contextBound == contextBound &&
-          other.outputBound == outputBound;
+          other.outputBound == outputBound &&
+          other.knownContextBound == knownContextBound &&
+          other.knownOutputBound == knownOutputBound;
 
   @override
   int get hashCode => Object.hash(
@@ -197,5 +212,7 @@ final class LlmModel {
     capabilities,
     contextBound,
     outputBound,
+    knownContextBound,
+    knownOutputBound,
   );
 }

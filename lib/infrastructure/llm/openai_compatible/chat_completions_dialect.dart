@@ -149,7 +149,8 @@ final class ChatCompletionsDialect {
   }
 
   static ChatCompletionsDialect forBuiltInModel(ModelId modelId) {
-    if (modelId == BuiltInLlmCatalog.deepSeekV4Flash ||
+    if (modelId == BuiltInLlmCatalog.deepSeekFlash ||
+        modelId == BuiltInLlmCatalog.deepSeekV4Flash ||
         modelId == BuiltInLlmCatalog.deepSeekV4Pro) {
       return deepSeek;
     }

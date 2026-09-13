@@ -20,8 +20,9 @@ import 'support/fakes.dart';
 import 'support/recording_http_client.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('production agent composition', () {
-    test('registers both wire families and eight curated models', () {
+    test('registers API-key provider manifest and curated startup models', () {
       final client = http.Client();
       addTearDown(client.close);
       final stack = buildProductionAgentStack(
@@ -34,10 +35,19 @@ void main() {
 
       expect(
         stack.registry.providers.map((provider) => provider.id.value).toSet(),
-        <String>{'deepseek', 'moonshotai', 'openai'},
+        containsAll(<String>[
+          'deepseek',
+          'moonshotai',
+          'openai',
+          'anthropic',
+          'google',
+          'groq',
+          'openrouter',
+          'together',
+        ]),
       );
-      expect(stack.registry.profiles, hasLength(3));
-      expect(stack.registry.models, hasLength(8));
+      expect(stack.registry.profiles, hasLength(greaterThanOrEqualTo(16)));
+      expect(stack.registry.models, hasLength(9));
       expect(
         stack.registry.requireProvider(BuiltInLlmCatalog.deepSeek).wireFamily,
         LlmWireFamily.openaiChatCompletions,
@@ -79,6 +89,137 @@ void main() {
         AgentLivenessPolicy.defaultIdleTimeout,
       );
     });
+
+    test(
+      'fresh production chat selects a smaller native model after catalog refresh',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'domovoy-fresh-native-switch-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        final client = RecordingClient(_switchDiscoveryResponse);
+        addTearDown(client.close);
+        final store = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final stack = buildProductionAgentStack(
+          httpClient: client,
+          credentials: DefaultProviderCredentialResolver(
+            store: MemoryProviderCredentialStore(<ProviderId, String>{
+              BuiltInLlmCatalog.deepSeek: 'test-key',
+            }),
+            readEnvironment: (_) => null,
+          ),
+          repository: store,
+          catalog: store,
+        );
+        addTearDown(() async {
+          await stack.runtime.close();
+          await stack.providerModelCatalog?.close();
+        });
+        await stack.providerModelCatalog!.refresh();
+        final session = await stack.runtime
+            .agent(stack.promptDefinition)
+            .createSession(persistence: SessionPersistence.repository);
+        addTearDown(session.close);
+
+        final target = _claudeSonnetSelection();
+        final result = await session.changeSelection(target);
+
+        expect(result.status, AgentSessionSelectionStatus.changed);
+        expect(session.snapshot.selection, target);
+        expect(
+          client.requests.where((request) => request.method == 'POST'),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'restored Pro history selects Claude without unnecessary compaction',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'domovoy-restored-native-switch-',
+        );
+        addTearDown(() => sandbox.delete(recursive: true));
+        final client = RecordingClient((request) {
+          if (request.method == 'POST' &&
+              request.url.host == 'api.deepseek.com' &&
+              request.url.path.endsWith('/chat/completions')) {
+            return sseResponse(
+              _chatCompletionSse('Север сохранён', promptTokens: 35),
+            );
+          }
+          return _switchDiscoveryResponse(request);
+        });
+        addTearDown(client.close);
+        final credentials = DefaultProviderCredentialResolver(
+          store: MemoryProviderCredentialStore(<ProviderId, String>{
+            BuiltInLlmCatalog.deepSeek: 'test-key',
+          }),
+          readEnvironment: (_) => null,
+        );
+        final firstStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final first = buildProductionAgentStack(
+          httpClient: client,
+          credentials: credentials,
+          repository: firstStore,
+          catalog: firstStore,
+        );
+        await first.providerModelCatalog!.refresh();
+        final session = await first.runtime
+            .agent(first.promptDefinition)
+            .createSession(persistence: SessionPersistence.repository);
+        expect(
+          (await session.changeSelection(_deepSeekProSelection())).status,
+          AgentSessionSelectionStatus.changed,
+        );
+        expect(
+          (await session.run('Запомни проект Север').events.toList()).last,
+          isA<AgentRunCompleted>(),
+        );
+        final id = session.id;
+        await session.close();
+        await first.runtime.close();
+        await first.providerModelCatalog?.close();
+
+        final secondStore = JsonlAgentSessionStore(
+          storage: _filesystemStorage(sandbox),
+        );
+        final second = buildProductionAgentStack(
+          httpClient: client,
+          credentials: credentials,
+          repository: secondStore,
+          catalog: secondStore,
+        );
+        addTearDown(() async {
+          await second.runtime.close();
+          await second.providerModelCatalog?.close();
+        });
+        await second.providerModelCatalog!.refresh();
+        final restored = await second.runtime
+            .agent(second.promptDefinition)
+            .restoreSession(id);
+        addTearDown(restored.close);
+        expect(
+          restored.snapshot.selection.model,
+          _deepSeekProSelection().model,
+        );
+        expect(restored.snapshot.transcript.messages, hasLength(2));
+
+        final target = _claudeSonnetSelection();
+        final result = await restored.changeSelection(target);
+
+        expect(result.status, AgentSessionSelectionStatus.changed);
+        expect(restored.snapshot.selection, target);
+        expect(
+          client.requests.where((request) => request.method == 'POST'),
+          hasLength(1),
+        );
+      },
+    );
 
     test(
       'production defaults compact beyond the former cap and continue the run',
@@ -624,7 +765,7 @@ void main() {
         );
         expect(
           stack.promptDefinition.model.modelId,
-          BuiltInLlmCatalog.deepSeekV4Flash,
+          BuiltInLlmCatalog.deepSeekFlash,
         );
         expect(stack.promptDefinition.limits?.maxModelTurns, 1);
         expect(stack.promptDefinition.limits?.maxToolCalls, 0);
@@ -775,7 +916,7 @@ void main() {
         expect(encoded, isNot(contains('Callback')));
         expect(encoded, isNot(contains('StreamController')));
         _assertJsonTreeHasNoRuntimeObjects(jsonDecode(encoded));
-        expect(encoded, contains('deepseek-v4-flash'));
+        expect(encoded, contains('deepseek-flash'));
         expect(encoded, isNot(contains('kimi-k3')));
         expect(encoded, isNot(contains('gpt-5.4')));
       },
@@ -857,6 +998,35 @@ String _chatCompletionSse(String text, {int? promptTokens}) =>
       if (promptTokens != null) 'usage': <String, Object?>{'prompt_tokens': promptTokens, 'completion_tokens': text.length, 'total_tokens': promptTokens + text.length},
     })}\n\n'
     'data: [DONE]\n\n';
+
+http.StreamedResponse _switchDiscoveryResponse(RecordedRequest request) {
+  if (request.url.host == 'models.dev') {
+    return sseResponse('{}', status: 503);
+  }
+  if (request.method == 'GET' &&
+      request.url.host == 'api.deepseek.com' &&
+      request.url.path.endsWith('/models')) {
+    return sseResponse(
+      '{"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}',
+    );
+  }
+  return sseResponse('{}', status: 503);
+}
+
+AgentSessionSelection _claudeSonnetSelection() => AgentSessionSelection(
+  model: ModelRef(
+    providerId: ProviderId('anthropic'),
+    modelId: ModelId('claude-sonnet-4-6'),
+  ),
+  reasoningMode: ReasoningMode.disabled,
+  reasoningEffort: ReasoningEffort.modelDefault,
+);
+
+AgentSessionSelection _deepSeekProSelection() => AgentSessionSelection(
+  model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
+  reasoningMode: ReasoningMode.disabled,
+  reasoningEffort: ReasoningEffort.modelDefault,
+);
 
 AgentSessionRecord _record(
   AgentSessionId id, {

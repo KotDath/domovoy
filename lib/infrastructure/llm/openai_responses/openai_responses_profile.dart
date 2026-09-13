@@ -11,8 +11,9 @@ final class OpenAiResponsesProfile {
     required this.snapshot,
     required List<LlmModel> models,
     this.usage = const OpenAiResponsesUsageDialect(),
-  }) : models = List<LlmModel>.unmodifiable(List<LlmModel>.from(models)) {
-    if (this.models.isEmpty) {
+    bool allowEmptyModels = false,
+  }) : _models = List<LlmModel>.unmodifiable(List<LlmModel>.from(models)) {
+    if (_models.isEmpty && !allowEmptyModels) {
       throwLlm(
         LlmErrorKind.configuration,
         'An OpenAI Responses profile must declare explicit model entries.',
@@ -25,7 +26,7 @@ final class OpenAiResponsesProfile {
       );
     }
     final seen = <String>{};
-    for (final model in this.models) {
+    for (final model in _models) {
       if (model.providerId != snapshot.id) {
         throwLlm(
           LlmErrorKind.configuration,
@@ -59,10 +60,23 @@ final class OpenAiResponsesProfile {
   }
 
   final LlmProviderProfile snapshot;
-  final List<LlmModel> models;
+  List<LlmModel> _models;
+  List<LlmModel> get models => _models;
   final OpenAiResponsesUsageDialect usage;
 
   ProviderId get id => snapshot.id;
+
+  void replaceModels(List<LlmModel> models) {
+    final seen = <String>{};
+    for (final model in models) {
+      if (model.providerId != snapshot.id ||
+          model.wireFamily != snapshot.wireFamily ||
+          !seen.add(model.id.value)) {
+        throwLlm(LlmErrorKind.configuration, 'Invalid Responses model set.');
+      }
+    }
+    _models = List<LlmModel>.unmodifiable(models);
+  }
 
   LlmModel requireModel(ModelId id) {
     for (final model in models) {

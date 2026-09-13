@@ -2283,19 +2283,31 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
           'Model-switch fit policy returned an invalid decision.',
         );
       }
-      // Switching is decided from provider-reported context usage, never from
-      // an estimator. When that measurement is unavailable and the target has
-      // less capacity than the current session model, conservatively compact
-      // before committing the switch without a numeric-fit claim.
+      // Prefer provider-reported context usage. A restored or unused session
+      // has no live measurement, so use the internal estimate only to decide
+      // whether to attempt preparation for a smaller target. An already small
+      // transcript must not fail a model switch because the compactor has
+      // nothing to remove. The next provider request remains authoritative.
       final providerContextUsage = session.latestProviderContextUsage;
       final currentSessionModel = session.runtime.registry
           .resolve(previous.model)
           .model;
       final targetIsSmaller =
           targetModel.contextBound < currentSessionModel.contextBound;
+      final estimatedContextUsage =
+          providerContextUsage == null && targetIsSmaller
+          ? session.runtime.contextEstimator
+                .estimate(
+                  AgentContextEstimateInput(
+                    request: targetRequest,
+                    cancellation: cancelSource.token,
+                  ),
+                )
+                .value
+          : null;
       final mustCompact = providerContextUsage != null
           ? providerContextUsage > fit.fitThreshold
-          : targetIsSmaller;
+          : targetIsSmaller && estimatedContextUsage! > fit.fitThreshold;
       _emit(
         AgentSessionSelectionStarted(
           operationId: id,

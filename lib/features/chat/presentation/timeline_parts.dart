@@ -381,6 +381,11 @@ class _ErrorPart extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (item.modelLabel != null)
+                    Text(
+                      item.modelLabel!,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   SelectableText(item.message),
                   if (item.offersSettings && onOpenSettings != null)
                     TextButton(

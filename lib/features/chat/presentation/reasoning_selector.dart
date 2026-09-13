@@ -33,10 +33,12 @@ List<ChatReasoningChoice> reasoningChoicesFor(LlmModel model) {
   final choices = <ChatReasoningChoice>[];
   if (capabilities.canDisableReasoning) {
     choices.add(
-      const ChatReasoningChoice(
+      ChatReasoningChoice(
         mode: ReasoningMode.disabled,
         effort: ReasoningEffort.modelDefault,
-        label: 'Без рассуждений',
+        label: capabilities.supportsReasoning
+            ? 'Без рассуждений'
+            : 'По умолчанию',
       ),
     );
   }
@@ -123,7 +125,7 @@ class _ChatReasoningSelectorState extends State<ChatReasoningSelector> {
     child: OutlinedButton.icon(
       key: const ValueKey('reasoning-selector'),
       focusNode: _focusNode,
-      onPressed: widget.enabled ? activate : null,
+      onPressed: widget.enabled && _choices.length > 1 ? activate : null,
       icon: const Icon(Icons.psychology_outlined),
       label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
     ),

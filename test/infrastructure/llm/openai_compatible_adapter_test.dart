@@ -750,7 +750,7 @@ void main() {
       final httpOverflow = await _deepSeek(
         RecordingClient(
           (_) => sseResponse(
-            '{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"secret raw detail"}}',
+            '{"error":{"type":"invalid_request_error","code":"invalid_request_error","message":"This model\'s maximum context length is 1048576 tokens. However, you requested 1100005 tokens. super-secret"}}',
             status: 400,
           ),
         ),
@@ -761,7 +761,11 @@ void main() {
       );
       expect(
         (httpOverflow.single as LlmFailed).error.message,
-        isNot(contains('secret raw detail')),
+        contains('maximum context length is 1048576 tokens'),
+      );
+      expect(
+        (httpOverflow.single as LlmFailed).error.message,
+        isNot(contains('super-secret')),
       );
 
       final streamOverflow = await _deepSeek(

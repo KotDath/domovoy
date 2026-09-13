@@ -155,6 +155,8 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
           _state.activeOperation == ChatWorkspaceOperationKind.modelSwitch ||
           _state.activeOperation == ChatWorkspaceOperationKind.compaction,
       enabled: !_state.isDisposed,
+      providerCatalog: _state.providerCatalog,
+      onRefreshModels: widget.controller.refreshProviderModels,
     );
   }
 

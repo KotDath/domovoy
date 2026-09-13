@@ -101,11 +101,13 @@ final class ChatErrorItem extends ChatTimelineItem {
     required super.key,
     required this.kind,
     required this.message,
+    this.modelLabel,
     this.offersSettings = false,
   });
 
   final ChatTimelineErrorKind kind;
   final String message;
+  final String? modelLabel;
   final bool offersSettings;
 }
 
@@ -424,7 +426,12 @@ ChatErrorItem? _terminalItem(
     return ChatErrorItem(
       key: 'session:${sessionId.value}:run:${liveRun.runId.value}:terminal',
       kind: ChatTimelineErrorKind.failed,
-      message: _sanitizedRunFailure(terminal.error.kind),
+      message:
+          terminal.error.kind == AgentErrorKind.provider &&
+              terminal.error.safeProviderMessage
+          ? terminal.error.message
+          : _sanitizedRunFailure(terminal.error.kind),
+      modelLabel: liveRun.model?.toString(),
       offersSettings: terminal.error.kind == AgentErrorKind.configuration,
     );
   }

@@ -113,7 +113,15 @@ final class _ChatCompletionsParseState {
 
     final payload = decodeSseJsonObject(data, providerId);
     if (payload['error'] != null) {
-      sink.add(LlmFailed(providerStreamError(providerId, payload: payload)));
+      sink.add(
+        LlmFailed(
+          providerStreamError(
+            providerId,
+            payload: payload,
+            credentialValue: sink.credentialValue,
+          ),
+        ),
+      );
       return;
     }
 

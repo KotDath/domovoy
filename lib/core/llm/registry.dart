@@ -55,9 +55,14 @@ final class LlmProviderRegistry {
   final Map<String, LlmProvider> _providers = <String, LlmProvider>{};
   final Map<(String, String), LlmModel> _models =
       <(String, String), LlmModel>{};
+  final Map<(String, String), LlmModel> _retiredModels =
+      <(String, String), LlmModel>{};
   final Map<String, LlmProviderProfile> _profiles =
       <String, LlmProviderProfile>{};
   final Map<String, Set<String>> _providersByModelId = <String, Set<String>>{};
+  var _catalogGeneration = 0;
+
+  int get catalogGeneration => _catalogGeneration;
 
   List<LlmProviderProfile> get profiles =>
       List<LlmProviderProfile>.unmodifiable(
@@ -118,6 +123,49 @@ final class LlmProviderRegistry {
         .add(model.providerId.value);
   }
 
+  /// Publishes a complete validated model generation in one synchronous step.
+  void replaceModels(Iterable<LlmModel> models) {
+    final next = <(String, String), LlmModel>{};
+    final byId = <String, Set<String>>{};
+    for (final model in models) {
+      final profile = _profiles[model.providerId.value];
+      final provider = _providers[model.providerId.value];
+      if (profile == null ||
+          provider == null ||
+          profile.wireFamily != model.wireFamily ||
+          provider.wireFamily != model.wireFamily) {
+        throwLlm(
+          LlmErrorKind.configuration,
+          'Model ${model.ref} has no matching registered provider and profile.',
+        );
+      }
+      final key = _modelKey(model.providerId, model.id);
+      if (next.containsKey(key)) {
+        throwLlm(
+          LlmErrorKind.configuration,
+          'Duplicate model ${model.ref} in catalog generation.',
+        );
+      }
+      next[key] = model;
+      byId
+          .putIfAbsent(model.id.value, () => <String>{})
+          .add(model.providerId.value);
+    }
+    for (final entry in _models.entries) {
+      if (!next.containsKey(entry.key)) _retiredModels[entry.key] = entry.value;
+    }
+    for (final key in next.keys) {
+      _retiredModels.remove(key);
+    }
+    _models
+      ..clear()
+      ..addAll(next);
+    _providersByModelId
+      ..clear()
+      ..addAll(byId);
+    _catalogGeneration++;
+  }
+
   void registerProfile(LlmProviderProfile profile) {
     final key = profile.id.value;
     if (_profiles.containsKey(key)) {
@@ -138,7 +186,8 @@ final class LlmProviderRegistry {
   }
 
   LlmModel requireModel(ModelRef ref) {
-    final exact = _models[_modelKey(ref.providerId, ref.modelId)];
+    final key = _modelKey(ref.providerId, ref.modelId);
+    final exact = _models[key] ?? _retiredModels[key];
     if (exact != null) {
       return exact;
     }
@@ -154,6 +203,9 @@ final class LlmProviderRegistry {
       'Unknown model "${ref.modelId.value}" for provider "${ref.providerId.value}".',
     );
   }
+
+  bool isModelAvailable(ModelRef ref) =>
+      _models.containsKey(_modelKey(ref.providerId, ref.modelId));
 
   LlmResolvedSelection resolve(ModelRef ref) {
     final provider = requireProvider(ref.providerId);
@@ -182,6 +234,12 @@ final class LlmProviderRegistry {
     LlmRequest request, {
     required CancellationToken cancellation,
   }) {
+    if (!isModelAvailable(request.model)) {
+      throwLlm(
+        LlmErrorKind.configuration,
+        'Model "${request.model.modelId.value}" is no longer in the provider catalog. Select a replacement.',
+      );
+    }
     final selection = resolve(request.model);
     validateRequestAgainstModel(request, selection.model);
     return guardLlmEventStream(

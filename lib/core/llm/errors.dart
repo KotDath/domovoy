@@ -13,8 +13,11 @@ enum LlmErrorKind {
 }
 
 final class LlmError implements Exception {
-  LlmError({required this.kind, required String message})
-    : message = message.trim() {
+  LlmError({
+    required this.kind,
+    required String message,
+    this.safeForDisplay = false,
+  }) : message = message.trim() {
     if (this.message.isEmpty) {
       throw ArgumentError.value(
         message,
@@ -33,26 +36,38 @@ final class LlmError implements Exception {
     if (kind == null) {
       throwLlm(LlmErrorKind.protocol, 'Unknown error kind "$kindName".');
     }
-    return LlmError(kind: kind, message: requireNonBlankString(map, 'message'));
+    return LlmError(
+      kind: kind,
+      message: requireNonBlankString(map, 'message'),
+      safeForDisplay: map['safeForDisplay'] == true,
+    );
   }
 
   static const jsonType = 'llm.error';
 
   final LlmErrorKind kind;
   final String message;
+  final bool safeForDisplay;
 
   Map<String, Object?> toJson() => typedJson(
     type: jsonType,
-    fields: <String, Object?>{'kind': kind.name, 'message': message},
+    fields: <String, Object?>{
+      'kind': kind.name,
+      'message': message,
+      if (safeForDisplay) 'safeForDisplay': true,
+    },
   );
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LlmError && other.kind == kind && other.message == message;
+      other is LlmError &&
+          other.kind == kind &&
+          other.message == message &&
+          other.safeForDisplay == safeForDisplay;
 
   @override
-  int get hashCode => Object.hash(kind, message);
+  int get hashCode => Object.hash(kind, message, safeForDisplay);
 
   @override
   String toString() => 'LlmError($kind: $message)';

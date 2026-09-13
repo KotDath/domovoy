@@ -13,16 +13,17 @@ final class OpenAiCompatibleProfile {
     required List<LlmModel> models,
     required ChatCompletionsDialect Function(ModelId id) dialectFor,
     this.securityPolicy = LlmEndpointSecurityPolicy.productionHttpsOnly,
-  }) : models = List<LlmModel>.unmodifiable(List<LlmModel>.from(models)),
+    bool allowEmptyModels = false,
+  }) : _models = List<LlmModel>.unmodifiable(List<LlmModel>.from(models)),
        _dialectFor = dialectFor {
-    if (this.models.isEmpty) {
+    if (_models.isEmpty && !allowEmptyModels) {
       throwLlm(
         LlmErrorKind.configuration,
         'A compatible profile must declare explicit model entries.',
       );
     }
     final seen = <String>{};
-    for (final model in this.models) {
+    for (final model in _models) {
       if (model.providerId != snapshot.id) {
         throwLlm(
           LlmErrorKind.configuration,
@@ -55,6 +56,7 @@ final class OpenAiCompatibleProfile {
     return OpenAiCompatibleProfile(
       snapshot: BuiltInLlmCatalog.deepSeekProfile,
       models: <LlmModel>[
+        BuiltInLlmCatalog.deepSeekFlashModel,
         BuiltInLlmCatalog.deepSeekV4FlashModel,
         BuiltInLlmCatalog.deepSeekV4ProModel,
       ],
@@ -100,14 +102,38 @@ final class OpenAiCompatibleProfile {
     );
   }
 
+  factory OpenAiCompatibleProfile.builtInDynamic({
+    required LlmProviderProfile snapshot,
+    required List<LlmModel> models,
+    required ChatCompletionsDialect Function(ModelId id) dialectFor,
+  }) => OpenAiCompatibleProfile(
+    snapshot: snapshot,
+    models: models,
+    dialectFor: dialectFor,
+    allowEmptyModels: true,
+  );
+
   final LlmProviderProfile snapshot;
-  final List<LlmModel> models;
+  List<LlmModel> _models;
+  List<LlmModel> get models => _models;
   final LlmEndpointSecurityPolicy securityPolicy;
   final ChatCompletionsDialect Function(ModelId id) _dialectFor;
 
   ProviderId get id => snapshot.id;
 
   ChatCompletionsDialect dialectFor(ModelId id) => _dialectFor(id);
+
+  void replaceModels(List<LlmModel> models) {
+    final seen = <String>{};
+    for (final model in models) {
+      if (model.providerId != snapshot.id ||
+          model.wireFamily != snapshot.wireFamily ||
+          !seen.add(model.id.value)) {
+        throwLlm(LlmErrorKind.configuration, 'Invalid dynamic model set.');
+      }
+    }
+    _models = List<LlmModel>.unmodifiable(models);
+  }
 
   LlmModel requireModel(ModelId id) {
     for (final model in models) {

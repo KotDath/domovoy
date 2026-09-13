@@ -63,7 +63,7 @@ void main() {
         () => LlmWireFamily.fromJson(<String, Object?>{
           'type': LlmWireFamily.jsonType,
           'version': 1,
-          'value': 'anthropic_messages',
+          'value': 'unrecognized_wire_family',
         }),
         throwsA(isA<LlmException>()),
       );
