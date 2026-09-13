@@ -49,7 +49,8 @@ final class SessionAgentSummaryModelSelector
   const SessionAgentSummaryModelSelector();
 
   @override
-  ModelRef select(AgentCompactionContext context) => context.selectedModel.ref;
+  ModelRef select(AgentCompactionContext context) =>
+      context.currentSessionModel.ref;
 }
 
 final class FixedAgentSummaryModelSelector
@@ -66,24 +67,49 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
   OpenCodeSummaryCompactor({
     required this.llm,
     AgentSummaryModelSelector? modelSelector,
+    AgentContextEstimator? contextEstimator,
     this.recentGroupCount = 1,
-    this.maxInputCharacters = 262144,
-    this.maxOutputCharacters = 16384,
     this.maxOutputTokens = 4096,
+    int? maxOutputCharacters,
+    this.headroom,
+    this.minimumHeadroom = 1024,
+    this.headroomFraction = 0.05,
+    this.maxSummaryInvocations = 32,
   }) : modelSelector =
-           modelSelector ?? const SessionAgentSummaryModelSelector() {
+           modelSelector ?? const SessionAgentSummaryModelSelector(),
+       contextEstimator =
+           contextEstimator ?? const Utf8FramingAgentContextEstimator(),
+       maxOutputCharacters = maxOutputCharacters ?? maxOutputTokens * 4 {
     if (recentGroupCount <= 0) {
       throwAgent(
         AgentErrorKind.configuration,
         'Summary compaction must retain at least one interaction group.',
       );
     }
-    if (maxInputCharacters <= 0 ||
-        maxOutputCharacters <= 0 ||
-        maxOutputTokens <= 0) {
+    if (this.maxOutputCharacters <= 0 || maxOutputTokens <= 0) {
       throwAgent(
         AgentErrorKind.configuration,
         'Summary compaction bounds must be positive.',
+      );
+    }
+    if (headroom != null && headroom! <= 0) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Summary compaction headroom must be positive.',
+      );
+    }
+    if (minimumHeadroom <= 0 ||
+        headroomFraction <= 0 ||
+        !headroomFraction.isFinite) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Default summary compaction headroom is invalid.',
+      );
+    }
+    if (maxSummaryInvocations <= 0) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Summary compaction invocation cap must be positive.',
       );
     }
   }
@@ -99,10 +125,22 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
 
   final AgentSummaryLlmInvocation llm;
   final AgentSummaryModelSelector modelSelector;
+  final AgentContextEstimator contextEstimator;
   final int recentGroupCount;
-  final int maxInputCharacters;
   final int maxOutputCharacters;
   final int maxOutputTokens;
+  final int? headroom;
+  final int minimumHeadroom;
+  final double headroomFraction;
+  final int maxSummaryInvocations;
+
+  int inputCapacityFor(LlmModel model) {
+    final outputAllowance = _min(maxOutputTokens, model.outputBound);
+    final resolvedHeadroom =
+        headroom ??
+        _max(minimumHeadroom, (model.contextBound * headroomFraction).ceil());
+    return model.contextBound - outputAllowance - resolvedHeadroom;
+  }
 
   @override
   Future<AgentCompactionStrategyResult> compact(
@@ -115,18 +153,13 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
         ? groups.length
         : recentGroupCount;
     final cut = groups.length - retainedCount;
-    if (cut == 0 && context.generatedPrefix.isEmpty) {
+    if (cut == 0) {
       return AgentCompactionNoChange(strategyId: id, strategyVersion: version);
     }
 
     final retainedBoundary = cut == groups.length
         ? context.endBoundaryId
         : groups[cut].suffixBoundaryId;
-    final prompt = _buildPrompt(context, groups.take(cut).toList());
-    if (prompt.length > maxInputCharacters) {
-      throw AgentCompactionStrategyException.failed();
-    }
-
     late final ModelRef selectedRef;
     late final LlmModel selectedModel;
     try {
@@ -138,37 +171,169 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
       }
       throw AgentCompactionStrategyException.failed();
     }
-    if (selectedModel.ref != selectedRef ||
-        maxOutputTokens > selectedModel.outputBound) {
+    if (selectedModel.ref != selectedRef) {
+      throw AgentCompactionStrategyException.failed();
+    }
+    final outputAllowance = _min(maxOutputTokens, selectedModel.outputBound);
+    final inputCapacity = inputCapacityFor(selectedModel);
+    if (inputCapacity <= 0) {
       throw AgentCompactionStrategyException.failed();
     }
 
-    final request = LlmRequest(
-      model: selectedRef,
-      context: LlmContext(
-        messages: <LlmMessage>[
-          LlmMessage(
-            role: LlmMessageRole.user,
-            parts: <LlmContentPart>[LlmTextPart(prompt)],
-          ),
-        ],
-      ),
-      generation: LlmGenerationConfig(
-        reasoningMode:
-            selectedModel.capabilities.reasoning ==
-                ModelReasoningCapability.required
-            ? ReasoningMode.enabled
-            : ReasoningMode.disabled,
-        maxOutputTokens: maxOutputTokens,
-      ),
+    final reports = <AgentCompactionInvocationReport>[];
+    var rollingSummary = context.generatedPrefix;
+    var cursor = 0;
+    while (cursor < cut) {
+      _throwIfCancelledWithReports(context, reports);
+      if (reports.length >= maxSummaryInvocations) {
+        throw AgentCompactionStrategyException.failed(reports: reports);
+      }
+
+      LlmRequest? fittingRequest;
+      var fittingEnd = cursor;
+      for (var end = cursor + 1; end <= cut; end++) {
+        final request = _buildRequest(
+          selectedModel: selectedModel,
+          outputAllowance: outputAllowance,
+          priorSummary: rollingSummary,
+          groups: groups.sublist(cursor, end),
+        );
+        final estimate = _estimate(request, context, reports);
+        if (estimate > inputCapacity) {
+          break;
+        }
+        fittingRequest = request;
+        fittingEnd = end;
+      }
+      if (fittingRequest == null) {
+        throw AgentCompactionStrategyException.failed(reports: reports);
+      }
+
+      final invocation = await _invoke(
+        request: fittingRequest,
+        context: context,
+        selectedModel: selectedModel,
+        ordinal: reports.length,
+        priorReports: reports,
+      );
+      reports.add(invocation.report);
+      rollingSummary = <LlmMessage>[invocation.generated];
+      cursor = fittingEnd;
+    }
+
+    _throwIfCancelledWithReports(context, reports);
+    final candidate = AgentCompactionCandidate(
+      strategyId: id,
+      strategyVersion: version,
+      retainedSuffixBoundaryId: retainedBoundary,
+      generatedPrefix: rollingSummary,
+      metadata: <String, Object?>{
+        'summaryModelProvider': selectedRef.providerId.value,
+        'summaryModel': selectedRef.modelId.value,
+        'summarizedGroupCount': cut,
+        'retainedGroupCount': retainedCount,
+        'summaryInvocationCount': reports.length,
+      },
+      reports: reports,
     );
+    try {
+      prepareAgentCompaction(
+        context: context,
+        decision: decision,
+        candidate: candidate,
+        estimator: contextEstimator,
+        updatedAtMicros: 0,
+      );
+    } on AgentException catch (error) {
+      if (context.cancellation.isCancelled ||
+          error.error.kind == AgentErrorKind.cancelled) {
+        throw AgentCompactionStrategyException.cancelled(reports: reports);
+      }
+      throw AgentCompactionStrategyException.failed(reports: reports);
+    } on Object {
+      if (context.cancellation.isCancelled) {
+        throw AgentCompactionStrategyException.cancelled(reports: reports);
+      }
+      throw AgentCompactionStrategyException.failed(reports: reports);
+    }
+    return candidate;
+  }
+
+  LlmRequest _buildRequest({
+    required LlmModel selectedModel,
+    required int outputAllowance,
+    required List<LlmMessage> priorSummary,
+    required List<AgentInteractionGroup> groups,
+  }) => LlmRequest(
+    model: selectedModel.ref,
+    context: LlmContext(
+      messages: <LlmMessage>[
+        LlmMessage(
+          role: LlmMessageRole.user,
+          parts: <LlmContentPart>[
+            LlmTextPart(_buildPrompt(priorSummary, groups)),
+          ],
+        ),
+      ],
+    ),
+    generation: LlmGenerationConfig(
+      reasoningMode:
+          selectedModel.capabilities.reasoning ==
+              ModelReasoningCapability.required
+          ? ReasoningMode.enabled
+          : ReasoningMode.disabled,
+      maxOutputTokens: outputAllowance,
+    ),
+  );
+
+  int _estimate(
+    LlmRequest request,
+    AgentCompactionContext context,
+    List<AgentCompactionInvocationReport> reports,
+  ) {
+    try {
+      final estimate = contextEstimator.estimate(
+        AgentContextEstimateInput(
+          request: request.snapshot(),
+          cancellation: context.cancellation,
+        ),
+      );
+      if (estimate.estimatorId != contextEstimator.id ||
+          estimate.estimatorVersion != contextEstimator.version) {
+        throw AgentCompactionStrategyException.failed(reports: reports);
+      }
+      return estimate.value;
+    } on AgentCompactionStrategyException {
+      rethrow;
+    } on AgentException catch (error) {
+      if (context.cancellation.isCancelled ||
+          error.error.kind == AgentErrorKind.cancelled) {
+        throw AgentCompactionStrategyException.cancelled(reports: reports);
+      }
+      throw AgentCompactionStrategyException.failed(reports: reports);
+    } on Object {
+      if (context.cancellation.isCancelled) {
+        throw AgentCompactionStrategyException.cancelled(reports: reports);
+      }
+      throw AgentCompactionStrategyException.failed(reports: reports);
+    }
+  }
+
+  Future<({LlmMessage generated, AgentCompactionInvocationReport report})>
+  _invoke({
+    required LlmRequest request,
+    required AgentCompactionContext context,
+    required LlmModel selectedModel,
+    required int ordinal,
+    required List<AgentCompactionInvocationReport> priorReports,
+  }) async {
     final output = StringBuffer();
     final usage = LlmUsageSnapshotAccumulator();
     var completed = false;
     AgentCompactionInvocationReport report(
       AgentModelInvocationOutcome outcome,
     ) => AgentCompactionInvocationReport(
-      invocationOrdinal: 0,
+      invocationOrdinal: ordinal,
       model: selectedModel.ref,
       outcome: outcome,
       usage: usage.finalize(),
@@ -176,12 +341,14 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
     AgentCompactionStrategyException failed() =>
         AgentCompactionStrategyException.failed(
           reports: <AgentCompactionInvocationReport>[
+            ...priorReports,
             report(AgentModelInvocationOutcome.failed),
           ],
         );
     AgentCompactionStrategyException cancelled() =>
         AgentCompactionStrategyException.cancelled(
           reports: <AgentCompactionInvocationReport>[
+            ...priorReports,
             report(AgentModelInvocationOutcome.cancelled),
           ],
         );
@@ -200,22 +367,18 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
               throw failed();
             }
           case LlmReasoningDelta():
-          // Reasoning is intentionally neither persisted nor summarized.
+            // Reasoning and provider turn state are intentionally discarded.
+            continue;
           case LlmToolCallDelta():
             throw failed();
           case LlmUsageUpdate(usage: final update):
             usage.reconcile(update);
-          case LlmCompleted(
-            :final finishReason,
-            usage: final completedUsage,
-            :final turnState,
-          ):
+          case LlmCompleted(:final finishReason, usage: final completedUsage):
             if (completedUsage != null) {
               usage.reconcile(completedUsage);
             }
             completed = true;
-            if (turnState != null ||
-                finishReason == LlmFinishReason.length ||
+            if (finishReason == LlmFinishReason.length ||
                 finishReason == LlmFinishReason.contentFilter ||
                 finishReason == LlmFinishReason.toolCalls) {
               throw failed();
@@ -259,29 +422,17 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
     if (encodedSummary.length > maxOutputCharacters) {
       throw failed();
     }
-    final generated = LlmMessage(
-      role: LlmMessageRole.assistant,
-      parts: <LlmContentPart>[LlmTextPart(encodedSummary)],
-    );
-    return AgentCompactionCandidate(
-      strategyId: id,
-      strategyVersion: version,
-      retainedSuffixBoundaryId: retainedBoundary,
-      generatedPrefix: <LlmMessage>[generated],
-      metadata: <String, Object?>{
-        'summaryModelProvider': selectedRef.providerId.value,
-        'summaryModel': selectedRef.modelId.value,
-        'summarizedGroupCount': cut,
-        'retainedGroupCount': retainedCount,
-      },
-      reports: <AgentCompactionInvocationReport>[
-        report(AgentModelInvocationOutcome.completed),
-      ],
+    return (
+      generated: LlmMessage(
+        role: LlmMessageRole.assistant,
+        parts: <LlmContentPart>[LlmTextPart(encodedSummary)],
+      ),
+      report: report(AgentModelInvocationOutcome.completed),
     );
   }
 
   String _buildPrompt(
-    AgentCompactionContext context,
+    List<LlmMessage> priorSummary,
     List<AgentInteractionGroup> removedGroups,
   ) {
     final source = <String, Object?>{
@@ -296,9 +447,7 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
         'relevantToolOutcomes': 'array of strings',
         'pendingWork': 'array of strings',
       },
-      'priorSummary': context.generatedPrefix
-          .map(_plainMessage)
-          .toList(growable: false),
+      'priorSummary': priorSummary.map(_plainMessage).toList(growable: false),
       'history': removedGroups
           .expand((group) => group.messages)
           .map(_plainMessage)
@@ -380,4 +529,17 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
       throw AgentCompactionStrategyException.cancelled();
     }
   }
+
+  void _throwIfCancelledWithReports(
+    AgentCompactionContext context,
+    List<AgentCompactionInvocationReport> reports,
+  ) {
+    if (context.cancellation.isCancelled) {
+      throw AgentCompactionStrategyException.cancelled(reports: reports);
+    }
+  }
 }
+
+int _min(int left, int right) => left < right ? left : right;
+
+int _max(int left, int right) => left > right ? left : right;

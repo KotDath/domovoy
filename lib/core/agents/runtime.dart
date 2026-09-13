@@ -789,6 +789,19 @@ final class _LiveSession implements AgentSession {
   int revision;
   var persisted = false;
   final int createdAtMicros;
+
+  /// Usable provider-reported context usage from the latest completed physical
+  /// LLM invocation on this live session, or `null` when unavailable.
+  ///
+  /// This is intentionally not persisted: after a restart no completed
+  /// invocation is known, so proactive evaluation honestly reports
+  /// `unavailable` and never falls back to an estimator.
+  int? latestProviderContextUsage;
+
+  void invalidateProviderContextUsage() {
+    latestProviderContextUsage = null;
+  }
+
   AgentSessionLifecycle _lifecycle = AgentSessionLifecycle.idle;
   _LiveRun? _active;
   _LiveCompaction? _activeCompaction;
@@ -983,6 +996,9 @@ final class _LiveSession implements AgentSession {
       return;
     }
     final finalUsage = attempt.finalizeUsage();
+    if (outcome == AgentModelInvocationOutcome.completed) {
+      latestProviderContextUsage = finalUsage.requestContext?.value;
+    }
     final current = _generationOneAccounting;
     final updatedTranscript = nextTranscript ?? transcript;
     final entry = AgentModelUsageEntry.assistant(
@@ -1434,14 +1450,15 @@ final class _LiveSession implements AgentSession {
       messages: request.context.messages,
       startMessageIndex: generatedEnd,
     );
-    final selected =
-        selectedModel ?? runtime.registry.resolve(selection.model).model;
+    final currentSessionModel = runtime.registry.resolve(selection.model).model;
+    final selected = selectedModel ?? currentSessionModel;
     return AgentCompactionContext(
       operationId: operationId,
       sessionId: id,
       runId: runId,
       reason: reason,
       selectedModel: selected,
+      currentSessionModel: currentSessionModel,
       request: request,
       protectedSeed: definition.initialMessages,
       generatedPrefix: request.context.messages.sublist(
@@ -1454,6 +1471,9 @@ final class _LiveSession implements AgentSession {
       priorState: state,
       currentEstimate: estimate,
       targetEstimate: targetEstimate,
+      providerContextUsage: reason == AgentCompactionReason.providerOverflow
+          ? null
+          : latestProviderContextUsage,
       cancellation: cancellation,
     );
   }
@@ -1605,6 +1625,10 @@ final class _LiveSession implements AgentSession {
       revision = validated.revision;
       persisted = true;
     }
+    // The retained context no longer matches the last provider measurement.
+    // Future proactive decisions skip as unavailable until a new physical
+    // invocation reports fresh usage.
+    invalidateProviderContextUsage();
     return prepared;
   }
 
@@ -2237,20 +2261,6 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
         throwAgent(AgentErrorKind.configuration, error.error.message);
       }
       _throwIfCancelled();
-      final estimate = session.runtime.contextEstimator.estimate(
-        AgentContextEstimateInput(
-          request: targetRequest,
-          cancellation: cancelSource.token,
-        ),
-      );
-      if (estimate.estimatorId != session.runtime.contextEstimator.id ||
-          estimate.estimatorVersion !=
-              session.runtime.contextEstimator.version) {
-        throwAgent(
-          AgentErrorKind.configuration,
-          'Context estimator result identity changed.',
-        );
-      }
       final fit = session.runtime.modelSwitchFitPolicy.evaluate(
         AgentModelSwitchFitInput(
           model: targetModel,
@@ -2273,18 +2283,31 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
           'Model-switch fit policy returned an invalid decision.',
         );
       }
+      // Switching is decided from provider-reported context usage, never from
+      // an estimator. When that measurement is unavailable and the target has
+      // less capacity than the current session model, conservatively compact
+      // before committing the switch without a numeric-fit claim.
+      final providerContextUsage = session.latestProviderContextUsage;
+      final currentSessionModel = session.runtime.registry
+          .resolve(previous.model)
+          .model;
+      final targetIsSmaller =
+          targetModel.contextBound < currentSessionModel.contextBound;
+      final mustCompact = providerContextUsage != null
+          ? providerContextUsage > fit.fitThreshold
+          : targetIsSmaller;
       _emit(
         AgentSessionSelectionStarted(
           operationId: id,
           sessionId: session.id,
           previous: previous,
           requested: requested,
-          beforeEstimate: estimate.value,
+          beforeEstimate: providerContextUsage,
           fitThreshold: fit.fitThreshold,
           compactionTarget: fit.compactionTarget,
         ),
       );
-      if (estimate.value <= fit.fitThreshold) {
+      if (!mustCompact) {
         await _commitFittingSwitch();
         _emitSucceeded(compacted: false);
         _complete(AgentSessionSelectionResult.changed(requested));
@@ -2315,7 +2338,13 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
         triggerId: fit.policyId,
         triggerVersion: fit.policyVersion,
         targetEstimate: fit.compactionTarget,
-        metadata: fit.metadata,
+        metadata: <String, Object?>{
+          ...fit.metadata,
+          'providerContextUsage': providerContextUsage,
+          'providerContextSource': providerContextUsage == null
+              ? 'unavailable'
+              : 'provider',
+        },
       );
       context = context.withTarget(fit.compactionTarget);
       _emitCompaction(
@@ -2327,9 +2356,9 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
           triggerVersion: fit.policyVersion,
           strategyId: compactor.id,
           strategyVersion: compactor.version,
-          estimatorId: estimate.estimatorId,
-          estimatorVersion: estimate.estimatorVersion,
-          beforeEstimate: estimate.value,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
           targetEstimate: fit.compactionTarget,
         ),
       );
@@ -2357,9 +2386,9 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
             triggerVersion: fit.policyVersion,
             strategyId: strategy.strategyId,
             strategyVersion: strategy.strategyVersion,
-            estimatorId: estimate.estimatorId,
-            estimatorVersion: estimate.estimatorVersion,
-            beforeEstimate: estimate.value,
+            estimatorId: context.currentEstimate.estimatorId,
+            estimatorVersion: context.currentEstimate.estimatorVersion,
+            beforeEstimate: context.currentEstimate.value,
             targetEstimate: fit.compactionTarget,
             reports: strategy.reports,
           ),
@@ -2423,6 +2452,7 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
       session.compactionState = validated.compactionState;
       session.selection = validated.selection;
       session.title = validated.title;
+      session.invalidateProviderContextUsage();
       if (session.persistence == SessionPersistence.repository) {
         session.revision = validated.revision;
         session.persisted = true;
@@ -2437,9 +2467,9 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
           triggerVersion: fit.policyVersion,
           strategyId: strategy.strategyId,
           strategyVersion: strategy.strategyVersion,
-          estimatorId: estimate.estimatorId,
-          estimatorVersion: estimate.estimatorVersion,
-          beforeEstimate: estimate.value,
+          estimatorId: context.currentEstimate.estimatorId,
+          estimatorVersion: context.currentEstimate.estimatorVersion,
+          beforeEstimate: context.currentEstimate.value,
           targetEstimate: fit.compactionTarget,
           afterEstimate: prepared.afterEstimate.value,
           generation: prepared.state.generation,
@@ -3183,6 +3213,19 @@ final class _LiveRun implements AgentRun {
     }
   }
 
+  LlmRequest _currentRequest() => LlmRequest(
+    model: selection.model,
+    context: LlmContext(
+      systemPrompt: session.definition.systemPrompt,
+      messages: session.transcript.messages,
+      tools: session.runtime.tools.descriptorsFor(
+        session.definition.enabledTools,
+      ),
+      continuationEntries: session.continuationEntries,
+    ),
+    generation: _generation,
+  );
+
   Future<void> _loop() async {
     while (true) {
       _throwIfCancelled();
@@ -3204,33 +3247,12 @@ final class _LiveRun implements AgentRun {
           'maxOutputTokens exceeds the model output bound.',
         );
       }
-      final enabled = session.runtime.tools.descriptorsFor(
-        session.definition.enabledTools,
-      );
-      var request = LlmRequest(
-        model: this.selection.model,
-        context: LlmContext(
-          systemPrompt: session.definition.systemPrompt,
-          messages: session.transcript.messages,
-          tools: enabled,
-          continuationEntries: session.continuationEntries,
-        ),
-        generation: _generation,
-      );
+      var request = _currentRequest();
       await _attemptAutomaticCompaction(
         reason: AgentCompactionReason.preRequest,
         request: request,
       );
-      request = LlmRequest(
-        model: this.selection.model,
-        context: LlmContext(
-          systemPrompt: session.definition.systemPrompt,
-          messages: session.transcript.messages,
-          tools: enabled,
-          continuationEntries: session.continuationEntries,
-        ),
-        generation: _generation,
-      );
+      request = _currentRequest();
       _runModelTurns += 1;
       session.modelTurns += 1;
       late _ToolCallAssembler assembler;
@@ -3331,16 +3353,7 @@ final class _LiveRun implements AgentRun {
           throw AgentException(agentErrorFromLlm(failure));
         }
         retryOrdinal += 1;
-        request = LlmRequest(
-          model: this.selection.model,
-          context: LlmContext(
-            systemPrompt: session.definition.systemPrompt,
-            messages: session.transcript.messages,
-            tools: enabled,
-            continuationEntries: session.continuationEntries,
-          ),
-          generation: _generation,
-        );
+        request = _currentRequest();
       }
       _throwIfCancelled();
       _checkBudgets(preWork: false);
@@ -3382,6 +3395,13 @@ final class _LiveRun implements AgentRun {
       _resetIdle();
       await _runHooks((hook) => hook.afterModelTurn(_hookContext(turnId)));
       if (calls.isEmpty) {
+        // The completed final answer is committed and checkpointed. Evaluate
+        // proactive compaction here, using only this invocation's provider
+        // usage, without issuing another ordinary assistant request.
+        await _attemptAutomaticCompaction(
+          reason: AgentCompactionReason.preRequest,
+          request: _currentRequest(),
+        );
         await _completeWith(
           AgentRunCompleted(finishReason: finish, usage: session.usage),
         );

@@ -85,6 +85,8 @@ void main() {
       );
 
       final context = _context(messages: input.request.context.messages);
+      expect(context.currentSessionModel, context.selectedModel);
+      expect(context.withTarget(7).currentSessionModel, context.selectedModel);
       expect(context.request.context.messages, hasLength(1));
       expect(context.protectedSeed, isEmpty);
       expect(context.generatedPrefix, isEmpty);
@@ -93,6 +95,21 @@ void main() {
       expect(
         () => context.interactionGroups.add(context.interactionGroups.single),
         throwsUnsupportedError,
+      );
+
+      final switching = _context(
+        messages: input.request.context.messages,
+        model: BuiltInLlmCatalog.gpt4oMiniModel,
+        currentSessionModel: BuiltInLlmCatalog.deepSeekV4FlashModel,
+      );
+      expect(
+        switching.currentSessionModel.ref,
+        BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+      );
+      expect(switching.selectedModel.ref, BuiltInLlmCatalog.gpt4oMiniModel.ref);
+      expect(
+        switching.withTarget(3).currentSessionModel,
+        switching.currentSessionModel,
       );
     });
 
@@ -469,7 +486,7 @@ void main() {
   });
 
   group('OpenCode automatic trigger', () {
-    test('uses default C/O/H/T/L pressure and overflow recovery', () {
+    test('uses provider context pressure and overflow recovery', () {
       final model = BuiltInLlmCatalog.deepSeekV4FlashModel;
       final contextBound = model.contextBound;
       final outputReserve = (contextBound * 0.10).ceil();
@@ -481,7 +498,8 @@ void main() {
       final below = _context(
         messages: <LlmMessage>[_text(LlmMessageRole.user, 'below')],
         model: model,
-        estimateValue: threshold,
+        estimateValue: 1,
+        providerContextUsage: threshold,
         reason: AgentCompactionReason.preRequest,
       );
       final skipped = trigger.evaluate(below);
@@ -493,22 +511,40 @@ void main() {
         'headroom': headroom,
         'pressureThreshold': threshold,
         'postCompactionTarget': target,
+        'providerContextUsage': threshold,
+        'providerContextSource': 'provider',
       });
 
       final above = _context(
         messages: <LlmMessage>[_text(LlmMessageRole.user, 'above')],
         model: model,
-        estimateValue: threshold + 1,
+        estimateValue: 1,
+        providerContextUsage: threshold + 1,
         reason: AgentCompactionReason.preRequest,
       );
       final compact = trigger.evaluate(above);
       expect(compact.kind, AgentCompactionDecisionKind.compact);
       expect(compact.targetEstimate, target);
 
+      final unavailable = _context(
+        messages: <LlmMessage>[_text(LlmMessageRole.user, 'unavailable')],
+        model: model,
+        estimateValue: threshold * 1000,
+        reason: AgentCompactionReason.preRequest,
+      );
+      final unavailableDecision = trigger.evaluate(unavailable);
+      expect(unavailableDecision.kind, AgentCompactionDecisionKind.skip);
+      expect(
+        unavailableDecision.metadata['providerContextSource'],
+        'unavailable',
+      );
+      expect(unavailableDecision.metadata['providerContextUsage'], isNull);
+
       final overflow = _context(
         messages: <LlmMessage>[_text(LlmMessageRole.user, 'overflow')],
         model: model,
         estimateValue: 1,
+        providerContextUsage: 1,
         reason: AgentCompactionReason.providerOverflow,
       );
       expect(
@@ -528,7 +564,8 @@ void main() {
         _context(
           messages: <LlmMessage>[_text(LlmMessageRole.user, 'fixed')],
           model: model,
-          estimateValue: model.contextBound,
+          estimateValue: 1,
+          providerContextUsage: model.contextBound,
           reason: AgentCompactionReason.preRequest,
         ),
       );
@@ -538,7 +575,8 @@ void main() {
         _context(
           messages: <LlmMessage>[_text(LlmMessageRole.user, 'explicit')],
           model: model,
-          estimateValue: model.contextBound,
+          estimateValue: 1,
+          providerContextUsage: model.contextBound,
           reason: AgentCompactionReason.preRequest,
           generation: LlmGenerationConfig(maxOutputTokens: 200),
         ),
@@ -555,7 +593,7 @@ void main() {
     });
 
     test(
-      'default runtime skips below pressure and compacts above it',
+      'default runtime skips unavailable usage and compacts reported pressure',
       () async {
         final belowProvider = QueueScriptedLlmProvider(
           id: BuiltInLlmCatalog.deepSeek,
@@ -567,6 +605,7 @@ void main() {
         );
         final belowEvents = await testRuntime(
           provider: belowProvider,
+          contextEstimator: _MessageCountEstimator(multiplier: 1000000),
           historyCompactor: belowCompactor,
         ).agent(testDefinition()).run('unchanged').events.toList();
         expect(belowCompactor.calls, 0);
@@ -575,12 +614,21 @@ void main() {
         ]);
         expect(belowEvents.whereType<AgentAutomaticCompactionEvent>(), isEmpty);
 
+        final model = BuiltInLlmCatalog.deepSeekV4FlashModel;
+        final threshold =
+            model.contextBound -
+            (model.contextBound * 0.10).ceil() -
+            (model.contextBound * 0.05).ceil();
+        final target = (threshold * 0.70).floor();
         final aboveProvider = QueueScriptedLlmProvider(
           id: BuiltInLlmCatalog.deepSeek,
           wireFamily: LlmWireFamily.openaiChatCompletions,
-          turns: <List<LlmEvent>>[textTurn('old'), textTurn('above')],
+          turns: <List<LlmEvent>>[
+            textTurn('old', usage: LlmUsage(inputTokens: 1)),
+            textTurn('above', usage: LlmUsage(inputTokens: threshold + 1)),
+          ],
         );
-        final estimator = _MessageCountEstimator(multiplier: 400000);
+        final estimator = _MessageCountEstimator(multiplier: 1);
         final aboveCompactor = _RecordingCompactor(
           RecentInteractionGroupsCompactor(1),
         );
@@ -598,6 +646,8 @@ void main() {
         expect(aboveCompactor.calls, 1);
         expect(aboveProvider.requests, hasLength(2));
         expect(aboveProvider.requests.last.context.messages, <LlmMessage>[
+          _text(LlmMessageRole.user, 'old'),
+          _text(LlmMessageRole.assistant, 'old'),
           _text(LlmMessageRole.user, 'compact'),
         ]);
         expect(automatic, hasLength(2));
@@ -607,7 +657,7 @@ void main() {
         expect(automatic.first.triggerId, OpenCodeCompactionTrigger.id);
         expect(automatic.first.strategyId, aboveCompactor.id);
         expect(automatic.first.estimatorId, estimator.id);
-        expect(automatic.first.targetEstimate, 623902);
+        expect(automatic.first.targetEstimate, target);
         expect((automatic.last as AgentCompactionSucceeded).generation, 1);
         expect(aboveEvents.last, isA<AgentRunCompleted>());
         await session.close();
@@ -615,7 +665,83 @@ void main() {
     );
 
     test(
-      'rejects impossible reserves and protected target before provider',
+      'tool-call completion drives compaction before the next dispatch',
+      () async {
+        final model = BuiltInLlmCatalog.deepSeekV4FlashModel;
+        final threshold =
+            model.contextBound -
+            (model.contextBound * 0.10).ceil() -
+            (model.contextBound * 0.05).ceil();
+        final executor = ScriptedToolExecutor(
+          (invocation, {required cancellation, required liveness}) async =>
+              ToolExecutionResult.success(const <String, Object?>{}),
+        );
+        final tools = AgentToolRegistry()
+          ..register(
+            AgentTool(
+              descriptor: LlmToolDescriptor(
+                name: 'lookup',
+                parameters: const <String, Object?>{'type': 'object'},
+              ),
+              executor: executor,
+            ),
+          );
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[
+            textTurn('old', usage: LlmUsage(inputTokens: 1)),
+            toolTurn(
+              name: 'lookup',
+              callId: 'c1',
+              usage: LlmUsage(inputTokens: threshold + 1),
+            ),
+            textTurn('done'),
+          ],
+        );
+        final estimator = _MessageCountEstimator(multiplier: 1);
+        final compactor = _RecordingCompactor(
+          RecentInteractionGroupsCompactor(1),
+        );
+        final session =
+            await testRuntime(
+                  provider: provider,
+                  tools: tools,
+                  contextEstimator: estimator,
+                  historyCompactor: compactor,
+                )
+                .agent(testDefinition(tools: <ToolId>[ToolId('lookup')]))
+                .createSession();
+        await session.run('old').events.drain<void>();
+        final events = await session.run('go').events.toList();
+
+        expect(compactor.calls, 1);
+        expect(compactor.lastContext?.providerContextUsage, threshold + 1);
+        expect(compactor.lastDecision?.metadata, <String, Object?>{
+          'contextBound': model.contextBound,
+          'outputReserve': (model.contextBound * 0.10).ceil(),
+          'headroom': (model.contextBound * 0.05).ceil(),
+          'pressureThreshold': threshold,
+          'postCompactionTarget': (threshold * 0.70).floor(),
+          'providerContextUsage': threshold + 1,
+          'providerContextSource': 'provider',
+        });
+        expect(provider.requests, hasLength(3));
+        final automatic = events
+            .whereType<AgentAutomaticCompactionEvent>()
+            .map((event) => event.compaction)
+            .toList();
+        expect(automatic, hasLength(2));
+        expect(automatic.first, isA<AgentCompactionStarted>());
+        expect(automatic.first.reason, AgentCompactionReason.preRequest);
+        expect(automatic.last, isA<AgentCompactionSucceeded>());
+        expect(events.last, isA<AgentRunCompleted>());
+        await session.close();
+      },
+    );
+
+    test(
+      'rejects impossible reserves and protected target before next provider',
       () async {
         final tiny = LlmModel(
           providerId: ProviderId('tiny'),
@@ -635,7 +761,7 @@ void main() {
             _context(
               messages: <LlmMessage>[_text(LlmMessageRole.user, 'tiny')],
               model: tiny,
-              estimateValue: 100,
+              providerContextUsage: 100,
               reason: AgentCompactionReason.preRequest,
             ),
           ),
@@ -648,10 +774,21 @@ void main() {
           ),
         );
 
+        final model = BuiltInLlmCatalog.deepSeekV4FlashModel;
+        final threshold =
+            model.contextBound -
+            (model.contextBound * 0.10).ceil() -
+            (model.contextBound * 0.05).ceil();
         final provider = QueueScriptedLlmProvider(
           id: BuiltInLlmCatalog.deepSeek,
           wireFamily: LlmWireFamily.openaiChatCompletions,
-          turns: <List<LlmEvent>>[textTurn('must-not-run')],
+          turns: <List<LlmEvent>>[
+            textTurn(
+              'must-not-run',
+              usage: LlmUsage(inputTokens: threshold + 1),
+            ),
+            textTurn('never-requested'),
+          ],
         );
         final events =
             await testRuntime(
@@ -669,7 +806,7 @@ void main() {
                 .run('new')
                 .events
                 .toList();
-        expect(provider.requests, isEmpty);
+        expect(provider.requests, hasLength(1));
         expect(
           (events.last as AgentRunFailed).error.kind,
           AgentErrorKind.compaction,
@@ -707,7 +844,7 @@ void main() {
         expect(await operation.result, AgentCompactionOutcome.compacted);
         final events = await eventFuture;
         expect(compactor.calls, automaticCalls + 1);
-        expect(trigger.calls, 3);
+        expect(trigger.calls, 6);
         expect(events.first, isA<AgentCompactionStarted>());
         expect(events.last, isA<AgentCompactionSucceeded>());
         expect(events.where((event) => event.isTerminal), hasLength(1));
@@ -1240,8 +1377,8 @@ void main() {
         ).agent(testDefinition()).createSession();
         await session.run('one').events.drain<void>();
         await session.run('two').events.drain<void>();
-        expect(trigger.calls, 2);
-        expect(compactor.calls, 2);
+        expect(trigger.calls, 4);
+        expect(compactor.calls, 4);
         expect(estimator.calls, greaterThanOrEqualTo(3));
         expect(provider.requests.last.context.messages, <LlmMessage>[
           _text(LlmMessageRole.user, 'two'),
@@ -1441,8 +1578,10 @@ AgentCompactionContext _context({
   List<LlmContinuationEntry> continuations = const <LlmContinuationEntry>[],
   AgentCompactionState? prior,
   LlmModel? model,
+  LlmModel? currentSessionModel,
   AgentCompactionReason reason = AgentCompactionReason.manual,
   int? estimateValue,
+  int? providerContextUsage,
   LlmGenerationConfig? generation,
 }) {
   final selected = model ?? BuiltInLlmCatalog.deepSeekV4FlashModel;
@@ -1460,6 +1599,7 @@ AgentCompactionContext _context({
     sessionId: AgentSessionId('session'),
     reason: reason,
     selectedModel: selected,
+    currentSessionModel: currentSessionModel,
     request: request,
     protectedSeed: protected,
     generatedPrefix: generated,
@@ -1482,6 +1622,7 @@ AgentCompactionContext _context({
             estimatorVersion: Utf8FramingAgentContextEstimator.defaultVersion,
           ),
     targetEstimate: null,
+    providerContextUsage: providerContextUsage,
     cancellation: cancellation.token,
   );
 }

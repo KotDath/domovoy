@@ -603,7 +603,7 @@ void _validateMessageContent(Object? value) {
     }
     _validateClosedObject(
       map,
-      allowed: const <String>{'type', 'text', 'annotations'},
+      allowed: const <String>{'type', 'text', 'annotations', 'logprobs'},
       requiredFields: const <String>['type', 'text'],
       label: 'message content',
     );
@@ -617,6 +617,98 @@ void _validateMessageContent(Object? value) {
       throwLlm(LlmErrorKind.protocol, 'message content text must be a string.');
     }
     _validateOutputTextAnnotations(map['annotations']);
+    if (map.containsKey('logprobs')) {
+      _validateOutputTextLogprobs(map['logprobs']);
+    }
+  }
+}
+
+void _validateOutputTextLogprobs(Object? value) {
+  if (value is! List) {
+    throwLlm(LlmErrorKind.protocol, 'output_text logprobs must be a list.');
+  }
+  for (final item in value) {
+    final map = asJsonObject(item);
+    if (map == null) {
+      throwLlm(
+        LlmErrorKind.protocol,
+        'output_text logprobs entries must be objects.',
+      );
+    }
+    _validateLogprobEntry(map, includesTopLogprobs: true);
+  }
+}
+
+void _validateLogprobEntry(
+  Map<String, Object?> map, {
+  required bool includesTopLogprobs,
+}) {
+  final allowed = includesTopLogprobs
+      ? const <String>{'token', 'logprob', 'bytes', 'top_logprobs'}
+      : const <String>{'token', 'logprob', 'bytes'};
+  _validateClosedObject(
+    map,
+    allowed: allowed,
+    requiredFields: const <String>[],
+    label: includesTopLogprobs
+        ? 'output_text logprob entry'
+        : 'output_text top_logprob entry',
+  );
+  final required = includesTopLogprobs
+      ? const <String>{'token', 'logprob', 'bytes', 'top_logprobs'}
+      : const <String>{'token', 'logprob', 'bytes'};
+  for (final field in required) {
+    if (map.containsKey(field)) {
+      continue;
+    }
+    throwLlm(
+      LlmErrorKind.protocol,
+      '${includesTopLogprobs ? 'output_text logprob entry' : 'output_text top_logprob entry'} is missing "$field".',
+    );
+  }
+  if (map['token'] is! String) {
+    throwLlm(
+      LlmErrorKind.protocol,
+      'output_text logprob token must be a string.',
+    );
+  }
+  final probability = map['logprob'];
+  if (probability is! num || !probability.isFinite) {
+    throwLlm(
+      LlmErrorKind.protocol,
+      'output_text logprob must be a finite number.',
+    );
+  }
+  _validateLogprobBytes(map['bytes']);
+  if (!includesTopLogprobs) {
+    return;
+  }
+  final top = map['top_logprobs'];
+  if (top is! List) {
+    throwLlm(LlmErrorKind.protocol, 'output_text top_logprobs must be a list.');
+  }
+  for (final item in top) {
+    final topMap = asJsonObject(item);
+    if (topMap == null) {
+      throwLlm(
+        LlmErrorKind.protocol,
+        'output_text top_logprob entries must be objects.',
+      );
+    }
+    _validateLogprobEntry(topMap, includesTopLogprobs: false);
+  }
+}
+
+void _validateLogprobBytes(Object? value) {
+  if (value == null) {
+    return;
+  }
+  if (value is! List ||
+      value.any((byte) => byte is! int || byte < 0 || byte > 255)) {
+    throwLlm(
+      LlmErrorKind.protocol,
+      'output_text logprob bytes must be null or byte integers.',
+    );
   }
 }
 

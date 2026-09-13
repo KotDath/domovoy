@@ -1547,12 +1547,14 @@ void main() {
             ],
           );
           final registry = _summaryRegistry(provider);
+          final estimator = _LoopMessageEstimator();
           final compactor = OpenCodeSummaryCompactor(
             llm: RegistryAgentSummaryLlmInvocation(registry),
+            contextEstimator: estimator,
           );
           final session = await InMemoryAgentRuntime(
             registry: registry,
-            contextEstimator: _LoopMessageEstimator(),
+            contextEstimator: estimator,
             compactionTrigger: _CompactTwoGroupsTrigger(),
             historyCompactor: compactor,
           ).agent(testDefinition()).createSession();
@@ -1640,13 +1642,15 @@ void main() {
             ],
           );
           final registry = _summaryRegistry(provider);
+          final estimator = _LoopMessageEstimator();
           final session =
               await InMemoryAgentRuntime(
                     registry: registry,
-                    contextEstimator: _LoopMessageEstimator(),
+                    contextEstimator: estimator,
                     compactionTrigger: _CompactTwoGroupsTrigger(),
                     historyCompactor: OpenCodeSummaryCompactor(
                       llm: RegistryAgentSummaryLlmInvocation(registry),
+                      contextEstimator: estimator,
                     ),
                   )
                   .agent(
@@ -1706,13 +1710,15 @@ void main() {
             ],
           );
           final registry = _summaryRegistry(provider);
+          final estimator = _LoopMessageEstimator();
           final session =
               await InMemoryAgentRuntime(
                     registry: registry,
-                    contextEstimator: _LoopMessageEstimator(),
+                    contextEstimator: estimator,
                     compactionTrigger: _CompactTwoGroupsTrigger(),
                     historyCompactor: OpenCodeSummaryCompactor(
                       llm: RegistryAgentSummaryLlmInvocation(registry),
+                      contextEstimator: estimator,
                     ),
                   )
                   .agent(
@@ -1763,12 +1769,14 @@ void main() {
             ],
           );
           final registry = _summaryRegistry(provider);
+          final estimator = _LoopMessageEstimator();
           final session = await InMemoryAgentRuntime(
             registry: registry,
-            contextEstimator: _LoopMessageEstimator(),
+            contextEstimator: estimator,
             compactionTrigger: _CompactTwoGroupsTrigger(),
             historyCompactor: OpenCodeSummaryCompactor(
               llm: RegistryAgentSummaryLlmInvocation(registry),
+              contextEstimator: estimator,
             ),
           ).agent(testDefinition()).createSession();
           await session.run('old').events.drain<void>();

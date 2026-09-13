@@ -126,13 +126,18 @@ void main() {
     );
 
     test(
-      'oversized switch compacts and commits no old-selection candidate',
+      'unavailable measurement on a smaller target conservatively compacts',
       () async {
         final estimator = _Estimator(
           (request) => request.context.messages.length > 2 ? 100 : 10,
         );
         final repository = _RecordingRepository();
-        final record = _historyRecord('oversized');
+        final record = _historyRecord(
+          'oversized',
+          definition: _definition(
+            model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+          ),
+        );
         await repository.save(
           record,
           expectedRevision: 0,
@@ -147,23 +152,32 @@ void main() {
         final session = await stack.runtime
             .agent(record.definition)
             .restoreSession(record.id);
-        final operation = session.changeSelectionOperation(_targetSelection());
+        final operation = session.changeSelectionOperation(
+          _smallerTargetSelection(),
+        );
         final eventsFuture = operation.events.toList();
 
         final result = await operation.result;
         final events = await eventsFuture;
 
         expect(result.status, AgentSessionSelectionStatus.changed);
-        expect(session.snapshot.selection, _targetSelection());
+        expect(session.snapshot.selection, _smallerTargetSelection());
         expect(session.snapshot.transcript.messages, hasLength(2));
         expect(
           session.snapshot.compactionState?.reason,
           AgentCompactionReason.modelSwitch,
         );
         expect(session.snapshot.compactionState?.afterEstimate, 10);
+        expect(
+          session
+              .snapshot
+              .compactionState
+              ?.decisionMetadata['providerContextSource'],
+          'unavailable',
+        );
         final successors = repository.saved.skip(1).toList();
         expect(successors, hasLength(1));
-        expect(successors.single.selection, _targetSelection());
+        expect(successors.single.selection, _smallerTargetSelection());
         expect(successors.single.transcript.messages, hasLength(2));
         final compactions = events.whereType<AgentSessionSelectionCompaction>();
         expect(compactions.first.compaction, isA<AgentCompactionStarted>());
@@ -171,6 +185,88 @@ void main() {
         expect(events.where((event) => event.isTerminal), hasLength(1));
         await session.close();
         await stack.runtime.close();
+      },
+    );
+
+    test(
+      'larger current model summarizes before committing a smaller target',
+      () async {
+        final estimator = _Estimator(
+          (request) => request.context.messages.length >= 4 ? 100 : 10,
+        );
+        final repository = _RecordingRepository();
+        final currentProvider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[
+            textTurn(_summaryJson('current-model summary')),
+          ],
+        );
+        final targetProvider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.openAi,
+          wireFamily: LlmWireFamily.openaiResponses,
+          turns: <List<LlmEvent>>[textTurn('target answer')],
+        );
+        final registry = LlmProviderRegistry();
+        BuiltInLlmCatalog.registerInto(registry);
+        registry.registerProvider(currentProvider);
+        registry.registerProvider(targetProvider);
+        final runtime = InMemoryAgentRuntime(
+          registry: registry,
+          repository: repository,
+          tools: AgentToolRegistry(),
+          policies: <String, ToolPermissionPolicy>{
+            'allow': const AllowAllPolicy(),
+          },
+          contextEstimator: estimator,
+          modelSwitchFitPolicy: const _FitPolicy(threshold: 50, target: 40),
+          historyCompactor: OpenCodeSummaryCompactor(
+            llm: RegistryAgentSummaryLlmInvocation(registry),
+            contextEstimator: estimator,
+          ),
+        );
+        final definition = _definition(
+          model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        );
+        final record = _historyRecord(
+          'smaller-target-summary',
+          definition: definition,
+        );
+        await repository.save(
+          record,
+          expectedRevision: 0,
+          cancellation: CancellationSource().token,
+        );
+        final session = await runtime
+            .agent(definition)
+            .restoreSession(record.id);
+        final target = AgentSessionSelection(
+          model: BuiltInLlmCatalog.gpt4oMiniModel.ref,
+          reasoningMode: ReasoningMode.disabled,
+          reasoningEffort: ReasoningEffort.modelDefault,
+        );
+
+        final result = await session.changeSelection(target);
+
+        expect(result.status, AgentSessionSelectionStatus.changed);
+        expect(session.snapshot.selection, target);
+        expect(currentProvider.requests, hasLength(1));
+        expect(
+          currentProvider.requests.single.model,
+          BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        );
+        expect(targetProvider.requests, isEmpty);
+        expect(session.snapshot.compactionState?.afterEstimate, 10);
+        expect(
+          session.snapshot.compactionState?.decisionMetadata['summaryModel'],
+          BuiltInLlmCatalog.deepSeekV4Flash.value,
+        );
+
+        await session.run('continue on target').events.drain<void>();
+        expect(targetProvider.requests.single.model, target.model);
+        expect(session.snapshot.selection, target);
+        await session.close();
+        await runtime.close();
       },
     );
 
@@ -183,11 +279,11 @@ void main() {
         fitPolicy: const _FitPolicy(threshold: 50, target: 40),
       );
       final session = await stack.runtime
-          .agent(_definition())
+          .agent(_definition(model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref))
           .createSession(persistence: SessionPersistence.repository);
       final before = session.snapshot;
 
-      final failed = await session.changeSelection(_targetSelection());
+      final failed = await session.changeSelection(_smallerTargetSelection());
       expect(failed.status, AgentSessionSelectionStatus.error);
       expect(failed.error?.kind, AgentErrorKind.compaction);
       expect(session.snapshot.selection, before.selection);
@@ -223,10 +319,14 @@ void main() {
           compactor: compactor,
         );
         final session = await stack.runtime
-            .agent(_definition())
+            .agent(
+              _definition(model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref),
+            )
             .createSession(persistence: SessionPersistence.repository);
         final before = session.snapshot;
-        final operation = session.changeSelectionOperation(_targetSelection());
+        final operation = session.changeSelectionOperation(
+          _smallerTargetSelection(),
+        );
         final eventsFuture = operation.events.toList();
         await compactor.started.future;
 
@@ -246,7 +346,7 @@ void main() {
             )
             .toList();
         expect(entries, hasLength(1));
-        expect(entries.single.model, before.selection.model);
+        expect(entries.single.model, _smallerTargetSelection().model);
         expect(entries.single.outcome, AgentModelInvocationOutcome.cancelled);
         expect(entries.single.responseMessageId, isNull);
         expect(events.where((event) => event.isTerminal), hasLength(1));
@@ -297,11 +397,13 @@ void main() {
             ),
           );
           final session = await stack.runtime
-              .agent(_definition())
+              .agent(
+                _definition(model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref),
+              )
               .createSession(persistence: SessionPersistence.repository);
           final before = session.snapshot;
           final operation = session.changeSelectionOperation(
-            _targetSelection(),
+            _smallerTargetSelection(),
           );
           final eventsFuture = operation.events.toList();
 
@@ -382,7 +484,12 @@ void main() {
         (request) => request.context.messages.length > 2 ? 100 : 10,
       );
       final repository = _CommitThenReleaseRepository();
-      final record = _historyRecord('commit-wins-cancel');
+      final record = _historyRecord(
+        'commit-wins-cancel',
+        definition: _definition(
+          model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        ),
+      );
       await repository.seed(record);
       repository.arm();
       final stack = _runtime(
@@ -394,7 +501,9 @@ void main() {
       final session = await stack.runtime
           .agent(record.definition)
           .restoreSession(record.id);
-      final operation = session.changeSelectionOperation(_targetSelection());
+      final operation = session.changeSelectionOperation(
+        _smallerTargetSelection(),
+      );
       final eventsFuture = operation.events.toList();
       await repository.committed.future;
 
@@ -405,11 +514,14 @@ void main() {
       final events = await eventsFuture;
 
       expect(result.status, AgentSessionSelectionStatus.changed);
-      expect(session.snapshot.selection, _targetSelection());
+      expect(session.snapshot.selection, _smallerTargetSelection());
       expect(session.snapshot.compactionState, isNotNull);
       expect(events.last, isA<AgentSessionSelectionSucceeded>());
       expect(events.where((event) => event.isTerminal), hasLength(1));
-      expect((await repository.load(record.id))!.selection, _targetSelection());
+      expect(
+        (await repository.load(record.id))!.selection,
+        _smallerTargetSelection(),
+      );
       await session.close();
       await stack.runtime.close();
     });
@@ -457,11 +569,11 @@ _runtime({
   );
 }
 
-AgentDefinition _definition() => AgentDefinition(
+AgentDefinition _definition({ModelRef? model}) => AgentDefinition(
   id: AgentId('switch-agent'),
   name: 'Switch agent',
   systemPrompt: '',
-  model: BuiltInLlmCatalog.gpt4oMiniModel.ref,
+  model: model ?? BuiltInLlmCatalog.gpt4oMiniModel.ref,
   generation: LlmGenerationConfig(reasoningMode: ReasoningMode.disabled),
   policy: PolicyId('allow'),
 );
@@ -469,6 +581,13 @@ AgentDefinition _definition() => AgentDefinition(
 AgentSessionSelection _targetSelection() => AgentSessionSelection(
   model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
   reasoningMode: ReasoningMode.enabled,
+  reasoningEffort: ReasoningEffort.modelDefault,
+);
+
+/// A target with strictly less context capacity than DeepSeek/GPT-5 mini.
+AgentSessionSelection _smallerTargetSelection() => AgentSessionSelection(
+  model: BuiltInLlmCatalog.gpt4oMiniModel.ref,
+  reasoningMode: ReasoningMode.disabled,
   reasoningEffort: ReasoningEffort.modelDefault,
 );
 
@@ -516,27 +635,32 @@ AgentSessionRecord _recordWithContinuation() {
   );
 }
 
-AgentSessionRecord _historyRecord(String id) => AgentSessionRecord(
-  id: AgentSessionId(id),
-  revision: 0,
-  definition: _definition(),
-  transcript: AgentTranscript(
-    messages: <LlmMessage>[
-      _message(LlmMessageRole.user, 'old one'),
-      _message(LlmMessageRole.assistant, 'answer one'),
-      _message(LlmMessageRole.user, 'old two'),
-      _message(LlmMessageRole.assistant, 'answer two'),
-    ],
-  ),
-  usage: LlmUsage(),
-  modelTurns: 2,
-  toolAttempts: 0,
-  createdAtMicros: 1,
-  updatedAtMicros: 1,
-);
+AgentSessionRecord _historyRecord(String id, {AgentDefinition? definition}) =>
+    AgentSessionRecord(
+      id: AgentSessionId(id),
+      revision: 0,
+      definition: definition ?? _definition(),
+      transcript: AgentTranscript(
+        messages: <LlmMessage>[
+          _message(LlmMessageRole.user, 'old one'),
+          _message(LlmMessageRole.assistant, 'answer one'),
+          _message(LlmMessageRole.user, 'old two'),
+          _message(LlmMessageRole.assistant, 'answer two'),
+        ],
+      ),
+      usage: LlmUsage(),
+      modelTurns: 2,
+      toolAttempts: 0,
+      createdAtMicros: 1,
+      updatedAtMicros: 1,
+    );
 
 LlmMessage _message(LlmMessageRole role, String text) =>
     LlmMessage(role: role, parts: <LlmContentPart>[LlmTextPart(text)]);
+
+String _summaryJson(String objective) =>
+    '{"objective":"$objective","constraintsAndDecisions":[],"facts":[],'
+    '"relevantToolOutcomes":[],"pendingWork":[]}';
 
 final class _Estimator implements AgentContextEstimator {
   _Estimator(this.valueFor);

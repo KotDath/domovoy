@@ -104,6 +104,14 @@ void main() {
       );
       expect(switched.compactionState?.beforeEstimate, 100);
       expect(switched.compactionState?.afterEstimate, 10);
+      expect(
+        switched.compactionState?.decisionMetadata['providerContextSource'],
+        'provider',
+      );
+      expect(
+        switched.compactionState?.decisionMetadata['providerContextUsage'],
+        60,
+      );
       expect(first.openAiProvider.requests, isEmpty);
 
       final compactedTimeline = const ChatTimelineProjector().project(
@@ -266,7 +274,9 @@ _stack({
       _ScriptedTurn(
         textTurn(
           'Final status is stable.',
-          usage: LlmUsage(inputTokens: 3, outputTokens: 2, totalTokens: 5),
+          // Provider-reported context pressure above the smaller target's fit
+          // threshold, so the switch conservatively compacts.
+          usage: LlmUsage(inputTokens: 60, outputTokens: 2, totalTokens: 62),
         ),
       ),
     ],

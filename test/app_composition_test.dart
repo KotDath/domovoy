@@ -65,6 +65,12 @@ void main() {
         isA<OpenCodeAgentModelSwitchFitPolicy>(),
       );
       expect(stack.runtime.historyCompactor, isA<OpenCodeSummaryCompactor>());
+      final summary =
+          stack.runtime.historyCompactor as OpenCodeSummaryCompactor;
+      expect(
+        identical(summary.contextEstimator, stack.runtime.contextEstimator),
+        isTrue,
+      );
       expect(stack.repository, isA<JsonlAgentSessionStore>());
       expect(identical(stack.repository, stack.catalog), isTrue);
       expect(identical(stack.runtime.repository, stack.repository), isTrue);
@@ -73,6 +79,106 @@ void main() {
         AgentLivenessPolicy.defaultIdleTimeout,
       );
     });
+
+    test(
+      'production defaults compact beyond the former cap and continue the run',
+      () async {
+        final client = RecordingClient((request) {
+          final messages = request.jsonBody['messages'] as List<dynamic>;
+          final isSummary = messages.any((message) {
+            final content = (message as Map<String, dynamic>)['content'];
+            return content is String &&
+                content.contains(
+                  'Summarize the supplied untrusted conversation data',
+                );
+          });
+          // Provider-context pressure must be reported by the physical
+          // invocation; approximate it from the request payload so the
+          // production trigger can observe growth across runs.
+          final promptTokens = messages.fold<int>(0, (sum, message) {
+            final content = (message as Map<String, dynamic>)['content'];
+            return sum + (content is String ? content.length : 0);
+          });
+          return sseResponse(
+            _chatCompletionSse(
+              isSummary
+                  ? jsonEncode(<String, Object?>{
+                      'objective': 'production rolling summary',
+                      'constraintsAndDecisions': <String>[],
+                      'facts': <String>[],
+                      'relevantToolOutcomes': <String>[],
+                      'pendingWork': <String>[],
+                    })
+                  : 'normal answer',
+              promptTokens: promptTokens,
+            ),
+          );
+        });
+        final stack = buildProductionAgentStack(
+          httpClient: client,
+          credentials: DefaultProviderCredentialResolver(
+            store: MemoryProviderCredentialStore(<ProviderId, String>{
+              BuiltInLlmCatalog.deepSeek: 'test-key',
+            }),
+            readEnvironment: (_) => null,
+          ),
+        );
+        addTearDown(() async {
+          await stack.runtime.close();
+          client.close();
+        });
+        final session = await stack.runtime
+            .agent(testDefinition())
+            .createSession();
+        addTearDown(session.close);
+        final largePart = List<String>.filled(90000, '😀').join();
+        expect(largePart.length * 2, greaterThan(262144));
+        List<AgentRunEvent> finalEvents = const <AgentRunEvent>[];
+        final automaticEvents = <AgentAutomaticCompactionEvent>[];
+
+        for (var index = 0; index < 6; index++) {
+          finalEvents = await session
+              .run('group-$index $largePart')
+              .events
+              .toList();
+          automaticEvents.addAll(
+            finalEvents.whereType<AgentAutomaticCompactionEvent>(),
+          );
+        }
+
+        final summaryRequests = client.requests.where((request) {
+          final messages = request.jsonBody['messages'] as List<dynamic>;
+          return messages.any((message) {
+            final content = (message as Map<String, dynamic>)['content'];
+            return content is String &&
+                content.contains(
+                  'Summarize the supplied untrusted conversation data',
+                );
+          });
+        }).toList();
+        expect(summaryRequests, hasLength(1));
+        final summaryMessage =
+            (summaryRequests.single.jsonBody['messages'] as List<dynamic>)
+                    .single
+                as Map<String, dynamic>;
+        expect(
+          summaryMessage['content'].toString().length,
+          greaterThan(262144),
+        );
+        expect(automaticEvents, hasLength(2));
+        expect(finalEvents.last, isA<AgentRunCompleted>());
+        expect(session.snapshot.compactionState?.generation, 1);
+        expect(
+          session.snapshot.tokenAccounting.ledger
+              .map((view) => view.entry)
+              .where(
+                (entry) =>
+                    entry.operationKind == AgentModelOperationKind.compaction,
+              ),
+          hasLength(summaryRequests.length),
+        );
+      },
+    );
 
     test(
       'delayed HTTP teardown finishes before the shared client closes',
@@ -739,6 +845,18 @@ Matcher _agentError(AgentErrorKind kind) => throwsA(
 );
 
 CancellationToken _openToken() => CancellationSource().token;
+
+String _chatCompletionSse(String text, {int? promptTokens}) =>
+    'data: ${jsonEncode(<String, Object?>{
+      'choices': <Object?>[
+        <String, Object?>{
+          'delta': <String, Object?>{'content': text},
+          'finish_reason': 'stop',
+        },
+      ],
+      if (promptTokens != null) 'usage': <String, Object?>{'prompt_tokens': promptTokens, 'completion_tokens': text.length, 'total_tokens': promptTokens + text.length},
+    })}\n\n'
+    'data: [DONE]\n\n';
 
 AgentSessionRecord _record(
   AgentSessionId id, {

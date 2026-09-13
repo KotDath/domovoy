@@ -423,7 +423,7 @@ void main() {
                 RecordingClient(
                   (_) => sseResponse(
                     'event: response.output_item.done\n'
-                    'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"ans","annotations":[{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":3}]}]}}\n\n'
+                    'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"a","annotations":[{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":1}],"logprobs":[{"token":"a","logprob":-0.25,"bytes":[97],"top_logprobs":[{"token":"A","logprob":-1,"bytes":null}]}]},{"type":"output_text","text":"ns","annotations":[],"logprobs":[]}]}}\n\n'
                     'event: response.output_item.done\n'
                     'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed","content":[{"type":"reasoning_text","text":"think"}],"encrypted_content":"enc"}}\n\n'
                     'event: response.output_text.delta\n'
@@ -442,7 +442,70 @@ void main() {
       final payload = completed.turnState!.payload as List<dynamic>;
       expect(payload[0]['type'], 'reasoning');
       expect(payload[1]['type'], 'message');
+      final content = payload[1]['content'] as List<dynamic>;
+      expect(content.first['logprobs'], hasLength(1));
+      expect(content.first['logprobs'].single['bytes'], <int>[97]);
+      expect(content.last['logprobs'], isEmpty);
+      expect(events.whereType<LlmTextDelta>().single.text, 'ans');
       expect(completed.toString(), isNot(contains('enc')));
+      expect(completed.toString(), isNot(contains('logprobs')));
+      expect(
+        completed.turnState!.diagnosticSummary().toString(),
+        isNot(contains('logprobs')),
+      );
+      expect(
+        LlmProviderTurnState.fromJson(completed.turnState!.toJson()),
+        completed.turnState,
+      );
+
+      final replay = _openAi(RecordingClient((_) => sseResponse('')))
+          .requestBody(
+            LlmRequest(
+              model: BuiltInLlmCatalog.gpt5MiniModel.ref,
+              generation: LlmGenerationConfig(
+                reasoningMode: ReasoningMode.enabled,
+              ),
+              context: LlmContext(
+                messages: <LlmMessage>[
+                  LlmMessage(
+                    role: LlmMessageRole.assistant,
+                    parts: <LlmContentPart>[LlmTextPart('ans')],
+                  ),
+                ],
+                continuationEntries: <LlmContinuationEntry>[
+                  LlmContinuationEntry(
+                    assistantMessageIndex: 0,
+                    state: completed.turnState!,
+                  ),
+                ],
+              ),
+            ),
+          );
+      final replayedMessage = (replay['input'] as List<dynamic>)[1];
+      expect(replayedMessage['content'][0]['logprobs'], hasLength(1));
+      expect(replayedMessage['content'][1]['logprobs'], isEmpty);
+    });
+
+    test('malformed output_item.done logprobs fail as protocol', () async {
+      final events =
+          await _openAi(
+                RecordingClient(
+                  (_) => sseResponse(
+                    'event: response.output_item.done\n'
+                    'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_bad","role":"assistant","content":[{"type":"output_text","text":"ans","logprobs":[{"token":"ans","logprob":-0.1,"bytes":[999],"top_logprobs":[]}]}]}}\n\n'
+                    'event: response.completed\n'
+                    'data: {"type":"response.completed"}\n\n',
+                  ),
+                ),
+              )
+              .stream(
+                _prompt(BuiltInLlmCatalog.gpt5MiniModel),
+                cancellation: CancellationSource().token,
+              )
+              .toList();
+
+      expect((events.last as LlmFailed).error.kind, LlmErrorKind.protocol);
+      expect(events.whereType<LlmCompleted>(), isEmpty);
     });
 
     test('cancel waits for delayed HTTP stream teardown', () async {

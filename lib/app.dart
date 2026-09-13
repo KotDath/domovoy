@@ -87,6 +87,7 @@ ProductionAgentStack buildProductionAgentStack({
   final modelSwitchFitPolicy = OpenCodeAgentModelSwitchFitPolicy();
   final historyCompactor = OpenCodeSummaryCompactor(
     llm: RegistryAgentSummaryLlmInvocation(registry),
+    contextEstimator: contextEstimator,
   );
   final runtime = InMemoryAgentRuntime(
     registry: registry,

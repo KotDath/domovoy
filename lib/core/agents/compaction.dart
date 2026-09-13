@@ -261,15 +261,27 @@ final class OpenCodeCompactionTrigger implements AgentCompactionTrigger {
       );
     }
     final target = (pressureThreshold * postCompactionRatio).floor();
+    final providerUsage = context.providerContextUsage;
     final metadata = <String, Object?>{
       'contextBound': contextBound,
       'outputReserve': resolvedOutputReserve,
       'headroom': resolvedHeadroom,
       'pressureThreshold': pressureThreshold,
       'postCompactionTarget': target,
+      'providerContextUsage': providerUsage,
+      'providerContextSource': providerUsage == null
+          ? 'unavailable'
+          : 'provider',
     };
-    if (context.reason == AgentCompactionReason.providerOverflow ||
-        context.currentEstimate.value > pressureThreshold) {
+    if (context.reason == AgentCompactionReason.providerOverflow) {
+      return AgentCompactionDecision.compact(
+        triggerId: id,
+        triggerVersion: version,
+        targetEstimate: target,
+        metadata: metadata,
+      );
+    }
+    if (providerUsage != null && providerUsage > pressureThreshold) {
       return AgentCompactionDecision.compact(
         triggerId: id,
         triggerVersion: version,
@@ -581,6 +593,7 @@ final class AgentCompactionContext {
     this.runId,
     required this.reason,
     required LlmModel selectedModel,
+    LlmModel? currentSessionModel,
     required LlmRequestSnapshot request,
     required List<LlmMessage> protectedSeed,
     required List<LlmMessage> generatedPrefix,
@@ -590,8 +603,12 @@ final class AgentCompactionContext {
     required this.priorState,
     required this.currentEstimate,
     required this.targetEstimate,
+    this.providerContextUsage,
     required this.cancellation,
   }) : selectedModel = LlmModel.fromJson(selectedModel.toJson()),
+       currentSessionModel = LlmModel.fromJson(
+         (currentSessionModel ?? selectedModel).toJson(),
+       ),
        request = LlmRequestSnapshot.fromJson(request.toJson()),
        protectedSeed = List<LlmMessage>.unmodifiable(
          List<LlmMessage>.from(protectedSeed),
@@ -627,6 +644,12 @@ final class AgentCompactionContext {
         'Compaction target must be non-negative.',
       );
     }
+    if (providerContextUsage != null && providerContextUsage! < 0) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Provider context usage must be non-negative.',
+      );
+    }
     if (this.messageIds.length != this.request.context.messages.length) {
       throwAgent(
         AgentErrorKind.configuration,
@@ -640,6 +663,11 @@ final class AgentCompactionContext {
   final AgentSessionId sessionId;
   final RunId? runId;
   final AgentCompactionReason reason;
+
+  /// The model that owns the live session before this compaction starts.
+  ///
+  /// This differs from [selectedModel] only while preparing a model switch.
+  final LlmModel currentSessionModel;
   final LlmModel selectedModel;
   final LlmRequestSnapshot request;
   final List<LlmMessage> protectedSeed;
@@ -650,6 +678,12 @@ final class AgentCompactionContext {
   final AgentCompactionState? priorState;
   final AgentContextEstimate currentEstimate;
   final int? targetEstimate;
+
+  /// Usable provider-reported context usage from the latest completed physical
+  /// LLM invocation, or `null` when that invocation supplied no usable
+  /// provider measurement. Estimation never substitutes for this value.
+  final int? providerContextUsage;
+
   final CancellationToken cancellation;
 
   String get endBoundaryId => 'end:${request.context.messages.length}';
@@ -665,6 +699,7 @@ final class AgentCompactionContext {
     runId: runId,
     reason: reason,
     selectedModel: selectedModel,
+    currentSessionModel: currentSessionModel,
     request: request,
     protectedSeed: protectedSeed,
     generatedPrefix: generatedPrefix,
@@ -674,6 +709,7 @@ final class AgentCompactionContext {
     priorState: priorState,
     currentEstimate: currentEstimate,
     targetEstimate: target,
+    providerContextUsage: providerContextUsage,
     cancellation: cancellation,
   );
 }
@@ -798,9 +834,9 @@ final class AgentCompactionStrategyException implements Exception {
     final last = this.reports.lastOrNull;
     if (last != null &&
         ((error.kind == AgentErrorKind.cancelled &&
-                last.outcome != AgentModelInvocationOutcome.cancelled) ||
+                last.outcome == AgentModelInvocationOutcome.failed) ||
             (error.kind != AgentErrorKind.cancelled &&
-                last.outcome != AgentModelInvocationOutcome.failed))) {
+                last.outcome == AgentModelInvocationOutcome.cancelled))) {
       throwAgent(
         AgentErrorKind.configuration,
         'Compaction failure reports contradict the terminal outcome.',

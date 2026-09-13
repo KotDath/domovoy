@@ -188,6 +188,185 @@ void main() {
       expect(state.itemCount, 2);
     });
 
+    test(
+      'output_text logprobs are closed, frozen, and round-trip opaquely',
+      () {
+        final logprobs = <Object?>[
+          <String, Object?>{
+            'token': 'ans',
+            'logprob': -0.25,
+            'bytes': <int>[97, 110, 115],
+            'top_logprobs': <Object?>[
+              <String, Object?>{'token': 'alt', 'logprob': -1, 'bytes': null},
+            ],
+          },
+        ];
+        final payload = <Map<String, Object?>>[
+          <String, Object?>{
+            'type': 'message',
+            'id': 'msg_logprobs',
+            'role': 'assistant',
+            'content': <Map<String, Object?>>[
+              <String, Object?>{
+                'type': 'output_text',
+                'text': 'ans',
+                'annotations': <Object?>[],
+                'logprobs': logprobs,
+              },
+              <String, Object?>{
+                'type': 'output_text',
+                'text': 'more',
+                'logprobs': <Object?>[],
+              },
+            ],
+          },
+        ];
+        final state = LlmProviderTurnState(
+          origin: BuiltInLlmCatalog.gpt54Model.ref,
+          wireFamily: LlmWireFamily.openaiResponses,
+          format: openaiResponsesOutputItemsV1,
+          payload: payload,
+        );
+
+        logprobs.clear();
+        expect(
+          ((state.payload as List).single['content'] as List).first['logprobs'],
+          hasLength(1),
+        );
+        expect(LlmProviderTurnState.fromJson(state.toJson()), state);
+        assertResponsesTurnStateMatchesAssistant(
+          state: state,
+          text: 'ansmore',
+          calls: const <LlmToolCallPart>[],
+        );
+        expect(state.toString(), isNot(contains('logprob')));
+        expect(state.diagnosticSummary().toString(), isNot(contains('ans')));
+      },
+    );
+
+    test(
+      'malformed output_text logprobs and unrelated extras are rejected',
+      () {
+        void reject(Object? logprobs) {
+          expect(
+            () => validateOpenAiResponsesOutputItem(<String, Object?>{
+              'type': 'message',
+              'id': 'msg_bad',
+              'content': <Map<String, Object?>>[
+                <String, Object?>{
+                  'type': 'output_text',
+                  'text': 'ans',
+                  'logprobs': logprobs,
+                },
+              ],
+            }),
+            throwsA(isA<LlmException>()),
+          );
+        }
+
+        reject('not-a-list');
+        reject(<Object?>['not-an-object']);
+        reject(<Object?>[
+          <String, Object?>{
+            'token': 'a',
+            'logprob': -1,
+            'bytes': null,
+            'top_logprobs': <Object?>[],
+            'extra': true,
+          },
+        ]);
+        reject(<Object?>[
+          <String, Object?>{
+            'token': 1,
+            'logprob': -1,
+            'bytes': null,
+            'top_logprobs': <Object?>[],
+          },
+        ]);
+        reject(<Object?>[
+          <String, Object?>{
+            'token': 'a',
+            'logprob': -1,
+            'top_logprobs': <Object?>[],
+          },
+        ]);
+        reject(<Object?>[
+          <String, Object?>{
+            'token': 'a',
+            'logprob': -1,
+            'bytes': null,
+            'top_logprobs': 'not-a-list',
+          },
+        ]);
+        reject(<Object?>[
+          <String, Object?>{
+            'token': 'a',
+            'logprob': -1,
+            'bytes': null,
+            'top_logprobs': <Object?>['not-an-object'],
+          },
+        ]);
+        for (final probability in <Object?>[
+          '-1',
+          double.nan,
+          double.infinity,
+        ]) {
+          reject(<Object?>[
+            <String, Object?>{
+              'token': 'a',
+              'logprob': probability,
+              'bytes': null,
+              'top_logprobs': <Object?>[],
+            },
+          ]);
+        }
+        for (final bytes in <Object?>[
+          'bytes',
+          <Object?>[-1],
+          <Object?>[256],
+          <Object?>[1.5],
+        ]) {
+          reject(<Object?>[
+            <String, Object?>{
+              'token': 'a',
+              'logprob': -1,
+              'bytes': bytes,
+              'top_logprobs': <Object?>[],
+            },
+          ]);
+        }
+        reject(<Object?>[
+          <String, Object?>{
+            'token': 'a',
+            'logprob': -1,
+            'bytes': null,
+            'top_logprobs': <Object?>[
+              <String, Object?>{
+                'token': 'b',
+                'logprob': -2,
+                'bytes': null,
+                'top_logprobs': <Object?>[],
+              },
+            ],
+          },
+        ]);
+        expect(
+          () => validateOpenAiResponsesOutputItem(<String, Object?>{
+            'type': 'message',
+            'id': 'msg_extra',
+            'content': <Map<String, Object?>>[
+              <String, Object?>{
+                'type': 'output_text',
+                'text': 'ans',
+                'unrelated': true,
+              },
+            ],
+          }),
+          throwsA(isA<LlmException>()),
+        );
+      },
+    );
+
     test('accepts each official output_text annotation variant', () {
       void accept(Map<String, Object?> annotation) {
         validateOpenAiResponsesOutputItem(<String, Object?>{
