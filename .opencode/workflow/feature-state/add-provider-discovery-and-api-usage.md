@@ -3,7 +3,7 @@
 - **change:** `add-provider-discovery-and-api-usage`
 - **scope_id:** `provider-discovery-api-usage-main`
 - **attempt_id:** `implementation-1`
-- **stage:** `checking`
+- **stage:** `accepted`
 - **result:** The versioned main provider/usage and Day 8 diagnostic implementation is source-frozen for independent verification. It includes 30 API-key profiles, bundled and remote discovery, native text streaming, scoped key settings, searchable large catalog picker, API-only usage, safe provider errors, and an uncompacted short/long/overflow demo. OpenCode Zen/Go were removed from enabled profiles after verifying Pi's mixed per-model routing; they remain documented for later protocol work.
 - **initial_tier / current_tier:** `T2 / T2`
 - **risk evidence:** New provider protocols, API keys, catalog/selection lifecycle, and public usage/error semantics span core, transport, secure storage, session restore, and UI.
