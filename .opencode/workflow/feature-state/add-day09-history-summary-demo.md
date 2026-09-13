@@ -1,7 +1,7 @@
 # Feature State — add-day09-history-summary-demo
 
 - **change / scope_id:** `add-day09-history-summary-demo` / `day09-branch-demo`
-- **attempt_id / stage:** `implementation-1` / `checking`
+- **attempt_id / stage:** `implementation-1` / `accepted`
 - **result:** Day 9 branch adds a real 14-step comparison between an uncompacted production agent session and a production agent session using structured summary every 10 completed raw user/assistant messages. The summary retains the last two complete pairs and is persisted with its cadence provenance. The page compares real answers and API ledger usage, charging summary generation separately.
 - **base_revision / branch:** `86c558c07d722a4ed8cbe0d5173601b6c722c84b` / `codex/day-09`; starting tracked diff was empty in this dedicated worktree.
 - **contract_revision:** `planning-1`, spec-driven proposal/design/spec/tasks validated strictly. User's full implementation instruction authorizes this branch's work; no additional approval gate applies.
