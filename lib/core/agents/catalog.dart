@@ -1,5 +1,6 @@
 import '../llm/identifiers.dart';
 import '../llm/json.dart';
+import '../projects/ids.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'record.dart';
@@ -19,6 +20,7 @@ final class AgentSessionSummary {
     required this.selection,
     this.title,
     required this.messageCount,
+    this.projectId,
   });
 
   final AgentSessionId id;
@@ -29,6 +31,7 @@ final class AgentSessionSummary {
   final AgentSessionSelection selection;
   final String? title;
   final int messageCount;
+  final ProjectId? projectId;
 
   @override
   bool operator ==(Object other) =>
@@ -41,7 +44,8 @@ final class AgentSessionSummary {
           other.model == model &&
           other.selection == selection &&
           other.title == title &&
-          other.messageCount == messageCount;
+          other.messageCount == messageCount &&
+          other.projectId == projectId;
 
   @override
   int get hashCode => Object.hash(
@@ -53,6 +57,7 @@ final class AgentSessionSummary {
     selection,
     title,
     messageCount,
+    projectId,
   );
 }
 
@@ -105,6 +110,7 @@ AgentSessionSummary summarizeAgentSession(AgentSessionRecord record) {
     selection: record.selection,
     title: record.title,
     messageCount: record.transcript.messages.length,
+    projectId: record.projectId,
   );
 }
 

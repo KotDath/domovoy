@@ -1,6 +1,7 @@
 import '../llm/json.dart';
 import '../llm/messages.dart';
 import '../llm/usage.dart';
+import '../projects/ids.dart';
 import 'compaction.dart';
 import 'definition.dart';
 import 'events.dart';
@@ -88,6 +89,7 @@ final class AgentSessionSnapshot {
     AgentSessionSelection? selection,
     this.title,
     AgentTokenAccountingSnapshot? tokenAccounting,
+    this.projectId,
   }) : selection =
            selection ?? AgentSessionSelection.fromDefinition(definition),
        tokenAccounting =
@@ -111,6 +113,7 @@ final class AgentSessionSnapshot {
   final AgentSessionSelection selection;
   final String? title;
   final AgentTokenAccountingSnapshot tokenAccounting;
+  final ProjectId? projectId;
 
   int get compactionGeneration => compactionState?.generation ?? 0;
 }

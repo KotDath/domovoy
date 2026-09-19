@@ -21,6 +21,7 @@ import 'hooks.dart';
 import 'ids.dart';
 import 'messaging.dart';
 import 'policies.dart';
+import '../projects/ids.dart';
 import 'record.dart';
 import 'repository.dart';
 import 'schema.dart';
@@ -50,6 +51,7 @@ abstract interface class Agent {
   Future<AgentSession> createSession({
     AgentSessionId? id,
     SessionPersistence persistence = SessionPersistence.transient,
+    ProjectId? projectId,
   });
 
   Future<AgentSession> restoreSession(AgentSessionId id);
@@ -455,8 +457,9 @@ final class _BoundAgent implements Agent {
   Future<AgentSession> createSession({
     AgentSessionId? id,
     SessionPersistence persistence = SessionPersistence.transient,
+    ProjectId? projectId,
   }) {
-    return _open(id: id, persistence: persistence);
+    return _open(id: id, persistence: persistence, projectId: projectId);
   }
 
   @override
@@ -547,6 +550,7 @@ final class _BoundAgent implements Agent {
         revision: record.revision,
         createdAtMicros: record.createdAtMicros,
         persisted: true,
+        projectId: record.projectId,
       );
       _runtime._registerLive(session);
       return session;
@@ -558,6 +562,7 @@ final class _BoundAgent implements Agent {
   Future<_LiveSession> _open({
     AgentSessionId? id,
     required SessionPersistence persistence,
+    ProjectId? projectId,
     int? ticket,
   }) async {
     final ownedTicket = ticket ?? _runtime._beginOpening();
@@ -585,6 +590,7 @@ final class _BoundAgent implements Agent {
         compactionState: null,
         selection: AgentSessionSelection.fromDefinition(definition),
         createdAtMicros: now,
+        projectId: projectId,
       );
       _runtime._registerLive(session);
       try {
@@ -756,6 +762,7 @@ final class _LiveSession implements AgentSession {
     this.revision = 0,
     required this.createdAtMicros,
     this.persisted = false,
+    this.projectId,
   }) : usage = usage ?? LlmUsage(),
        selection =
            selection ?? AgentSessionSelection.fromDefinition(definition),
@@ -789,6 +796,7 @@ final class _LiveSession implements AgentSession {
   int revision;
   var persisted = false;
   final int createdAtMicros;
+  ProjectId? projectId;
 
   /// Usable provider-reported context usage from the latest completed physical
   /// LLM invocation on this live session, or `null` when unavailable.
@@ -859,6 +867,7 @@ final class _LiveSession implements AgentSession {
       tokenAccounting: accounting,
       selection: selection,
       title: title,
+      projectId: projectId,
     );
   }
 
@@ -1304,6 +1313,7 @@ final class _LiveSession implements AgentSession {
       updatedAtMicros: runtime.clock.nowMicros(),
       selection: selection ?? this.selection,
       title: title ?? _pendingTitle ?? this.title,
+      projectId: projectId,
     );
   }
 
