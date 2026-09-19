@@ -35,10 +35,23 @@ final class JsonlFilesystemStreamStorage implements JsonlStreamStorage {
   JsonlFilesystemStreamStorage({
     required this.applicationSupportDirectoryResolver,
     this.stageHook,
-  });
+    this.namespaceDirectoryName = storageDirectoryName,
+  }) {
+    if (!_namespaceDirectoryPattern.hasMatch(namespaceDirectoryName)) {
+      throw ArgumentError.value(
+        namespaceDirectoryName,
+        'namespaceDirectoryName',
+        'invalid storage directory name',
+      );
+    }
+  }
 
   static const applicationDirectoryName = 'ru.kotdath.domovoy';
   static const storageDirectoryName = 'agent-sessions-jsonl-v1';
+  static const projectStorageDirectoryName = 'project-workspaces-jsonl-v1';
+  static final RegExp _namespaceDirectoryPattern = RegExp(
+    r'^[A-Za-z0-9._-]{1,64}$',
+  );
   static const activeManifestName = 'active';
   static const _manifestType = 'domovoy.jsonl.active_generation';
   static const _manifestVersion = 1;
@@ -58,6 +71,7 @@ final class JsonlFilesystemStreamStorage implements JsonlStreamStorage {
   final JsonlApplicationSupportDirectoryResolver
   applicationSupportDirectoryResolver;
   final JsonlFilesystemStageHook? stageHook;
+  final String namespaceDirectoryName;
   final Random _random = Random.secure();
   final _FilesystemSerialExecutor _executor = _FilesystemSerialExecutor();
   Future<Directory>? _rootFuture;
@@ -195,7 +209,7 @@ final class JsonlFilesystemStreamStorage implements JsonlStreamStorage {
       p.join(
         applicationSupport.path,
         applicationDirectoryName,
-        storageDirectoryName,
+        namespaceDirectoryName,
       ),
     );
     await root.create(recursive: true);

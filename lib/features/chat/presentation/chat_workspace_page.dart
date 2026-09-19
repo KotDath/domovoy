@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
 import '../../../design_system/design_system.dart';
+import '../../projects/application/project_workspace_controller.dart';
+import '../../projects/application/project_workspace_state.dart';
+import '../../projects/presentation/project_sidebar_section.dart';
 import '../application/chat_workspace_controller.dart';
 import '../application/chat_workspace_state.dart';
 import '../application/chat_timeline_projector.dart';
@@ -16,9 +19,10 @@ import 'token_details.dart';
 import 'workspace_shell.dart';
 
 class ChatWorkspacePage extends StatefulWidget {
-  const ChatWorkspacePage({required this.controller, super.key});
+  const ChatWorkspacePage({required this.controller, this.projects, super.key});
 
   final ChatWorkspaceController controller;
+  final ProjectWorkspaceController? projects;
 
   @override
   State<ChatWorkspacePage> createState() => _ChatWorkspacePageState();
@@ -29,36 +33,54 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   static const _tokenPresenter = ChatTokenPresenter();
   late ChatWorkspaceState _state;
   StreamSubscription<ChatWorkspaceState>? _subscription;
+  StreamSubscription<ProjectWorkspaceState>? _projectSubscription;
+  ProjectWorkspaceState? _projects;
   final _deleteFocusNode = FocusNode(debugLabel: 'chat-delete');
   final _newChatFocusNode = FocusNode(debugLabel: 'chat-new');
 
   @override
   void initState() {
     super.initState();
-    _bind(widget.controller);
-    unawaited(widget.controller.initialize());
+    _bind(widget.controller, widget.projects);
+    if (widget.projects == null) {
+      unawaited(widget.controller.initialize());
+    } else {
+      unawaited(widget.projects!.initialize());
+    }
   }
 
   @override
   void didUpdateWidget(covariant ChatWorkspacePage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.controller, widget.controller)) {
+    if (!identical(oldWidget.controller, widget.controller) ||
+        !identical(oldWidget.projects, widget.projects)) {
       unawaited(_subscription?.cancel());
-      _bind(widget.controller);
-      unawaited(widget.controller.initialize());
+      unawaited(_projectSubscription?.cancel());
+      _bind(widget.controller, widget.projects);
+      if (widget.projects == null) {
+        unawaited(widget.controller.initialize());
+      }
     }
   }
 
-  void _bind(ChatWorkspaceController controller) {
+  void _bind(
+    ChatWorkspaceController controller,
+    ProjectWorkspaceController? projects,
+  ) {
     _state = controller.state;
     _subscription = controller.states.listen((state) {
       if (mounted) setState(() => _state = state);
+    });
+    _projects = projects?.state;
+    _projectSubscription = projects?.states.listen((state) {
+      if (mounted) setState(() => _projects = state);
     });
   }
 
   @override
   void dispose() {
     unawaited(_subscription?.cancel());
+    unawaited(_projectSubscription?.cancel());
     _deleteFocusNode.dispose();
     _newChatFocusNode.dispose();
     super.dispose();
@@ -66,11 +88,14 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
 
   @override
   Widget build(BuildContext context) {
-    final selected = _state.selectedSession;
+    final selected = _visibleSelectedSession;
     final enabled = !_state.isBusy && !_state.isDisposed;
+    final projects = widget.projects;
+    final projectState = _projects;
+    final visibleChats = projectState?.selectedGroup?.chats ?? _state.chats;
     return WorkspaceShell(
       key: const ValueKey('chat-workspace-destination'),
-      chats: _state.chats,
+      chats: visibleChats,
       selectedId: _state.selectedId,
       title: selected?.title ?? 'Новый чат',
       modelLabel: selected == null
@@ -89,6 +114,9 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       onDeleteChat: selected == null || _state.isDisposed ? null : _deleteChat,
       deleteFocusNode: _deleteFocusNode,
       newChatFocusNode: _newChatFocusNode,
+      aboveChats: projects == null || projectState == null
+          ? null
+          : ProjectSidebarSection(controller: projects, state: projectState),
     );
   }
 
@@ -109,7 +137,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
         onAction: _openSettings,
       );
     }
-    if (_state.selectedSession == null) {
+    if (_visibleSelectedSession == null) {
       return _WorkspaceNotice(
         key: const ValueKey('workspace-empty'),
         icon: Icons.chat_bubble_outline_rounded,
@@ -119,7 +147,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
         onAction: _state.isBusy ? null : _createChat,
       );
     }
-    final snapshot = _state.selectedSession!;
+    final snapshot = _visibleSelectedSession!;
     final projection = _timelineProjector.project(
       snapshot: snapshot,
       liveRun: _state.liveRun,
@@ -142,7 +170,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   }
 
   Widget _composer() {
-    final snapshot = _state.selectedSession;
+    final snapshot = _visibleSelectedSession;
     if (snapshot == null) return const ChatUnavailableComposer();
     return ChatComposer(
       providerGroups: _state.providerGroups,
@@ -192,15 +220,28 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     return 'Недоступная модель';
   }
 
-  void _createChat() => unawaited(widget.controller.createChat());
+  void _createChat() {
+    final projects = widget.projects;
+    if (projects != null) {
+      unawaited(projects.createChat());
+      return;
+    }
+    unawaited(widget.controller.createChat());
+  }
 
-  void _selectChat(AgentSessionId id) =>
-      unawaited(widget.controller.selectChat(id));
+  void _selectChat(AgentSessionId id) {
+    final projects = widget.projects;
+    unawaited(
+      projects == null
+          ? widget.controller.selectChat(id)
+          : projects.selectChat(id),
+    );
+  }
 
   void _openSettings() => unawaited(widget.controller.openSettings());
 
   ChatTokenProjection? _tokenProjection() {
-    final snapshot = _state.selectedSession;
+    final snapshot = _visibleSelectedSession;
     if (snapshot == null) return null;
     return _tokenPresenter.present(
       accounting: snapshot.tokenAccounting,
@@ -219,9 +260,12 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   void _deleteChat() => unawaited(_confirmDelete());
 
   Future<void> _confirmDelete() async {
-    final id = _state.selectedId;
+    final id = _visibleSelectedSession?.id;
     if (id == null) return;
-    final intent = widget.controller.deletionIntentFor(id);
+    final projects = widget.projects;
+    final intent = projects == null
+        ? widget.controller.deletionIntentFor(id)
+        : projects.deletionIntentFor(id);
     if (intent == null) return;
     final confirmed = await showDeleteChatConfirmation(
       context: context,
@@ -229,17 +273,37 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     );
     if (!mounted) return;
     if (!confirmed) {
-      widget.controller.discardDeletionIntent(intent);
+      if (projects == null) {
+        widget.controller.discardDeletionIntent(intent);
+      } else {
+        projects.discardDeletionIntent(intent);
+      }
       _deleteFocusNode.requestFocus();
       return;
     }
-    await widget.controller.deleteChat(intent);
+    if (projects == null) {
+      await widget.controller.deleteChat(intent);
+    } else {
+      await projects.deleteChat(intent);
+    }
     if (!mounted) return;
     if (widget.controller.state.selectedId == null) {
       _newChatFocusNode.requestFocus();
     } else {
       _deleteFocusNode.requestFocus();
     }
+  }
+
+  AgentSessionSnapshot? get _visibleSelectedSession {
+    final selected = _state.selectedSession;
+    final projects = _projects;
+    if (selected == null || projects == null) return selected;
+    final group = projects.selectedGroup;
+    if (group == null ||
+        !group.chats.any((summary) => summary.id == selected.id)) {
+      return null;
+    }
+    return selected;
   }
 }
 

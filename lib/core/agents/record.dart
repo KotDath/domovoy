@@ -5,6 +5,7 @@ import '../llm/identifiers.dart';
 import '../llm/json.dart';
 import '../llm/messages.dart';
 import '../llm/usage.dart';
+import '../projects/ids.dart';
 import 'compaction.dart';
 import 'definition.dart';
 import 'errors.dart';
@@ -31,6 +32,7 @@ final class AgentSessionRecord {
         const <LlmContinuationEntry>[],
     this.compactionState,
     AgentTokenAccountingState? tokenAccounting,
+    this.projectId,
   }) : selection =
            selection ?? AgentSessionSelection.fromDefinition(definition),
        title = title == null ? null : requireValidAgentSessionTitle(title),
@@ -113,10 +115,15 @@ final class AgentSessionRecord {
     final raw = asJsonObject(json);
     final version = raw?[llmJsonVersionKey];
     final isLegacy = version == legacyJsonVersion;
+    final isV2 = version == v2JsonVersion;
     final map = decodeTypedJson(
       json,
       type: jsonType,
-      version: isLegacy ? legacyJsonVersion : currentJsonVersion,
+      version: isLegacy
+          ? legacyJsonVersion
+          : isV2
+          ? v2JsonVersion
+          : currentJsonVersion,
     );
     var transcript = AgentTranscript.fromJson(map['transcript']);
     final accounting = map['tokenAccounting'] == null
@@ -155,12 +162,14 @@ final class AgentSessionRecord {
           ? null
           : AgentCompactionState.fromJson(map['compactionState']),
       tokenAccounting: accounting,
+      projectId: isLegacy || isV2 ? null : _optionalProjectId(map['projectId']),
     );
   }
 
   static const jsonType = 'agent.session_record';
   static const legacyJsonVersion = 1;
-  static const currentJsonVersion = 2;
+  static const v2JsonVersion = 2;
+  static const currentJsonVersion = 3;
 
   final AgentSessionId id;
   final int revision;
@@ -176,6 +185,7 @@ final class AgentSessionRecord {
   final List<LlmContinuationEntry> continuationEntries;
   final AgentCompactionState? compactionState;
   final AgentTokenAccountingState tokenAccounting;
+  final ProjectId? projectId;
 
   int get compactionGeneration => compactionState?.generation ?? 0;
   int get accountingGeneration => tokenAccounting.generation;
@@ -203,6 +213,7 @@ final class AgentSessionRecord {
     AgentCompactionState? compactionState,
     bool clearCompactionState = false,
     AgentTokenAccountingState? tokenAccounting,
+    Object? projectId = _keepProjectId,
   }) {
     final nextTranscript = transcript ?? this.transcript;
     final nextUsage = usage ?? this.usage;
@@ -231,6 +242,9 @@ final class AgentSessionRecord {
           ? null
           : (compactionState ?? this.compactionState),
       tokenAccounting: nextAccounting,
+      projectId: identical(projectId, _keepProjectId)
+          ? this.projectId
+          : projectId as ProjectId?,
     );
   }
 
@@ -259,6 +273,9 @@ final class AgentSessionRecord {
     if (tokenAccounting.generation > 0) {
       fields['tokenAccounting'] = tokenAccounting.toJson();
     }
+    if (projectId != null) {
+      fields['projectId'] = projectId!.toJson();
+    }
     return typedJson(
       type: jsonType,
       version: currentJsonVersion,
@@ -283,7 +300,8 @@ final class AgentSessionRecord {
           other.title == title &&
           listEquals(other.continuationEntries, continuationEntries) &&
           other.compactionState == compactionState &&
-          other.tokenAccounting == tokenAccounting;
+          other.tokenAccounting == tokenAccounting &&
+          other.projectId == projectId;
 
   @override
   int get hashCode => Object.hash(
@@ -301,6 +319,7 @@ final class AgentSessionRecord {
     Object.hashAll(continuationEntries),
     compactionState,
     tokenAccounting,
+    projectId,
   );
 
   @override
@@ -309,6 +328,15 @@ final class AgentSessionRecord {
       'continuations: ${continuationEntries.length}, '
       'compaction: ${compactionState?.generation ?? 0}, '
       'accounting: ${tokenAccounting.generation})';
+}
+
+const _keepProjectId = Object();
+
+ProjectId? _optionalProjectId(Object? json) {
+  if (json == null) {
+    return null;
+  }
+  return ProjectId.fromJson(json);
 }
 
 LlmWireFamily _wireFamilyFor(

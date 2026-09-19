@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
+import '../../../core/projects/ids.dart';
 import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 import '../domain/chat_deletion_intent.dart';
 import 'chat_stream_pacing.dart';
@@ -135,18 +136,22 @@ final class ChatWorkspaceController {
     }
   }
 
-  Future<ChatCommandResult> createChat({AgentSessionId? id}) {
+  Future<ChatCommandResult> createChat({
+    AgentSessionId? id,
+    ProjectId? projectId,
+  }) {
     final rejection = _rejectMutation();
     if (rejection != null) {
       return Future<ChatCommandResult>.value(rejection);
     }
     final generation = _admit(ChatWorkspaceOperationKind.create);
-    return _createChat(generation, id);
+    return _createChat(generation, id, projectId);
   }
 
   Future<ChatCommandResult> _createChat(
     int generation,
     AgentSessionId? id,
+    ProjectId? projectId,
   ) async {
     try {
       final closeResult = await _closeCurrent(generation);
@@ -156,6 +161,7 @@ final class ChatWorkspaceController {
       final created = await _agent.createSession(
         id: id,
         persistence: SessionPersistence.repository,
+        projectId: projectId,
       );
       if (!_isCurrent(generation)) {
         await _safelyClose(created);

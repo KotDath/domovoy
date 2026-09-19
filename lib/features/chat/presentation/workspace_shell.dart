@@ -26,6 +26,7 @@ class WorkspaceShell extends StatefulWidget {
     this.onDeleteChat,
     this.deleteFocusNode,
     this.newChatFocusNode,
+    this.aboveChats,
     super.key,
   });
 
@@ -46,6 +47,7 @@ class WorkspaceShell extends StatefulWidget {
   final VoidCallback? onDeleteChat;
   final FocusNode? deleteFocusNode;
   final FocusNode? newChatFocusNode;
+  final Widget? aboveChats;
 
   @override
   State<WorkspaceShell> createState() => _WorkspaceShellState();
@@ -83,6 +85,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       enabled: widget.enabled,
       issueCount: widget.issueCount,
       newChatFocusNode: widget.newChatFocusNode,
+      aboveChats: widget.aboveChats,
     );
     return CallbackShortcuts(
       bindings: shortcuts,

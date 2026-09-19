@@ -12,6 +12,9 @@ import 'core/llm/llm.dart';
 import 'design_system/design_system.dart';
 import 'features/chat/application/chat_workspace_controller.dart';
 import 'features/chat/presentation/chat_workspace_page.dart';
+import 'features/projects/application/project_application_service.dart';
+import 'features/projects/application/project_workspace_controller.dart';
+import 'features/projects/presentation/project_workspace_page.dart';
 import 'features/prompt/domain/prompt_workspace.dart';
 import 'features/settings/data/secure_api_key_override_store.dart';
 import 'features/settings/data/secure_model_settings_store.dart';
@@ -21,6 +24,7 @@ import 'features/settings/presentation/api_key_settings_dialog.dart';
 import 'features/settings/presentation/provider_api_keys_dialog.dart';
 import 'infrastructure/credentials/credentials.dart';
 import 'infrastructure/agents/jsonl/jsonl.dart';
+import 'infrastructure/projects/platform_projects.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
 import 'infrastructure/llm/discovery/native_streaming_provider.dart';
@@ -192,6 +196,7 @@ final class DomovoyDependencies {
     this.environmentReader,
     required this.overrideStore,
     required this.apiKeyResolver,
+    this.projectStack,
     DeepSeekModelSettingsStore? modelSettingsStore,
     http.Client? httpClient,
     this.disposeCallback,
@@ -236,6 +241,7 @@ final class DomovoyDependencies {
       apiKeyResolver: resolver,
       modelSettingsStore: modelSettingsStore,
       httpClient: client,
+      projectStack: createPlatformProjectStack(),
     );
   }
 
@@ -250,6 +256,7 @@ final class DomovoyDependencies {
   final ApiKeyOverrideStore overrideStore;
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore modelSettingsStore;
+  final ProjectPlatformStack? projectStack;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -304,6 +311,7 @@ class DomovoyApp extends StatefulWidget {
 class _DomovoyAppState extends State<DomovoyApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
   late final ChatWorkspaceController _chatController;
+  ProjectWorkspaceController? _projectController;
 
   @override
   void initState() {
@@ -326,13 +334,31 @@ class _DomovoyAppState extends State<DomovoyApp> {
         providerModelCatalog: dependencies.providerModelCatalog,
       ),
     );
+    final projectStack = dependencies.projectStack;
+    if (projectStack != null) {
+      _projectController = ProjectWorkspaceController(
+        service: ProjectApplicationService(
+          projects: projectStack.repository,
+          projectCatalog: projectStack.catalog,
+          sessions: dependencies.repository,
+          sessionCatalog: dependencies.catalog,
+          provisioner: projectStack.provisioner,
+          grants: projectStack.grants,
+        ),
+        projects: projectStack.repository,
+        projectCatalog: projectStack.catalog,
+        sessionCatalog: dependencies.catalog,
+        chat: _chatController,
+        grants: projectStack.grants,
+      );
+    }
   }
 
   @override
   void dispose() {
     unawaited(
-      _chatController
-          .dispose()
+      (_projectController?.dispose() ?? Future<void>.value())
+          .then((_) => _chatController.dispose())
           .then((_) => widget.dependencies.close())
           .catchError((Object error, StackTrace stackTrace) {
             return;
@@ -350,7 +376,9 @@ class _DomovoyAppState extends State<DomovoyApp> {
       theme: DomovoyTheme.light(),
       darkTheme: DomovoyTheme.dark(),
       themeMode: ThemeMode.dark,
-      home: ChatWorkspacePage(controller: _chatController),
+      home: _projectController == null
+          ? ChatWorkspacePage(controller: _chatController)
+          : ProjectWorkspacePage(controller: _projectController!),
     );
   }
 }

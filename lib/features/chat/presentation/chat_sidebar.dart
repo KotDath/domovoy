@@ -14,6 +14,7 @@ class ChatSidebar extends StatelessWidget {
     required this.enabled,
     this.issueCount = 0,
     this.newChatFocusNode,
+    this.aboveChats,
     super.key,
   });
 
@@ -26,6 +27,7 @@ class ChatSidebar extends StatelessWidget {
   final bool enabled;
   final int issueCount;
   final FocusNode? newChatFocusNode;
+  final Widget? aboveChats;
 
   @override
   Widget build(BuildContext context) {
@@ -72,6 +74,7 @@ class ChatSidebar extends StatelessWidget {
                 ),
               ),
             ),
+            ?aboveChats,
             Padding(
               padding: DomovoyDimensions.listInsets,
               child: Text(

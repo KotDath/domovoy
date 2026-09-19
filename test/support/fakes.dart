@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
+import 'package:domovoy/core/projects/projects.dart';
 import 'package:domovoy/features/settings/domain/api_key_credentials.dart';
 
 final class MemoryApiKeyOverrideStore implements ApiKeyOverrideStore {
@@ -146,6 +147,7 @@ final class _FakeBoundAgent implements Agent {
   Future<AgentSession> createSession({
     AgentSessionId? id,
     SessionPersistence persistence = SessionPersistence.transient,
+    ProjectId? projectId,
   }) {
     throw UnimplementedError();
   }
@@ -180,6 +182,7 @@ final class _ScriptedBoundAgent implements Agent {
   Future<AgentSession> createSession({
     AgentSessionId? id,
     SessionPersistence persistence = SessionPersistence.transient,
+    ProjectId? projectId,
   }) {
     throw UnimplementedError();
   }
