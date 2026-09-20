@@ -82,4 +82,35 @@ void main() {
     expect(rules, hasLength(1));
     expect(rules.single.terms, <String>['React']);
   });
+
+  testWidgets('replan action accepts a revised goal', (tester) async {
+    final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+    final controller = TaskWorkflowController(
+      repository: store,
+      invariantRepository: store,
+      gateway: FakeTaskAgentGateway(),
+    );
+    await controller.start(sessionId: 'chat-1', goal: 'Первая цель');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: TaskWorkflowCard(controller: controller),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('task-replan')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('task-replan-goal')),
+      'Уточнённая цель без React',
+    );
+    await tester.tap(find.byKey(const ValueKey('task-replan-submit')));
+    await tester.pumpAndSettle();
+
+    expect(controller.state.snapshot?.goal, 'Уточнённая цель без React');
+    expect(controller.state.snapshot?.planApproved, isFalse);
+  });
 }

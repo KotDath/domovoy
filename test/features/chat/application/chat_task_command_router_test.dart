@@ -34,6 +34,10 @@ void main() {
       expect(router.awaitingGoal, isTrue);
       expect(fallbackInputs, isEmpty);
 
+      expect((await router.send('/task status')).isSuccess, isTrue);
+      expect(router.awaitingGoal, isTrue);
+      expect(router.notice, 'Активной задачи в этом чате нет.');
+
       expect((await router.send('Собери проверенный ответ')).isSuccess, isTrue);
       expect(router.awaitingGoal, isFalse);
       expect(tasks.state.snapshot?.goal, 'Собери проверенный ответ');
@@ -42,7 +46,7 @@ void main() {
       expect(fallbackInputs, isEmpty);
 
       expect((await router.send('/task status')).isSuccess, isTrue);
-      expect(router.notice, contains('planning'));
+      expect(router.notice, contains('планирование'));
       expect((await router.send('Обычное сообщение')).isSuccess, isTrue);
       expect(fallbackInputs, <String>['Обычное сообщение']);
     },
@@ -67,4 +71,34 @@ void main() {
     expect(result.error?.message, contains('INVALID_TRANSITION'));
     expect(router.notice, contains('INVALID_TRANSITION'));
   });
+
+  test(
+    '/plan refuses to capture another goal while a task is active',
+    () async {
+      final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+      final tasks = TaskWorkflowController(
+        repository: store,
+        invariantRepository: store,
+        gateway: FakeTaskAgentGateway(),
+      );
+      final fallbackInputs = <String>[];
+      final router = ChatTaskCommandRouter(
+        tasks: tasks,
+        fallback: (input) async {
+          fallbackInputs.add(input);
+          return const ChatCommandResult.succeeded();
+        },
+      );
+      await router.attach(sessionId: 'chat-1');
+      await router.send('/plan');
+      await router.send('Первая цель');
+
+      final result = await router.send('/plan');
+
+      expect(result.status, ChatCommandStatus.failed);
+      expect(result.error?.message, contains('INVALID_TRANSITION'));
+      expect(router.awaitingGoal, isFalse);
+      expect(fallbackInputs, isEmpty);
+    },
+  );
 }

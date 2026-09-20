@@ -197,7 +197,9 @@ class _TaskDetails extends StatelessWidget {
       if (!terminal)
         OutlinedButton(
           key: const ValueKey('task-replan'),
-          onPressed: invoking ? null : () => unawaited(controller.replan()),
+          onPressed: invoking
+              ? null
+              : () => unawaited(_openReplanDialog(context)),
           child: const Text('Новый план'),
         ),
       if (!terminal)
@@ -232,14 +234,77 @@ class _TaskDetails extends StatelessWidget {
   }
 
   Future<void> _openInvariantEditor(BuildContext context) async {
-    final initial = await controller.loadTaskRules();
-    if (!context.mounted) return;
-    final rules = await showDialog<List<TaskInvariantRule>>(
-      context: context,
-      builder: (context) => _TaskInvariantEditor(initial: initial),
-    );
-    if (rules != null) await controller.saveTaskRules(rules);
+    try {
+      final initial = await controller.loadTaskRules();
+      if (!context.mounted) return;
+      final rules = await showDialog<List<TaskInvariantRule>>(
+        context: context,
+        builder: (context) => _TaskInvariantEditor(initial: initial),
+      );
+      if (rules != null) await controller.saveTaskRules(rules);
+    } on Object {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось загрузить инварианты.')),
+      );
+    }
   }
+
+  Future<void> _openReplanDialog(BuildContext context) async {
+    final goal = await showDialog<String>(
+      context: context,
+      builder: (context) => _TaskReplanDialog(initialGoal: snapshot.goal ?? ''),
+    );
+    if (goal != null) await controller.replan(goal: goal);
+  }
+}
+
+class _TaskReplanDialog extends StatefulWidget {
+  const _TaskReplanDialog({required this.initialGoal});
+
+  final String initialGoal;
+
+  @override
+  State<_TaskReplanDialog> createState() => _TaskReplanDialogState();
+}
+
+class _TaskReplanDialogState extends State<_TaskReplanDialog> {
+  late final TextEditingController _text = TextEditingController(
+    text: widget.initialGoal,
+  );
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Новый план'),
+    content: TextField(
+      key: const ValueKey('task-replan-goal'),
+      controller: _text,
+      autofocus: true,
+      minLines: 2,
+      maxLines: 5,
+      decoration: const InputDecoration(labelText: 'Уточнённая цель'),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Отмена'),
+      ),
+      FilledButton(
+        key: const ValueKey('task-replan-submit'),
+        onPressed: () {
+          final value = _text.text.trim();
+          if (value.isNotEmpty) Navigator.pop(context, value);
+        },
+        child: const Text('Перестроить'),
+      ),
+    ],
+  );
 }
 
 class _TaskInvariantEditor extends StatefulWidget {

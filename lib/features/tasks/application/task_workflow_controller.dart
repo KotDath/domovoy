@@ -12,6 +12,7 @@ final class TaskWorkflowController extends ChangeNotifier {
     required this.repository,
     required this.invariantRepository,
     required this.gateway,
+    this.cancelTimeout = const Duration(seconds: 2),
     AgentClock? clock,
     AgentIdFactory? ids,
   }) : clock = clock ?? SystemAgentClock(),
@@ -20,6 +21,7 @@ final class TaskWorkflowController extends ChangeNotifier {
   final TaskRepository repository;
   final TaskInvariantRepository invariantRepository;
   final TaskAgentGateway gateway;
+  final Duration cancelTimeout;
   final AgentClock clock;
   final AgentIdFactory ids;
   final TaskReducer _reducer = const TaskReducer();
@@ -667,7 +669,7 @@ final class TaskWorkflowController extends ChangeNotifier {
 
   Future<void> _cancelActiveBestEffort() async {
     try {
-      await gateway.cancelActive();
+      await gateway.cancelActive().timeout(cancelTimeout);
     } on Object {
       // The generation fence and persisted transition are authoritative. A
       // provider teardown error must not strand the workflow in a running UI

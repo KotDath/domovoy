@@ -153,6 +153,28 @@ void main() {
       },
     );
 
+    test('pause does not wait forever for provider cancellation', () async {
+      final gateway = _FakeTaskGateway()
+        ..blockNextExecution = true
+        ..hangOnCancel = true;
+      final harness = _Harness(
+        gateway: gateway,
+        cancelTimeout: const Duration(milliseconds: 1),
+      );
+      await harness.controller.start(
+        sessionId: 'session-1',
+        goal: 'Bound cancellation wait',
+      );
+      await harness.controller.approvePlan();
+      await gateway.executionStarted.future;
+
+      final paused = await harness.controller.pause();
+
+      expect(paused.isAccepted, isTrue);
+      expect(harness.controller.state.snapshot?.paused, isTrue);
+      expect(harness.controller.state.isInvokingAgent, isFalse);
+    });
+
     test('agent failure persists a recoverable paused checkpoint', () async {
       final gateway = _FakeTaskGateway()..executionFailuresRemaining = 1;
       final harness = _Harness(gateway: gateway);
@@ -367,7 +389,7 @@ void main() {
 }
 
 final class _Harness {
-  _Harness({_FakeTaskGateway? gateway})
+  _Harness({_FakeTaskGateway? gateway, Duration? cancelTimeout})
     : gateway = gateway ?? _FakeTaskGateway(),
       store = JsonlTaskStore(storage: FakeMemoryJsonlStorage()),
       clock = FakeAgentClock(startMicros: 10) {
@@ -375,6 +397,7 @@ final class _Harness {
       repository: store,
       invariantRepository: store,
       gateway: this.gateway,
+      cancelTimeout: cancelTimeout ?? const Duration(seconds: 2),
       clock: clock,
       ids: AgentIdFactory(prefix: 'test-task'),
     );
@@ -400,12 +423,14 @@ final class _FakeTaskGateway implements TaskAgentGateway {
   Completer<String>? _blockedExecution;
   var blockNextExecution = false;
   var throwOnCancel = false;
+  var hangOnCancel = false;
   var executionFailuresRemaining = 0;
   var cancelCount = 0;
 
   @override
   Future<void> cancelActive() async {
     cancelCount += 1;
+    if (hangOnCancel) return Completer<void>().future;
     if (throwOnCancel) throw StateError('provider teardown failed');
     final blocked = _blockedExecution;
     if (blocked != null && !blocked.isCompleted) {

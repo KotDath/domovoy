@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../../core/agents/agents.dart';
+import '../../../core/tasks/tasks.dart';
 import '../../tasks/application/tasks.dart';
 import 'chat_workspace_state.dart';
 
@@ -51,14 +52,27 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
   }
 
   Future<ChatCommandResult> send(String input) async {
+    await _attachTail;
     final value = input.trim();
     final command = value.toLowerCase();
     if (command == '/plan') {
       if (_sessionId == null) return _notAttached();
+      final snapshot = tasks.state.snapshot;
+      if (snapshot != null &&
+          snapshot.sessionId == _sessionId &&
+          !snapshot.cancelled &&
+          snapshot.phase != TaskPhase.done) {
+        return _failure(
+          '[INVALID_TRANSITION] В этом чате уже есть активная задача.',
+        );
+      }
       _awaitingGoal = true;
       _notice = 'Следующее сообщение станет целью задачи.';
       _notify();
       return const ChatCommandResult.succeeded();
+    }
+    if (command.startsWith('/task')) {
+      return _routeTaskCommand(command);
     }
     if (_awaitingGoal) {
       if (value.isEmpty) return _failure('Введите непустую цель задачи.');
@@ -72,13 +86,17 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
       );
       return _map(result, acceptedNotice: 'План подготовлен для утверждения.');
     }
+    return fallback(input);
+  }
+
+  Future<ChatCommandResult> _routeTaskCommand(String command) async {
     switch (command) {
       case '/task status':
         final snapshot = tasks.state.snapshot;
         _notice = snapshot == null
             ? 'Активной задачи в этом чате нет.'
-            : 'Этап: ${snapshot.phase.name}; действие: '
-                  '${snapshot.expectedAction.name}.';
+            : 'Этап: ${_phaseLabel(snapshot.phase)}; действие: '
+                  '${_actionLabel(snapshot.expectedAction)}.';
         _notify();
         return const ChatCommandResult.succeeded();
       case '/task pause':
@@ -96,13 +114,10 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
       case '/task cancel':
         return _map(await tasks.cancel(), acceptedNotice: 'Задача отменена.');
       default:
-        if (command.startsWith('/task')) {
-          return _failure(
-            'Неизвестная команда. Доступны status, pause, resume, replan, '
-            'cancel.',
-          );
-        }
-        return fallback(input);
+        return _failure(
+          'Неизвестная команда. Доступны status, pause, resume, replan, '
+          'cancel.',
+        );
     }
   }
 
@@ -141,3 +156,24 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
     notifyListeners();
   }
 }
+
+String _phaseLabel(TaskPhase phase) => switch (phase) {
+  TaskPhase.planning => 'планирование',
+  TaskPhase.execution => 'выполнение',
+  TaskPhase.validation => 'валидация',
+  TaskPhase.done => 'готово',
+};
+
+String _actionLabel(TaskExpectedAction action) => switch (action) {
+  TaskExpectedAction.captureGoal => 'задать цель',
+  TaskExpectedAction.preparePlan => 'подготовить план',
+  TaskExpectedAction.approvePlan => 'утвердить план',
+  TaskExpectedAction.runNode => 'выполнить шаг',
+  TaskExpectedAction.verifyNode => 'проверить шаг',
+  TaskExpectedAction.repairNode => 'исправить шаг',
+  TaskExpectedAction.composeFinal => 'собрать финал',
+  TaskExpectedAction.validateFinal => 'проверить финал',
+  TaskExpectedAction.resume => 'продолжить задачу',
+  TaskExpectedAction.resolveFailure => 'устранить ошибку',
+  TaskExpectedAction.none => 'нет',
+};

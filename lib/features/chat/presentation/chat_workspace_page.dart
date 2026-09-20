@@ -344,7 +344,9 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
 
   Widget _chatBody(BuildContext context) {
     final router = _taskRouter;
-    if (router == null) return _body(context);
+    if (router == null || _visibleSelectedSession == null) {
+      return _body(context);
+    }
     return Column(
       children: [
         TaskWorkflowCard(
