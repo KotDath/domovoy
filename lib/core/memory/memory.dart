@@ -1,10 +1,14 @@
+export 'batch_extractor.dart';
 export 'candidate.dart';
 export 'context.dart';
 export 'enums.dart';
 export 'entry.dart';
 export 'errors.dart';
 export 'extraction.dart';
+export 'extraction_coordinator.dart';
+export 'extraction_policy.dart';
 export 'ids.dart';
+export 'phrase_extractor.dart';
 export 'repository.dart';
 export 'render.dart';
 export 'retrieval.dart';

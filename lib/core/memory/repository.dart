@@ -1,9 +1,11 @@
+import '../agents/ids.dart';
 import '../llm/cancellation.dart';
 import '../projects/ids.dart';
 import 'candidate.dart';
 import 'enums.dart';
 import 'entry.dart';
 import 'errors.dart';
+import 'extraction.dart';
 import 'ids.dart';
 
 /// Persistence contract for one memory entry namespace (working or long-term).
@@ -305,5 +307,99 @@ final class InMemoryMemoryCandidateRepository
 void _throwIfCancelled(CancellationToken cancellation) {
   if (cancellation.isCancelled) {
     throwMemory(MemoryErrorKind.cancelled, 'cancelled');
+  }
+}
+
+/// In-memory reference implementation used by domain tests and composition.
+final class InMemoryMemoryExtractionCheckpointRepository
+    implements MemoryExtractionCheckpointRepository {
+  InMemoryMemoryExtractionCheckpointRepository({
+    this.codec = const MemoryExtractionCheckpointCodec(),
+  });
+
+  final MemoryExtractionCheckpointCodec codec;
+  final Map<String, MemoryExtractionCheckpoint> _checkpoints =
+      <String, MemoryExtractionCheckpoint>{};
+  final Map<String, int> _tombstones = <String, int>{};
+
+  @override
+  Future<MemoryExtractionCheckpoint?> load(
+    AgentSessionId sessionId, {
+    required CancellationToken cancellation,
+  }) async {
+    _throwIfCancelled(cancellation);
+    return _checkpoints[sessionId.value];
+  }
+
+  @override
+  Future<void> save(
+    MemoryExtractionCheckpoint checkpoint, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) async {
+    _throwIfCancelled(cancellation);
+    if (_tombstones.containsKey(checkpoint.sessionId.value)) {
+      throwMemory(
+        MemoryErrorKind.conflict,
+        'Checkpoint ${checkpoint.sessionId.value} has been discarded.',
+      );
+    }
+    final existing = _checkpoints[checkpoint.sessionId.value];
+    if (existing == null) {
+      if (expectedRevision != 0 || checkpoint.revision != 0) {
+        throwMemory(
+          MemoryErrorKind.conflict,
+          'Checkpoint ${checkpoint.sessionId.value} does not match the '
+          'expected revision.',
+        );
+      }
+      _checkpoints[checkpoint.sessionId.value] = checkpoint;
+      return;
+    }
+    if (existing.revision != expectedRevision ||
+        checkpoint.revision != expectedRevision + 1) {
+      throwMemory(
+        MemoryErrorKind.conflict,
+        'Checkpoint ${checkpoint.sessionId.value} was updated concurrently.',
+      );
+    }
+    validateMemoryExtractionCheckpointTransition(existing, checkpoint);
+    _checkpoints[checkpoint.sessionId.value] = checkpoint;
+  }
+
+  @override
+  Future<void> delete(
+    AgentSessionId sessionId, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) async {
+    _throwIfCancelled(cancellation);
+    final existing = _checkpoints[sessionId.value];
+    if (existing == null || _tombstones.containsKey(sessionId.value)) {
+      throwMemory(
+        MemoryErrorKind.conflict,
+        'Checkpoint ${sessionId.value} does not match the expected revision.',
+      );
+    }
+    if (existing.revision != expectedRevision) {
+      throwMemory(
+        MemoryErrorKind.conflict,
+        'Checkpoint ${sessionId.value} was updated concurrently.',
+      );
+    }
+    _checkpoints.remove(sessionId.value);
+    _tombstones[sessionId.value] = existing.revision;
+  }
+
+  @override
+  Future<List<MemoryExtractionCheckpoint>> list({
+    required CancellationToken cancellation,
+  }) async {
+    _throwIfCancelled(cancellation);
+    final result = _checkpoints.values.toList()
+      ..sort(
+        (left, right) => left.sessionId.value.compareTo(right.sessionId.value),
+      );
+    return List<MemoryExtractionCheckpoint>.unmodifiable(result);
   }
 }
