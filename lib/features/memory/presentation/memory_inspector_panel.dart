@@ -108,6 +108,20 @@ class _InspectorBody extends StatelessWidget {
         Expanded(
           child: Text('Память', style: Theme.of(context).textTheme.titleSmall),
         ),
+        if (_canClearSelectedLayer)
+          DomovoyQuietButton(
+            key: const ValueKey('memory-clear'),
+            minSize: const Size.square(DomovoyDimensions.minimumTarget),
+            alignment: Alignment.center,
+            tooltip: _clearTooltip,
+            onPressed: state.busy
+                ? null
+                : () => unawaited(_confirmClear(context)),
+            child: const Icon(
+              Icons.delete_sweep_outlined,
+              size: DomovoyDimensions.iconMedium,
+            ),
+          ),
         if (onClose != null)
           DomovoyQuietButton(
             key: const ValueKey('memory-close'),
@@ -122,6 +136,60 @@ class _InspectorBody extends StatelessWidget {
           ),
       ],
     );
+  }
+
+  bool get _canClearSelectedLayer => switch (state.selectedLayer) {
+    MemoryLayerView.shortTerm => false,
+    MemoryLayerView.working => state.working.isNotEmpty,
+    MemoryLayerView.longTerm => state.longTerm.isNotEmpty,
+    MemoryLayerView.candidates => state.candidates.isNotEmpty,
+  };
+
+  String get _clearTooltip => switch (state.selectedLayer) {
+    MemoryLayerView.shortTerm => 'Очистить',
+    MemoryLayerView.working => 'Очистить рабочую память проекта',
+    MemoryLayerView.longTerm => 'Очистить долговременную память',
+    MemoryLayerView.candidates => 'Очистить кандидатов',
+  };
+
+  Future<void> _confirmClear(BuildContext context) async {
+    final layer = state.selectedLayer;
+    final title = switch (layer) {
+      MemoryLayerView.shortTerm => 'Очистить память?',
+      MemoryLayerView.working => 'Очистить рабочую память?',
+      MemoryLayerView.longTerm => 'Очистить долговременную память?',
+      MemoryLayerView.candidates => 'Очистить кандидатов?',
+    };
+    final description = switch (layer) {
+      MemoryLayerView.shortTerm => '',
+      MemoryLayerView.working =>
+        'Все записи рабочей памяти текущего проекта будут забыты.',
+      MemoryLayerView.longTerm =>
+        'Все глобальные записи долговременной памяти будут забыты.',
+      MemoryLayerView.candidates => 'Все ожидающие кандидаты будут отклонены.',
+    };
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(description),
+        actions: [
+          TextButton(
+            key: const ValueKey('memory-clear-cancel'),
+            onPressed: () => Navigator.of(context).maybePop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            key: const ValueKey('memory-clear-confirm'),
+            onPressed: () => Navigator.of(context).maybePop(true),
+            child: const Text('Очистить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await controller.clearLayer(layer);
+    }
   }
 
   Widget _toggles(BuildContext context) {

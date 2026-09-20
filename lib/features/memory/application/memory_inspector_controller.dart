@@ -188,11 +188,18 @@ final class MemoryInspectorController extends ChangeNotifier
         if (target == null) {
           throw MemoryException(sanitizedMemoryNotFoundError());
         }
-        final entry = memoryEntryFromCandidate(
-          candidate: accepted,
-          entryId: target.id,
-          revision: target.revision + 1,
-          createdAtMicros: target.createdAtMicros,
+        final sourceValues = target.sourceIds
+            .map((source) => source.value)
+            .toSet();
+        final entry = target.revise(
+          content: accepted.content,
+          kind: accepted.kind,
+          sourceIds: <MemorySourceId>[
+            ...target.sourceIds,
+            ...accepted.sourceIds.where(
+              (source) => sourceValues.add(source.value),
+            ),
+          ],
           updatedAtMicros: now,
         );
         await repository.save(
@@ -349,6 +356,59 @@ final class MemoryInspectorController extends ChangeNotifier
         ),
       );
     }
+  }
+
+  /// Clears one persistent inspector surface while preserving append-only
+  /// audit history. Entries are forgotten; pending candidates are rejected.
+  Future<void> clearLayer(MemoryLayerView layer) async {
+    if (_state.busy || layer == MemoryLayerView.shortTerm) return;
+    final entries = switch (layer) {
+      MemoryLayerView.working => _state.working,
+      MemoryLayerView.longTerm => _state.longTerm,
+      MemoryLayerView.shortTerm ||
+      MemoryLayerView.candidates => const <MemoryEntry>[],
+    };
+    final candidates = layer == MemoryLayerView.candidates
+        ? _state.candidates
+        : const <MemoryCandidate>[];
+    if (entries.isEmpty && candidates.isEmpty) return;
+
+    _emit(_state.copyWith(busy: true, error: null));
+    final cancellation = CancellationSource().token;
+    try {
+      for (final entry in entries) {
+        final forgotten = entry.forget(updatedAtMicros: _nowMicros());
+        await repositories
+            .entryRepository(entry.layer)
+            .save(
+              forgotten,
+              expectedRevision: entry.revision,
+              cancellation: cancellation,
+            );
+      }
+      for (final candidate in candidates) {
+        final rejected = candidate.reject(updatedAtMicros: _nowMicros());
+        await repositories.candidateRepository.save(
+          rejected,
+          expectedRevision: candidate.revision,
+          cancellation: cancellation,
+        );
+      }
+      _emit(_state.copyWith(busy: false));
+      await refresh();
+    } on MemoryException catch (error) {
+      await _refreshAfterClearFailure(error.error.message);
+    } on Object {
+      await _refreshAfterClearFailure(
+        sanitizedMemoryPersistenceError().message,
+      );
+    }
+  }
+
+  Future<void> _refreshAfterClearFailure(String message) async {
+    _emit(_state.copyWith(busy: false));
+    await refresh();
+    _emit(_state.copyWith(error: message, busy: false));
   }
 
   /// Manual `Analyze now` over the current session transcript.

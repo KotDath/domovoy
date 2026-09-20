@@ -602,12 +602,19 @@ final class MemoryExtractionCoordinator {
     required int now,
     required int proposalIndex,
   }) {
+    final content = draft.content;
+    if (content == null) {
+      return null;
+    }
     final MemoryLayer layer;
     final MemoryKind kind;
     final MemoryEntryId? target;
     if (draft.operation == MemoryProposalOperation.update) {
       final existing = activeById[draft.targetEntryId?.value];
       if (existing == null) {
+        return null;
+      }
+      if (_sameContent(existing.content, content)) {
         return null;
       }
       layer = existing.layer;
@@ -617,10 +624,6 @@ final class MemoryExtractionCoordinator {
       layer = draft.layer;
       kind = draft.kind;
       target = null;
-    }
-    final content = draft.content;
-    if (content == null) {
-      return null;
     }
     final projectId = layer == MemoryLayer.working ? state.projectId : null;
     try {
@@ -672,6 +675,16 @@ final class MemoryExtractionCoordinator {
         if (entries.any(
           (entry) => entry.isActive && _sameStoredFact(entry, candidate),
         )) {
+          return false;
+        }
+      } else if (candidate.operation == MemoryProposalOperation.update) {
+        final targetId = candidate.targetEntryId;
+        final target = targetId == null
+            ? null
+            : await repositories
+                  .entryRepository(candidate.layer)
+                  .load(targetId, cancellation: token);
+        if (target != null && _sameStoredFact(target, candidate)) {
           return false;
         }
       }

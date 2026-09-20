@@ -32,6 +32,9 @@ never mixes them: a working record is only ever returned for its own project.
   `Запомни гглобально, что меня зовут Даниил` remain usable.
 - Equivalent candidates and already-confirmed active records are deduplicated
   across the command and periodic batch paths.
+- No-op update proposals whose target already contains the same content are
+  discarded. A real confirmed update preserves old source IDs and appends the
+  new provenance.
 - Only one extractor runs per session; a failure never advances the checkpoint,
   so the same batch is retried. Candidate identities are deterministic per
   session/source/proposal, so a retried batch cannot duplicate records.
@@ -49,6 +52,12 @@ inspector you can:
 - **edit** a candidate's content and kind before confirming;
 - **reject** a candidate (terminal, kept for audit);
 - **edit** or **forget** a confirmed record.
+
+The trash action in the inspector header clears the currently selected
+persistent surface after confirmation: current-project working entries are
+forgotten, global long-term entries are forgotten, and pending candidates are
+rejected. The short-term tab has no clear action because it is the chat
+transcript; clear it by deleting the chat.
 
 ## Read path and trace
 
@@ -123,7 +132,7 @@ toolchain available.
 |---|---|---|
 | Formatting | `dart format .` | ✅ no changes required |
 | Static analysis | `flutter analyze` | ✅ `No issues found!` |
-| Test suite | `flutter test` | ✅ 718 passed, 1 skipped |
+| Test suite | `flutter test` | ✅ 721 passed, 1 skipped |
 | Android debug build | `flutter build apk --debug` | ✅ `build/app/outputs/flutter-apk/app-debug.apk` |
 | Linux debug build | `flutter build linux --debug` | ✅ `build/linux/x64/debug/bundle/domovoy` |
 | Linux launch | `./build/linux/x64/debug/bundle/domovoy` | ✅ Dart VM service started; GTK window remained alive until the smoke timeout (only a non-fatal `Gdk-Message: Unable to load … cursor theme` warning) |

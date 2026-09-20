@@ -270,12 +270,17 @@ void main() {
 
     test('confirmation revises the targeted entry', () async {
       final harness = _Harness();
-      final target = workingEntry(id: 'entry-target', content: 'Old content.');
+      final target = workingEntry(
+        id: 'entry-target',
+        content: 'Old content.',
+        sourceValues: const <String>['old-source'],
+      );
       await harness.seedEntry(harness.working, target);
       final candidate = updateCandidate(
         id: 'candidate-update',
         targetEntryId: target.id,
         content: 'New content.',
+        sourceValues: const <String>['new-source'],
       );
       await harness.candidates.save(
         candidate,
@@ -292,6 +297,10 @@ void main() {
       final revised = await harness.working.load(target.id, cancellation: open);
       expect(revised!.revision, 1);
       expect(revised.content, 'New content.');
+      expect(revised.sourceIds.map((source) => source.value), <String>[
+        'old-source',
+        'new-source',
+      ]);
       expect(
         revised.supersedesEntryId,
         isNull,
@@ -374,6 +383,66 @@ void main() {
       expect(revised!.revision, 1);
       expect(revised.content, 'Revised working fact.');
       expect(revised.kind, MemoryKind.decision);
+      harness.dispose();
+    });
+
+    test('clear forgets only the selected memory surface', () async {
+      final harness = _Harness();
+      final current = workingEntry(id: 'working-current');
+      final other = workingEntry(
+        id: 'working-other',
+        project: 'project-2',
+        sourceValues: const <String>['other-source'],
+      );
+      final global = longTermEntry(id: 'longterm-global');
+      final candidate = createCandidate(id: 'candidate-pending');
+      await harness.seedEntry(harness.working, current);
+      await harness.seedEntry(harness.working, other);
+      await harness.seedEntry(harness.longTerm, global);
+      await harness.candidates.save(
+        candidate,
+        expectedRevision: 0,
+        cancellation: open,
+      );
+      await harness.controller.attachSession(
+        session: _snapshot(),
+        projectId: projectId,
+      );
+
+      await harness.controller.clearLayer(MemoryLayerView.working);
+      expect(
+        await harness.working.list(projectId: projectId, cancellation: open),
+        isEmpty,
+      );
+      expect(
+        await harness.working.list(
+          projectId: ProjectId('project-2'),
+          cancellation: open,
+        ),
+        <MemoryEntry>[other],
+      );
+      expect(await harness.longTerm.list(cancellation: open), <MemoryEntry>[
+        global,
+      ]);
+
+      await harness.controller.clearLayer(MemoryLayerView.longTerm);
+      expect(await harness.longTerm.list(cancellation: open), isEmpty);
+
+      await harness.controller.clearLayer(MemoryLayerView.candidates);
+      expect(
+        await harness.candidates.list(
+          status: MemoryCandidateStatus.pending,
+          cancellation: open,
+        ),
+        isEmpty,
+      );
+      expect(
+        await harness.candidates.list(
+          status: MemoryCandidateStatus.rejected,
+          cancellation: open,
+        ),
+        hasLength(1),
+      );
       harness.dispose();
     });
 

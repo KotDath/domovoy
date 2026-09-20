@@ -43,6 +43,10 @@ and active records are deduplicated across both paths. The host owns scopes,
 IDs, revisions, project membership, and persistence. Automatic deletion is
 forbidden.
 
+An update candidate is discarded when its target already has the proposed
+content. Confirming a real update extends the target's source provenance rather
+than replacing it.
+
 ## Read flow
 
 ```text
@@ -81,6 +85,8 @@ foreground. Reprocessing is idempotent by source IDs.
 - Retrieved memory is data, not policy or executable instructions.
 - Project and global scopes are assigned by the host.
 - UI inspection, edit, forget, and context trace are required behavior.
+- Bulk clearing is explicit and confirmed: entries become forgotten tombstones
+  and pending candidates become rejected audit records.
 
 ## Final implementation notes
 

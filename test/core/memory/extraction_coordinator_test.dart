@@ -370,6 +370,43 @@ void main() {
     );
 
     test(
+      'periodic extraction drops an update with unchanged content',
+      () async {
+        late final MemoryEntry target;
+        final harness = _Harness(
+          handler: (_) => <MemoryCandidateDraft>[
+            MemoryCandidateDraft(
+              operation: MemoryProposalOperation.update,
+              layer: MemoryLayer.working,
+              scope: MemoryScope.project,
+              kind: MemoryKind.fact,
+              content: target.content,
+              targetEntryId: target.id,
+            ),
+          ],
+        );
+        target = workingEntry(
+          id: 'existing-fact',
+          content: 'Проект деплоится только через Kubernetes.',
+        );
+        await harness.working.save(
+          target,
+          expectedRevision: 0,
+          cancellation: open,
+        );
+
+        await harness.coordinator.analyzeNow(
+          sessionId: sessionId,
+          projectId: projectId,
+          completedSources: _sources(2),
+        );
+
+        expect(harness.extractor.calls, 1);
+        expect(await harness.candidates.list(cancellation: open), isEmpty);
+      },
+    );
+
+    test(
       'waits for 40 messages then advances by 38 keeping a 2 overlap',
       () async {
         final harness = _Harness();

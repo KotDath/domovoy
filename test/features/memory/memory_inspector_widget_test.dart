@@ -331,6 +331,36 @@ void main() {
     fixture.controller.dispose();
   });
 
+  testWidgets('selected persistent layer can be cleared with confirmation', (
+    tester,
+  ) async {
+    _setSize(tester, const Size(900, 900));
+    final fixture = await _fixture();
+    await _pumpPanel(tester, fixture);
+
+    expect(find.byKey(const ValueKey('memory-clear')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('memory-layer-working')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('memory-clear')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('memory-clear')));
+    await tester.pumpAndSettle();
+    expect(find.text('Очистить рабочую память?'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('memory-clear-cancel')));
+    await tester.pumpAndSettle();
+    expect(await fixture.working.list(cancellation: open), hasLength(1));
+
+    await tester.tap(find.byKey(const ValueKey('memory-clear')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('memory-clear-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(await fixture.working.list(cancellation: open), isEmpty);
+    expect(fixture.controller.state.working, isEmpty);
+    expect(find.byKey(const ValueKey('memory-clear')), findsNothing);
+    fixture.controller.dispose();
+  });
+
   testWidgets('trace display toggles from the panel', (tester) async {
     _setSize(tester, const Size(1400, 900));
     final fixture = await _fixture();
