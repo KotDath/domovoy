@@ -260,6 +260,64 @@ void main() {
       expect(harness.extractor.calls, 0);
     });
 
+    test('a forgotten fact can be remembered again', () async {
+      final harness = _Harness();
+      final previousCandidate = createCandidate(
+        id: 'old-global-candidate',
+        layer: MemoryLayer.longTerm,
+        scope: MemoryScope.global,
+        kind: MemoryKind.fact,
+        content: 'меня зовут Даниил',
+      );
+      await harness.candidates.save(
+        previousCandidate,
+        expectedRevision: 0,
+        cancellation: open,
+      );
+      await harness.candidates.save(
+        previousCandidate.confirm(updatedAtMicros: 2),
+        expectedRevision: 0,
+        cancellation: open,
+      );
+      final previousEntry = longTermEntry(
+        id: 'old-global-entry',
+        kind: MemoryKind.fact,
+        content: 'меня зовут Даниил',
+      );
+      await harness.longTerm.save(
+        previousEntry,
+        expectedRevision: 0,
+        cancellation: open,
+      );
+      await harness.longTerm.save(
+        previousEntry.forget(updatedAtMicros: 2),
+        expectedRevision: 0,
+        cancellation: open,
+      );
+
+      final result = await harness.coordinator.onCompletedTurn(
+        sessionId: sessionId,
+        projectId: projectId,
+        completedSources: <MemoryExtractionSource>[
+          MemoryExtractionSource(
+            id: MemorySourceId('new-global-source'),
+            role: MemoryTranscriptRole.user,
+            text: 'запомни глобально, что меня зовут Даниил',
+          ),
+        ],
+      );
+
+      expect(result.candidates, hasLength(1));
+      expect(result.candidates.single.layer, MemoryLayer.longTerm);
+      expect(
+        await harness.candidates.list(
+          status: MemoryCandidateStatus.pending,
+          cancellation: open,
+        ),
+        hasLength(1),
+      );
+    });
+
     test('LLM fallback classifies only a missed latest command', () async {
       final classifier = _FakeCommandClassifier(
         const MemoryPhraseProposal(

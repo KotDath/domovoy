@@ -663,7 +663,7 @@ final class MemoryExtractionCoordinator {
       );
       if (existingCandidates.any(
         (existing) =>
-            !existing.status.isRejected &&
+            existing.status.isPending &&
             _sameCandidateProposal(existing, candidate),
       )) {
         return false;

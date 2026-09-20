@@ -43,6 +43,10 @@ and active records are deduplicated across both paths. The host owns scopes,
 IDs, revisions, project membership, and persistence. Automatic deletion is
 forbidden.
 
+Only pending candidates and active entries participate in deduplication. An
+accepted candidate whose entry was later forgotten does not prevent the user
+from remembering that fact again.
+
 An update candidate is discarded when its target already has the proposed
 content. Confirming a real update extends the target's source provenance rather
 than replacing it.

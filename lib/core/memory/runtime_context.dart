@@ -16,7 +16,9 @@ const memoryHostProtocol =
     'unavailable. An unqualified remember request targets project working '
     'memory; an explicitly global, cross-chat, permanent, or long-term request '
     'targets global long-term memory. Do not claim the fact is already saved '
-    'until the user has confirmed its candidate.';
+    'until the user has confirmed its candidate. Domovoy deduplicates against '
+    'active memory, so no new candidate appears when the same fact is already '
+    'stored; in that case explain that it is already present.';
 
 /// Live read toggles resolved for every retrieval plan.
 abstract interface class MemoryReadToggles {
