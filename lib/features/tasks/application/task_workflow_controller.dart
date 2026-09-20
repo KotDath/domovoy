@@ -98,7 +98,7 @@ final class TaskWorkflowController extends ChangeNotifier {
 
   Future<TaskCommandResult> pause() async {
     _generation += 1;
-    await gateway.cancelActive();
+    await _cancelActiveBestEffort();
     return _transition(TaskTransitionKind.paused);
   }
 
@@ -116,7 +116,7 @@ final class TaskWorkflowController extends ChangeNotifier {
 
   Future<TaskCommandResult> replan({String? goal}) async {
     _generation += 1;
-    await gateway.cancelActive();
+    await _cancelActiveBestEffort();
     final result = await _transition(TaskTransitionKind.replanned, text: goal);
     if (!result.isAccepted) return result;
     return _preparePlan(++_generation);
@@ -124,7 +124,7 @@ final class TaskWorkflowController extends ChangeNotifier {
 
   Future<TaskCommandResult> cancel() async {
     _generation += 1;
-    await gateway.cancelActive();
+    await _cancelActiveBestEffort();
     return _transition(TaskTransitionKind.cancelled);
   }
 
@@ -228,7 +228,13 @@ final class TaskWorkflowController extends ChangeNotifier {
       }
       final planCheck = await _checkCandidate(
         jsonEncode(plan.toJson()),
-        rules,
+        rules
+            .where(
+              (rule) =>
+                  rule.checker != TaskInvariantChecker.maximumCharacters &&
+                  rule.checker != TaskInvariantChecker.requiredTerms,
+            )
+            .toList(),
         generation,
       );
       if (planCheck != null) return planCheck;
@@ -268,6 +274,7 @@ final class TaskWorkflowController extends ChangeNotifier {
           return;
         }
         final policies = await _resolvePolicies(current);
+        if (!_isCurrent(generation)) return;
         if (!_policyStampsMatch(current.appliedPolicyStamps, policies.stamps)) {
           _fail(
             TaskTransitionFailureCode.replanRequired.wireName,
@@ -300,7 +307,7 @@ final class TaskWorkflowController extends ChangeNotifier {
       }
     } on Object {
       if (_isCurrent(generation)) {
-        _fail('AGENT_FAILURE', 'Автоматическое выполнение остановлено.');
+        await _pauseAfterAgentFailure();
       }
     } finally {
       if (_isCurrent(generation)) _setInvoking(false);
@@ -634,6 +641,32 @@ final class TaskWorkflowController extends ChangeNotifier {
 
   bool _isCurrent(int generation) => !_disposed && generation == _generation;
 
+  Future<void> _cancelActiveBestEffort() async {
+    try {
+      await gateway.cancelActive();
+    } on Object {
+      // The generation fence and persisted transition are authoritative. A
+      // provider teardown error must not strand the workflow in a running UI
+      // state or prevent the requested human command.
+    }
+    _setInvoking(false);
+  }
+
+  Future<void> _pauseAfterAgentFailure() async {
+    final snapshot = _state.snapshot;
+    if (snapshot != null &&
+        !snapshot.paused &&
+        !snapshot.cancelled &&
+        snapshot.phase != TaskPhase.done) {
+      await _transition(TaskTransitionKind.paused);
+    }
+    _fail(
+      'AGENT_FAILURE',
+      'Автоматическое выполнение приостановлено после сбоя агента. '
+          'Исправьте причину и продолжите задачу.',
+    );
+  }
+
   bool _isActive(TaskSnapshot snapshot) =>
       !snapshot.cancelled && snapshot.phase != TaskPhase.done;
 
@@ -653,7 +686,7 @@ final class TaskWorkflowController extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     _generation += 1;
-    unawaited(gateway.cancelActive());
+    unawaited(gateway.cancelActive().catchError((Object _) {}));
     super.dispose();
   }
 }

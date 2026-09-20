@@ -112,6 +112,7 @@ void main() {
         final paused = await harness.controller.pause();
         expect(paused.isAccepted, isTrue);
         expect(harness.controller.state.snapshot?.paused, isTrue);
+        expect(harness.controller.state.isInvokingAgent, isFalse);
         expect(
           harness.controller.state.snapshot?.nodes.single.status,
           TaskNodeStatus.interrupted,
@@ -126,6 +127,89 @@ void main() {
         expect(harness.controller.state.snapshot?.goal, 'Pause safely');
         expect(gateway.cancelCount, 1);
         expect(gateway.calls.where((call) => call == 'execute:work').length, 2);
+      },
+    );
+
+    test(
+      'pause remains authoritative when provider cancellation fails',
+      () async {
+        final gateway = _FakeTaskGateway()
+          ..blockNextExecution = true
+          ..throwOnCancel = true;
+        final harness = _Harness(gateway: gateway);
+        await harness.controller.start(
+          sessionId: 'session-1',
+          goal: 'Pause despite teardown failure',
+        );
+        await harness.controller.approvePlan();
+        await gateway.executionStarted.future;
+
+        final paused = await harness.controller.pause();
+
+        expect(paused.isAccepted, isTrue);
+        expect(harness.controller.state.snapshot?.paused, isTrue);
+        expect(harness.controller.state.isInvokingAgent, isFalse);
+        expect(gateway.cancelCount, 1);
+      },
+    );
+
+    test('agent failure persists a recoverable paused checkpoint', () async {
+      final gateway = _FakeTaskGateway()..executionFailuresRemaining = 1;
+      final harness = _Harness(gateway: gateway);
+      await harness.controller.start(
+        sessionId: 'session-1',
+        goal: 'Recover after provider failure',
+      );
+      await harness.controller.approvePlan();
+      await harness.controller.whenIdle;
+
+      expect(harness.controller.state.failure?.code, 'AGENT_FAILURE');
+      expect(harness.controller.state.snapshot?.paused, isTrue);
+      expect(
+        harness.controller.state.snapshot?.nodes.single.status,
+        TaskNodeStatus.interrupted,
+      );
+      expect(harness.controller.state.isInvokingAgent, isFalse);
+
+      final resumed = await harness.controller.resume();
+      expect(resumed.isAccepted, isTrue);
+      await harness.controller.whenIdle;
+      expect(harness.controller.state.snapshot?.phase, TaskPhase.done);
+    });
+
+    test(
+      'answer length invariant does not reject the plan JSON envelope',
+      () async {
+        final harness = _Harness();
+        await harness.store.saveProjectPolicy(
+          TaskInvariantPolicy(
+            scope: TaskInvariantScope.project,
+            ownerId: 'project-1',
+            revision: 0,
+            updatedAtMicros: 1,
+            rules: <TaskInvariantRule>[
+              TaskInvariantRule(
+                id: 'short-answer',
+                scope: TaskInvariantScope.project,
+                category: TaskInvariantCategory.businessRule,
+                description: 'The answer must be shorter than 60 characters.',
+                checker: TaskInvariantChecker.maximumCharacters,
+                maximumCharacters: 60,
+              ),
+            ],
+          ),
+          expectedRevision: 0,
+        );
+
+        final result = await harness.controller.start(
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          goal: 'Write a brief answer',
+        );
+
+        expect(result.isAccepted, isTrue);
+        expect(harness.controller.state.snapshot?.plan, isNotNull);
+        expect(harness.controller.state.failure, isNull);
       },
     );
 
@@ -288,11 +372,14 @@ final class _FakeTaskGateway implements TaskAgentGateway {
   final Completer<void> executionStarted = Completer<void>();
   Completer<String>? _blockedExecution;
   var blockNextExecution = false;
+  var throwOnCancel = false;
+  var executionFailuresRemaining = 0;
   var cancelCount = 0;
 
   @override
   Future<void> cancelActive() async {
     cancelCount += 1;
+    if (throwOnCancel) throw StateError('provider teardown failed');
     final blocked = _blockedExecution;
     if (blocked != null && !blocked.isCompleted) {
       blocked.completeError(StateError('cancelled'));
@@ -325,6 +412,10 @@ final class _FakeTaskGateway implements TaskAgentGateway {
   }) {
     calls.add('execute:${node.id.value}');
     if (!executionStarted.isCompleted) executionStarted.complete();
+    if (executionFailuresRemaining > 0) {
+      executionFailuresRemaining -= 1;
+      return Future<String>.error(StateError('provider failed'));
+    }
     if (blockNextExecution) {
       _blockedExecution = Completer<String>();
       return _blockedExecution!.future;

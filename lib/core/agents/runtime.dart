@@ -3329,7 +3329,8 @@ final class _LiveRun implements AgentRun {
         request: request,
       );
       request = _currentRequest();
-      if (session.runtime.dynamicContextProvider != null) {
+      if (options.includeDynamicContext &&
+          session.runtime.dynamicContextProvider != null) {
         _dynamicContext = await _resolveDynamicContext();
         final dynamic = _dynamicContext;
         if (dynamic != null && !dynamic.isEmpty) {

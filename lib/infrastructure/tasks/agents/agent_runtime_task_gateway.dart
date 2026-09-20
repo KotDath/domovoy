@@ -220,7 +220,12 @@ final class AgentRuntimeTaskGateway implements TaskAgentGateway {
       noProgress: baseDefinition.noProgress,
       budget: baseDefinition.budget,
     );
-    final run = runtime.agent(definition).run(jsonEncode(payload));
+    final run = runtime
+        .agent(definition)
+        .run(
+          jsonEncode(payload),
+          options: AgentRunOptions(includeDynamicContext: false),
+        );
     _activeRun = run;
     final answer = StringBuffer();
     try {

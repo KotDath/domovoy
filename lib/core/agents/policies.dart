@@ -314,6 +314,7 @@ final class AgentRunOptions {
     this.noProgressStop,
     this.reasoning,
     this.typedInput,
+    this.includeDynamicContext = true,
   }) {
     _validatePositiveOverride('maxModelTurns', maxModelTurns);
     _validateNonNegativeOverride('maxToolCalls', maxToolCalls);
@@ -347,6 +348,11 @@ final class AgentRunOptions {
   final QuotaOverride<int>? noProgressStop;
   final AgentReasoningOverride? reasoning;
   final Object? typedInput;
+
+  /// Whether runtime-level personalization and memory context may be added.
+  ///
+  /// Isolated, payload-bounded agents should disable this explicitly.
+  final bool includeDynamicContext;
 }
 
 final class ResolvedRunGuards {

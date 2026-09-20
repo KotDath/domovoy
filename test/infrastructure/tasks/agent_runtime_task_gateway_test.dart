@@ -73,4 +73,31 @@ void main() {
       );
     },
   );
+
+  test('disables runtime dynamic context for every task invocation', () async {
+    final runtime = ControlledAgentRuntime();
+    final gateway = AgentRuntimeTaskGateway(
+      runtime: runtime,
+      baseDefinition: testDefinition(),
+    );
+
+    final pending = gateway.preparePlan(
+      goal: 'Isolated goal',
+      rules: const <TaskInvariantRule>[],
+    );
+    runtime.latest.add(
+      const AgentAnswerDelta(
+        '{"nodes":[{"id":"work","title":"Work",'
+        '"instructions":"Do work","acceptanceCriteria":"Done",'
+        '"dependencies":[]}]}',
+      ),
+    );
+    runtime.latest.add(const AgentRunCompleted());
+    await runtime.latest.close();
+
+    await pending;
+
+    expect(runtime.options, hasLength(1));
+    expect(runtime.options.single?.includeDynamicContext, isFalse);
+  });
 }
