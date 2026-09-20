@@ -7,7 +7,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | G0 | Specification and Android tooling | — | done | `c986067..b615ee5` | docs; `claude-in-mobile` 4.4.1 Android doctor passes |
 | G1 | FSM, DAG, and invariant domain | G0 | done | `b615ee5..94b6657` | 16 domain tests; paired review completed |
 | G2 | JSONL persistence and recovery | G1 | done | `94b6657..72b2765` | 11 repository/replay tests; paired review settled; full suite: 760 passed, 1 skipped |
-| G3 | Scheduler and isolated agents | G2 | review | `af65e8d..9afba0a` | 9 scheduler/gateway tests; full suite: 769 passed, 1 skipped |
+| G3 | Scheduler and isolated agents | G2 | done | `af65e8d..3097149` | paired review settled; 13 scheduler/gateway tests; full suite: 773 passed, 1 skipped |
 | G4 | Chat routing and task UI | G3 | pending | — | controller/widget tests |
 | G5 | Integration, Android, video scripts | G4 | pending | — | full suite and QA evidence |
 | G6 | Final certification | G5 | pending | — | two-agent review and Android regression |
@@ -52,3 +52,16 @@ closed on fragment-only streams, and treats post-publication cleanup as
 best-effort. App composition in G4 must create exactly one shared store instance;
 the documented JSONL storage contract intentionally does not coordinate
 independent writers.
+
+## G3 review settlement
+
+Both reviewers identified that provider cancellation errors escaped the command
+API and that pausing an in-flight invocation left the UI running flag stale. The
+settlement makes cancellation best-effort while persisted reducer transitions
+remain authoritative, resets invocation state on human commands, and persists a
+recoverable paused checkpoint after an agent failure. A confirmed plan-envelope
+false positive was fixed by applying answer-size and required-term checks only
+to worker/final content, while forbidden-term and semantic checks still protect
+plans. Task-agent runs now explicitly disable runtime personalization and memory
+context, preserving the bounded-payload isolation contract. Targeted tests,
+`flutter analyze`, and the full 773-pass/1-skip suite are green.
