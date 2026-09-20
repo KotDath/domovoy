@@ -7,7 +7,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | G0 | Specification and Android tooling | — | done | `c986067..b615ee5` | docs; `claude-in-mobile` 4.4.1 Android doctor passes |
 | G1 | FSM, DAG, and invariant domain | G0 | done | `b615ee5..94b6657` | 16 domain tests; paired review completed |
 | G2 | JSONL persistence and recovery | G1 | done | `94b6657..72b2765` | 11 repository/replay tests; paired review settled; full suite: 760 passed, 1 skipped |
-| G3 | Scheduler and isolated agents | G2 | pending | — | orchestration tests |
+| G3 | Scheduler and isolated agents | G2 | review | `af65e8d..9afba0a` | 9 scheduler/gateway tests; full suite: 769 passed, 1 skipped |
 | G4 | Chat routing and task UI | G3 | pending | — | controller/widget tests |
 | G5 | Integration, Android, video scripts | G4 | pending | — | full suite and QA evidence |
 | G6 | Final certification | G5 | pending | — | two-agent review and Android regression |
