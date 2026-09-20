@@ -59,13 +59,13 @@ final class TaskPlanNode {
   };
 
   factory TaskPlanNode.fromJson(Map<String, Object?> json) => TaskPlanNode(
-    id: TaskNodeId(json['id']! as String),
+    id: TaskNodeId.parse(json['id']! as String),
     title: json['title']! as String,
     instructions: json['instructions']! as String,
     acceptanceCriteria: json['acceptanceCriteria']! as String,
     dependencies: (json['dependencies']! as List<Object?>)
         .cast<String>()
-        .map(TaskNodeId.new)
+        .map(TaskNodeId.parse)
         .toList(),
   );
 }

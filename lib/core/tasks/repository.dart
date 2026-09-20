@@ -11,14 +11,17 @@ abstract interface class TaskRepository {
 }
 
 abstract interface class TaskInvariantRepository {
-  Future<List<TaskInvariantRule>> forTask(TaskId taskId);
+  Future<TaskInvariantPolicy?> forTask(TaskId taskId);
 
-  Future<List<TaskInvariantRule>> forProject(String projectId);
+  Future<TaskInvariantPolicy?> forProject(String projectId);
 
-  Future<void> replaceTaskRules(TaskId taskId, List<TaskInvariantRule> rules);
+  Future<void> saveTaskPolicy(
+    TaskInvariantPolicy policy, {
+    required int expectedRevision,
+  });
 
-  Future<void> replaceProjectRules(
-    String projectId,
-    List<TaskInvariantRule> rules,
-  );
+  Future<void> saveProjectPolicy(
+    TaskInvariantPolicy policy, {
+    required int expectedRevision,
+  });
 }
