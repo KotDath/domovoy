@@ -314,6 +314,33 @@ void main() {
       },
     );
 
+    test(
+      'switching chats pauses the old task and restores its checkpoint',
+      () async {
+        final gateway = _FakeTaskGateway()..blockNextExecution = true;
+        final harness = _Harness(gateway: gateway);
+        await harness.controller.start(
+          sessionId: 'session-1',
+          goal: 'Keep this checkpoint',
+        );
+        await harness.controller.approvePlan();
+        await gateway.executionStarted.future;
+
+        final switched = await harness.controller.initialize('session-2');
+
+        expect(switched.isAccepted, isTrue);
+        expect(harness.controller.state.snapshot, isNull);
+        final stored = await harness.store.activeForSession('session-1');
+        expect(stored?.paused, isTrue);
+        expect(stored?.nodes.single.status, TaskNodeStatus.interrupted);
+
+        final restored = await harness.controller.initialize('session-1');
+        expect(restored.isAccepted, isTrue);
+        expect(harness.controller.state.snapshot?.goal, 'Keep this checkpoint');
+        expect(harness.controller.state.snapshot?.paused, isTrue);
+      },
+    );
+
     test('stops after the single final repair is rejected', () async {
       final gateway = _FakeTaskGateway(
         finalVerifications: const <TaskVerification>[

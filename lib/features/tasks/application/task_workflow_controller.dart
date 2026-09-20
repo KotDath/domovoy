@@ -30,16 +30,32 @@ final class TaskWorkflowController extends ChangeNotifier {
   Future<void>? _automatic;
   var _generation = 0;
   var _disposed = false;
+  String? _attachedSessionId;
 
   TaskWorkflowState get state => _state;
   Future<void> get whenIdle => _automatic ?? Future<void>.value();
 
   Future<TaskCommandResult> initialize(String sessionId) async {
+    if (_attachedSessionId == sessionId) {
+      return const TaskCommandResult.accepted();
+    }
     try {
+      final previous = _state.snapshot;
+      _generation += 1;
+      if (previous != null &&
+          previous.sessionId != sessionId &&
+          _isActive(previous)) {
+        await _cancelActiveBestEffort();
+        if (!previous.paused) {
+          final paused = await _transition(TaskTransitionKind.paused);
+          if (!paused.isAccepted) return paused;
+        }
+      }
       final snapshot = await repository.recoverActiveForSession(
         sessionId,
         occurredAtMicros: clock.nowMicros(),
       );
+      _attachedSessionId = sessionId;
       _emit(_state.copyWith(snapshot: snapshot, failure: null));
       if (snapshot != null && !snapshot.paused) {
         final generation = ++_generation;
@@ -61,6 +77,7 @@ final class TaskWorkflowController extends ChangeNotifier {
     String? projectId,
     required String goal,
   }) async {
+    _attachedSessionId = sessionId;
     if (_state.snapshot != null && _isActive(_state.snapshot!)) {
       return _fail(
         TaskTransitionFailureCode.invalidTransition.wireName,
@@ -177,6 +194,13 @@ final class TaskWorkflowController extends ChangeNotifier {
     } on TaskRepositoryException catch (error) {
       return _repositoryFailure(error);
     }
+  }
+
+  Future<List<TaskInvariantRule>> loadTaskRules() async {
+    final snapshot = _state.snapshot;
+    if (snapshot == null) return const <TaskInvariantRule>[];
+    final policy = await invariantRepository.forTask(snapshot.id);
+    return policy?.rules ?? const <TaskInvariantRule>[];
   }
 
   Future<TaskCommandResult> saveProjectRules(

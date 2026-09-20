@@ -11,6 +11,7 @@ import 'core/environment/platform_environment_reader.dart';
 import 'core/llm/llm.dart';
 import 'core/memory/memory.dart';
 import 'core/personalization/personalization.dart';
+import 'core/tasks/tasks.dart';
 import 'design_system/design_system.dart';
 import 'features/chat/application/chat_workspace_controller.dart';
 import 'features/chat/presentation/chat_workspace_page.dart';
@@ -28,11 +29,13 @@ import 'features/settings/domain/api_key_credentials.dart';
 import 'features/settings/domain/model_settings.dart';
 import 'features/settings/presentation/api_key_settings_dialog.dart';
 import 'features/settings/presentation/provider_api_keys_dialog.dart';
+import 'features/tasks/application/tasks.dart';
 import 'infrastructure/credentials/credentials.dart';
 import 'infrastructure/agents/jsonl/jsonl.dart';
 import 'infrastructure/memory/memory.dart';
 import 'infrastructure/personalization/personalization.dart';
 import 'infrastructure/projects/platform_projects.dart';
+import 'infrastructure/tasks/tasks.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
 import 'infrastructure/llm/discovery/native_streaming_provider.dart';
@@ -235,6 +238,9 @@ final class DomovoyDependencies {
     this.memoryInspector,
     this.profileController,
     this.profileInterviewLlm,
+    this.taskRepository,
+    this.taskInvariantRepository,
+    this.taskGateway,
     DeepSeekModelSettingsStore? modelSettingsStore,
     http.Client? httpClient,
     this.disposeCallback,
@@ -330,6 +336,9 @@ final class DomovoyDependencies {
       toggles: memoryToggles,
       extraction: memoryExtraction,
     );
+    final taskStore = JsonlTaskStore(
+      storage: createPlatformTaskJsonlStreamStorage(),
+    );
     return DomovoyDependencies(
       runtime: stack.runtime,
       registry: stack.registry,
@@ -347,6 +356,12 @@ final class DomovoyDependencies {
       memoryInspector: memoryInspector,
       profileController: profileController,
       profileInterviewLlm: profileInterviewLlm,
+      taskRepository: taskStore,
+      taskInvariantRepository: taskStore,
+      taskGateway: AgentRuntimeTaskGateway(
+        runtime: stack.runtime,
+        baseDefinition: stack.promptDefinition,
+      ),
     );
   }
 
@@ -365,6 +380,9 @@ final class DomovoyDependencies {
   final MemoryInspectorController? memoryInspector;
   final ProfileController? profileController;
   final ProfileInterviewLlm? profileInterviewLlm;
+  final TaskRepository? taskRepository;
+  final TaskInvariantRepository? taskInvariantRepository;
+  final TaskAgentGateway? taskGateway;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -425,6 +443,7 @@ class DomovoyApp extends StatefulWidget {
 class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
   final _navigatorKey = GlobalKey<NavigatorState>();
   late final ChatWorkspaceController _chatController;
+  TaskWorkflowController? _taskController;
   ProjectWorkspaceController? _projectController;
   var _themeMode = ThemeMode.system;
 
@@ -452,6 +471,18 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
         providerModelCatalog: dependencies.providerModelCatalog,
       ),
     );
+    final taskRepository = dependencies.taskRepository;
+    final taskInvariantRepository = dependencies.taskInvariantRepository;
+    final taskGateway = dependencies.taskGateway;
+    if (taskRepository != null &&
+        taskInvariantRepository != null &&
+        taskGateway != null) {
+      _taskController = TaskWorkflowController(
+        repository: taskRepository,
+        invariantRepository: taskInvariantRepository,
+        gateway: taskGateway,
+      );
+    }
     final projectStack = dependencies.projectStack;
     if (projectStack != null) {
       _projectController = ProjectWorkspaceController(
@@ -475,6 +506,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _taskController?.dispose();
     unawaited(
       (_projectController?.dispose() ?? Future<void>.value())
           .then((_) => _chatController.dispose())
@@ -519,6 +551,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
       home: _projectController == null
           ? ChatWorkspacePage(
               controller: _chatController,
+              tasks: _taskController,
               memory: widget.dependencies.memoryInspector,
               profiles: widget.dependencies.profileController,
               profileInterviewLlm: widget.dependencies.profileInterviewLlm,
@@ -528,6 +561,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
             )
           : ProjectWorkspacePage(
               controller: _projectController!,
+              tasks: _taskController,
               memory: widget.dependencies.memoryInspector,
               profiles: widget.dependencies.profileController,
               profileInterviewLlm: widget.dependencies.profileInterviewLlm,

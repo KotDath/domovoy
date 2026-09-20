@@ -15,6 +15,9 @@ import '../../memory/presentation/memory_inspector_sheet.dart';
 import '../../profile/application/profile_controller.dart';
 import '../../profile/application/profile_interview.dart';
 import '../../profile/presentation/profile_view.dart';
+import '../../tasks/application/tasks.dart';
+import '../../tasks/presentation/task_workflow_card.dart';
+import '../application/chat_task_command_router.dart';
 import '../application/chat_workspace_controller.dart';
 import '../application/chat_workspace_state.dart';
 import '../application/chat_timeline_projector.dart';
@@ -39,6 +42,7 @@ class ChatWorkspacePage extends StatefulWidget {
     this.themeMode,
     this.onThemeModeChanged,
     this.providersView,
+    this.tasks,
     super.key,
   });
 
@@ -50,6 +54,7 @@ class ChatWorkspacePage extends StatefulWidget {
   final ThemeMode? themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final Widget? providersView;
+  final TaskWorkflowController? tasks;
 
   @override
   State<ChatWorkspacePage> createState() => _ChatWorkspacePageState();
@@ -67,13 +72,17 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   var _pane = WorkspacePane.chat;
   var _profileDirty = false;
   Timer? _durationTimer;
+  ChatTaskCommandRouter? _taskRouter;
+  String? _taskSessionId;
 
   @override
   void initState() {
     super.initState();
     _bind(widget.controller, widget.projects);
+    _bindTasks();
     widget.profiles?.addListener(_profilesChanged);
     _syncMemory();
+    _syncTaskSession();
     if (widget.projects == null) {
       unawaited(widget.controller.initialize());
     } else {
@@ -97,6 +106,14 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       oldWidget.profiles?.removeListener(_profilesChanged);
       widget.profiles?.addListener(_profilesChanged);
     }
+    if (!identical(oldWidget.tasks, widget.tasks)) {
+      _taskRouter?.removeListener(_taskRouterChanged);
+      _taskRouter?.dispose();
+      _taskRouter = null;
+      _taskSessionId = null;
+      _bindTasks();
+      _syncTaskSession();
+    }
   }
 
   void _bind(
@@ -109,6 +126,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
         setState(() => _state = state);
         _syncDurationTimer();
         _syncMemory();
+        _syncTaskSession();
       }
     });
     _projects = projects?.state;
@@ -116,6 +134,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       if (mounted) {
         setState(() => _projects = state);
         _syncMemory();
+        _syncTaskSession();
       }
     });
   }
@@ -133,6 +152,38 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     unawaited(memory.attachSession(session: session, projectId: projectId));
   }
 
+  void _bindTasks() {
+    final tasks = widget.tasks;
+    if (tasks == null) return;
+    _taskRouter = ChatTaskCommandRouter(
+      tasks: tasks,
+      fallback: widget.controller.send,
+    )..addListener(_taskRouterChanged);
+  }
+
+  void _taskRouterChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _syncTaskSession() {
+    final router = _taskRouter;
+    final session = _visibleSelectedSession;
+    if (router == null) return;
+    if (session == null) {
+      _taskSessionId = null;
+      router.detach();
+      return;
+    }
+    if (_taskSessionId == session.id.value) return;
+    _taskSessionId = session.id.value;
+    unawaited(
+      router.attach(
+        sessionId: session.id.value,
+        projectId: session.projectId?.value,
+      ),
+    );
+  }
+
   void _profilesChanged() {
     if (mounted) setState(() {});
   }
@@ -142,6 +193,8 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     unawaited(_subscription?.cancel());
     unawaited(_projectSubscription?.cancel());
     widget.profiles?.removeListener(_profilesChanged);
+    _taskRouter?.removeListener(_taskRouterChanged);
+    _taskRouter?.dispose();
     _durationTimer?.cancel();
     _deleteFocusNode.dispose();
     _newChatFocusNode.dispose();
@@ -183,7 +236,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
                 ),
         WorkspacePane.providers => widget.providersView ?? _body(context),
         WorkspacePane.usage => UsageView(projection: _tokenProjection()),
-        WorkspacePane.chat => _body(context),
+        WorkspacePane.chat => _chatBody(context),
       },
       composer: _composer(),
       showComposer: _pane == WorkspacePane.chat,
@@ -289,6 +342,21 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     );
   }
 
+  Widget _chatBody(BuildContext context) {
+    final router = _taskRouter;
+    if (router == null) return _body(context);
+    return Column(
+      children: [
+        TaskWorkflowCard(
+          controller: router.tasks,
+          awaitingGoal: router.awaitingGoal,
+          notice: router.notice,
+        ),
+        Expanded(child: _body(context)),
+      ],
+    );
+  }
+
   ProfileContextTrace? _lastProfileTrace() {
     final events = _state.liveRun?.events;
     if (events == null) return null;
@@ -316,7 +384,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     return ChatComposer(
       providerGroups: _state.providerGroups,
       selection: snapshot.selection,
-      onSend: widget.controller.send,
+      onSend: _taskRouter?.send ?? widget.controller.send,
       onStop: widget.controller.stop,
       onSelectionChanged: widget.controller.changeSelection,
       running:
