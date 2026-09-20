@@ -8,7 +8,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | G1 | FSM, DAG, and invariant domain | G0 | done | `b615ee5..94b6657` | 16 domain tests; paired review completed |
 | G2 | JSONL persistence and recovery | G1 | done | `94b6657..72b2765` | 11 repository/replay tests; paired review settled; full suite: 760 passed, 1 skipped |
 | G3 | Scheduler and isolated agents | G2 | done | `af65e8d..3097149` | paired review settled; 13 scheduler/gateway tests; full suite: 773 passed, 1 skipped |
-| G4 | Chat routing and task UI | G3 | review | `cefe9c5..837acd1` | command-router, session-switch, and task-card widget tests; full suite: 778 passed, 1 skipped |
+| G4 | Chat routing and task UI | G3 | done | `cefe9c5..bd646bc` | paired review settled; command-router, session-switch, and task-card widget tests; full suite: 781 passed, 1 skipped |
 | G5 | Integration, Android, video scripts | G4 | pending | — | full suite and QA evidence |
 | G6 | Final certification | G5 | pending | — | two-agent review and Android regression |
 
@@ -65,3 +65,15 @@ to worker/final content, while forbidden-term and semantic checks still protect
 plans. Task-agent runs now explicitly disable runtime personalization and memory
 context, preserving the bounded-payload isolation contract. Targeted tests,
 `flutter analyze`, and the full 773-pass/1-skip suite are green.
+
+## G4 review settlement
+
+Both successful reviewers found that goal-capture mode intercepted task commands
+and that `/plan` could arm another goal while a task was already active. The
+settlement gives task commands precedence, refuses the second `/plan` with
+`INVALID_TRANSITION`, waits for chat attachment before routing input, localizes
+status text, and hides stale task UI when no chat is selected. It also makes
+replanning accept an edited goal for the Day 14 conflict scenario, surfaces
+invariant-loading failure, and bounds provider cancellation so pause/replan/
+cancel cannot wait forever. Targeted tests, `flutter analyze`, and the full
+781-pass/1-skip suite are green.
