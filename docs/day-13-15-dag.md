@@ -5,8 +5,8 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | ID | Group | Depends on | Status | Commit range | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | G0 | Specification and Android tooling | — | done | `c986067..b615ee5` | docs; `claude-in-mobile` 4.4.1 Android doctor passes |
-| G1 | FSM, DAG, and invariant domain | G0 | done | `b615ee5..G1 review fixes` | 16 domain tests; paired review completed |
-| G2 | JSONL persistence and recovery | G1 | pending | — | repository/replay tests |
+| G1 | FSM, DAG, and invariant domain | G0 | done | `b615ee5..94b6657` | 16 domain tests; paired review completed |
+| G2 | JSONL persistence and recovery | G1 | review | `94b6657..14dc097` | 6 repository/replay tests; full suite: 755 passed, 1 skipped |
 | G3 | Scheduler and isolated agents | G2 | pending | — | orchestration tests |
 | G4 | Chat routing and task UI | G3 | pending | — | controller/widget tests |
 | G5 | Integration, Android, video scripts | G4 | pending | — | full suite and QA evidence |
