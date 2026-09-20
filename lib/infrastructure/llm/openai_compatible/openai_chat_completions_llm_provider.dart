@@ -80,6 +80,7 @@ final class OpenAiChatCompletionsLlmProvider implements LlmProvider {
       client: _client,
       credentials: _credentials,
       environmentVariable: profile.snapshot.environmentVariable,
+      extraHeaders: _sessionHeaders(request),
       cancellation: cancellation,
       consume: (response, sink, token) {
         return consumeSse(
@@ -92,6 +93,18 @@ final class OpenAiChatCompletionsLlmProvider implements LlmProvider {
         );
       },
     );
+  }
+
+  Map<String, String>? _sessionHeaders(LlmRequest request) {
+    final header = profile.sessionAffinityHeader;
+    final sessionId = request.sessionId?.trim();
+    if (header == null ||
+        header.isEmpty ||
+        sessionId == null ||
+        sessionId.isEmpty) {
+      return null;
+    }
+    return <String, String>{header: sessionId};
   }
 }
 
@@ -158,8 +171,8 @@ final class _ChatCompletionsParseState {
       throwLlm(LlmErrorKind.protocol, 'Expected a delta object.');
     }
 
-    final reasoning = _textField(deltaMap, dialect.reasoningDeltaField);
-    if (reasoning != null && reasoning.isNotEmpty) {
+    final reasoning = _reasoningField(deltaMap, dialect);
+    if (reasoning != null) {
       sink.add(LlmReasoningDelta(reasoning));
     }
     final answer = _textField(deltaMap, dialect.answerDeltaField);
@@ -225,6 +238,24 @@ final class _ChatCompletionsParseState {
     );
   }
 
+  /// Providers name the streamed reasoning field differently; mirror the
+  /// upstream client by accepting the common aliases after the dialect's own.
+  static const _reasoningAliasFields = <String>['reasoning', 'reasoning_text'];
+
+  static String? _reasoningField(
+    Map<String, Object?> delta,
+    ChatCompletionsDialect dialect,
+  ) {
+    for (final field in <String>[
+      dialect.reasoningDeltaField,
+      ..._reasoningAliasFields,
+    ]) {
+      final value = _textField(delta, field);
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
   static String? _textField(Map<String, Object?> delta, String field) {
     final value = delta[field];
     if (value == null) {
@@ -262,7 +293,7 @@ Map<String, Object?> buildChatCompletionsBody({
         .map(encodeChatCompletionsTool)
         .toList();
   }
-  dialect.applyReasoning(body, request.generation);
+  dialect.applyReasoning(body, request.generation, model.capabilities);
   if (request.generation.temperature != null) {
     body['temperature'] = request.generation.temperature;
   }

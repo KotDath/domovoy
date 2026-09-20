@@ -3246,6 +3246,7 @@ final class _LiveRun implements AgentRun {
       continuationEntries: session.continuationEntries,
     ),
     generation: _generation,
+    sessionId: session.id.value,
   );
 
   Future<void> _loop() async {

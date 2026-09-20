@@ -179,7 +179,8 @@ final class ProviderModelCatalog {
     final lastGood = _snapshot?.models ?? const <LlmModel>[];
     for (final prior in lastGood) {
       final spec = ApiKeyProviderManifest.find(prior.providerId.value);
-      if (spec == null || prior.id.value == 'deepseek-v4-flash') {
+      if (spec == null ||
+          (spec.id == 'deepseek' && prior.id.value == 'deepseek-v4-flash')) {
         continue;
       }
       // A validated metadata generation is authoritative for providers with
@@ -263,9 +264,13 @@ final class ProviderModelCatalog {
       }
       final seen = <String>{};
       for (final id in ids) {
-        if (!seen.add(id) || id == 'deepseek-v4-flash') continue;
+        if (!seen.add(id) ||
+            (provider.id == 'deepseek' && id == 'deepseek-v4-flash')) {
+          continue;
+        }
         final row = rows[id];
         if (_isNonChat(id, row)) continue;
+        if (!_isSupportedChatCompletionModel(provider, id, row)) continue;
         try {
           models.add(_toModel(provider, id, row));
         } on Object {
@@ -295,6 +300,7 @@ final class ProviderModelCatalog {
         : const <String, Object?>{};
     final contextBound = limit['context'];
     final outputBound = limit['output'];
+    final reasoning = _reasoningControls(provider, row);
     return LlmModel(
       providerId: ProviderId(provider.id),
       id: ModelId(id),
@@ -304,9 +310,10 @@ final class ProviderModelCatalog {
       wireFamily: provider.wireFamily,
       capabilities: ModelCapabilities(
         supportsTextInput: true,
-        reasoning: ModelReasoningCapability.unsupported,
+        reasoning: reasoning.capability,
         supportsTools: false,
         supportsTemperature: false,
+        selectableEfforts: reasoning.efforts,
       ),
       contextBound: contextBound is int && contextBound > 0
           ? contextBound
@@ -314,6 +321,85 @@ final class ProviderModelCatalog {
       outputBound: outputBound is int && outputBound > 0 ? outputBound : null,
     );
   }
+
+  /// Derives reasoning controls from models.dev `reasoning_options` for
+  /// providers whose wire format this app can encode. Only `effort` options
+  /// are representable; toggle/budget-only models stay unavailable. A model
+  /// is optional (can be turned off) only when it declares an explicit
+  /// `none` effort, matching the upstream Pi catalog generator.
+  static ({ModelReasoningCapability capability, List<ReasoningEffort> efforts})
+  _reasoningControls(ApiKeyProviderSpec provider, Object? raw) {
+    const unavailable = (
+      capability: ModelReasoningCapability.unsupported,
+      efforts: <ReasoningEffort>[],
+    );
+    if (provider.reasoningFormat == ApiKeyProviderReasoningFormat.none) {
+      return unavailable;
+    }
+    final row = raw is Map ? raw : const <String, Object?>{};
+    final options = row['reasoning_options'];
+    if (options is! List) return unavailable;
+    final supportsToggle = _formatSupportsLevelLessReasoning(
+      provider.reasoningFormat,
+    );
+    final efforts = <ReasoningEffort>{};
+    var canDisable = false;
+    var supported = false;
+    for (final option in options) {
+      final map = option is Map ? option : const <String, Object?>{};
+      final type = map['type'];
+      if (type == 'toggle' || type == 'budget_tokens') {
+        // A toggle or budget control can only be honoured by formats that can
+        // express reasoning being on without a chosen level.
+        if (supportsToggle) {
+          supported = true;
+          canDisable = true;
+        }
+        continue;
+      }
+      if (type != 'effort') continue;
+      final values = map['values'];
+      if (values is! List) continue;
+      for (final value in values) {
+        if (value == 'none') {
+          canDisable = true;
+          continue;
+        }
+        final effort = switch (value) {
+          'low' => ReasoningEffort.low,
+          'medium' => ReasoningEffort.medium,
+          'high' => ReasoningEffort.high,
+          'max' => ReasoningEffort.max,
+          _ => null,
+        };
+        if (effort != null) {
+          efforts.add(effort);
+          supported = true;
+        }
+      }
+    }
+    if (!supported) return unavailable;
+    return (
+      capability: canDisable
+          ? ModelReasoningCapability.optional
+          : ModelReasoningCapability.required,
+      efforts: <ReasoningEffort>[
+        for (final effort in ReasoningEffort.values)
+          if (efforts.contains(effort)) effort,
+      ],
+    );
+  }
+
+  /// Formats whose wire contract can turn reasoning on without a chosen level.
+  static bool _formatSupportsLevelLessReasoning(
+    ApiKeyProviderReasoningFormat format,
+  ) => switch (format) {
+    ApiKeyProviderReasoningFormat.deepSeekThinking ||
+    ApiKeyProviderReasoningFormat.zaiThinking ||
+    ApiKeyProviderReasoningFormat.qwenThinking ||
+    ApiKeyProviderReasoningFormat.togetherReasoning => true,
+    _ => false,
+  };
 
   static bool _isNonChat(String id, Object? raw) {
     final row = raw is Map ? raw : const <String, Object?>{};
@@ -339,6 +425,45 @@ final class ProviderModelCatalog {
       'moderation',
       'rerank',
     ].any(normalized.contains);
+  }
+
+  /// OpenCode Zen and OpenCode Go multiplex several wire protocols behind one
+  /// gateway. Only models served by their OpenAI Chat Completions endpoint can
+  /// be handled by the chat-completions transport wired up in this app; models
+  /// routed to the Responses, Anthropic, or Google packages are omitted rather
+  /// than sent to the wrong endpoint. This mirrors the upstream Pi/OpenCode
+  /// catalog generator, including its Go-specific overrides, and requires a
+  /// metadata row so an unknown protocol is skipped instead of guessed.
+  static const _chatCompletionGatewayIds = <String>{'opencode', 'opencode-go'};
+
+  /// models.dev reports these OpenCode Go models as Anthropic, but the Go
+  /// gateway serves them over OpenAI Chat Completions.
+  static const _goChatCompletionsOverrides = <String>{
+    'minimax-m2.7',
+    'qwen3.5-plus',
+    'qwen3.6-plus',
+  };
+
+  static bool _isSupportedChatCompletionModel(
+    ApiKeyProviderSpec provider,
+    String id,
+    Object? raw,
+  ) {
+    if (!_chatCompletionGatewayIds.contains(provider.id)) return true;
+    if (raw is! Map) return false;
+    if (raw['status'] == 'deprecated') return false;
+    if (raw['tool_call'] != true) return false;
+    if (provider.id == 'opencode-go' &&
+        _goChatCompletionsOverrides.contains(id)) {
+      return true;
+    }
+    final providerMetadata = raw['provider'];
+    final npm = providerMetadata is Map ? providerMetadata['npm'] : null;
+    if (npm is! String || npm.isEmpty) return true;
+    return npm != '@ai-sdk/openai' &&
+        npm != '@ai-sdk/anthropic' &&
+        npm != '@ai-sdk/google' &&
+        !npm.startsWith('@ai-sdk/google-');
   }
 
   static Map<String, Object?> _parseMetadata(String body) {

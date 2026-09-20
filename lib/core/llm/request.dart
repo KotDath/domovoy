@@ -100,11 +100,17 @@ final class LlmRequest {
     required this.model,
     required this.context,
     LlmGenerationConfig? generation,
+    this.sessionId,
   }) : generation = generation ?? LlmGenerationConfig.defaults;
 
   final ModelRef model;
   final LlmContext context;
   final LlmGenerationConfig generation;
+
+  /// Opaque conversation identifier for providers that require session
+  /// affinity (OpenCode Zen's `x-opencode-session`). Deliberately excluded
+  /// from [LlmRequestSnapshot] so it never enters persisted session state.
+  final String? sessionId;
 
   LlmRequestSnapshot snapshot() => LlmRequestSnapshot(
     model: model,

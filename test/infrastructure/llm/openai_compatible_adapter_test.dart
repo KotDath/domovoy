@@ -972,6 +972,379 @@ void main() {
       expect(events.whereType<LlmTextDelta>(), isNotEmpty);
       expect(events.last, isA<LlmCancelled>());
     });
+
+    test('forwards the session affinity header only when declared', () async {
+      final model = LlmModel(
+        providerId: ProviderId('opencode'),
+        id: ModelId('deepseek-v4.1-flash'),
+        name: 'DeepSeek V4.1 Flash',
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        capabilities: ModelCapabilities(
+          supportsTextInput: true,
+          reasoning: ModelReasoningCapability.unsupported,
+          supportsTools: false,
+          supportsTemperature: true,
+        ),
+        contextBound: 200000,
+        outputBound: 65536,
+      );
+
+      OpenAiChatCompletionsLlmProvider zen(RecordingClient client) {
+        return OpenAiChatCompletionsLlmProvider(
+          profile: OpenAiCompatibleProfile.custom(
+            id: model.providerId,
+            endpoint: Uri.parse('https://opencode.ai/zen/v1/chat/completions'),
+            environmentVariable: 'OPENCODE_API_KEY',
+            models: <LlmModel>[model],
+            sessionAffinityHeader: 'x-opencode-session',
+          ),
+          client: client,
+          credentials: DefaultProviderCredentialResolver(
+            store: MemoryProviderCredentialStore(<ProviderId, String>{
+              model.providerId: 'zen-secret',
+            }),
+            readEnvironment: (_) => null,
+          ),
+        );
+      }
+
+      LlmRequest request({String? sessionId}) => LlmRequest(
+        model: model.ref,
+        generation: LlmGenerationConfig(reasoningMode: ReasoningMode.disabled),
+        sessionId: sessionId,
+        context: LlmContext(
+          messages: <LlmMessage>[
+            LlmMessage(
+              role: LlmMessageRole.user,
+              parts: <LlmContentPart>[LlmTextPart('hello')],
+            ),
+          ],
+        ),
+      );
+
+      final withSession = RecordingClient(
+        (_) => sseResponse(
+          'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+          'data: [DONE]\n\n',
+        ),
+      );
+      await zen(withSession)
+          .stream(
+            request(sessionId: 'ses-123'),
+            cancellation: CancellationSource().token,
+          )
+          .drain<void>();
+      expect(
+        withSession.requests.single.url,
+        Uri.parse('https://opencode.ai/zen/v1/chat/completions'),
+      );
+      expect(
+        withSession.requests.single.header('authorization'),
+        'Bearer zen-secret',
+      );
+      expect(
+        withSession.requests.single.header('x-opencode-session'),
+        'ses-123',
+      );
+
+      final noSession = RecordingClient((_) => sseResponse('data: [DONE]\n\n'));
+      await zen(noSession)
+          .stream(request(), cancellation: CancellationSource().token)
+          .drain<void>();
+      expect(noSession.requests.single.header('x-opencode-session'), isNull);
+
+      // The session id stays out of the persisted request snapshot.
+      expect(
+        jsonEncode(request(sessionId: 'ses-123').snapshot().toJson()),
+        isNot(contains('ses-123')),
+      );
+    });
+
+    test('encodes OpenAI reasoning effort for discovered models', () async {
+      LlmModel model(
+        ModelReasoningCapability reasoning,
+        List<ReasoningEffort> efforts,
+      ) => LlmModel(
+        providerId: ProviderId('opencode-go'),
+        id: ModelId('deepseek-v4.1-flash'),
+        name: 'DeepSeek V4.1 Flash',
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        capabilities: ModelCapabilities(
+          supportsTextInput: true,
+          reasoning: reasoning,
+          supportsTools: false,
+          supportsTemperature: false,
+          selectableEfforts: efforts,
+        ),
+        contextBound: 200000,
+        outputBound: 65536,
+      );
+
+      Future<Map<String, dynamic>> bodyFor(
+        LlmModel target,
+        ReasoningMode mode,
+        ReasoningEffort effort,
+      ) async {
+        final client = RecordingClient(
+          (_) => sseResponse(
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        );
+        final provider = OpenAiChatCompletionsLlmProvider(
+          profile: OpenAiCompatibleProfile.custom(
+            id: target.providerId,
+            endpoint: Uri.parse(
+              'https://opencode.ai/zen/go/v1/chat/completions',
+            ),
+            environmentVariable: 'OPENCODE_API_KEY',
+            models: <LlmModel>[target],
+            dialect: ChatCompletionsDialect.openAiReasoningEffort,
+            sessionAffinityHeader: 'x-opencode-session',
+          ),
+          client: client,
+          credentials: DefaultProviderCredentialResolver(
+            store: MemoryProviderCredentialStore(<ProviderId, String>{
+              target.providerId: 'go-secret',
+            }),
+            readEnvironment: (_) => null,
+          ),
+        );
+        await provider
+            .stream(
+              LlmRequest(
+                model: target.ref,
+                generation: LlmGenerationConfig(
+                  reasoningMode: mode,
+                  reasoningEffort: effort,
+                ),
+                context: LlmContext(
+                  messages: <LlmMessage>[
+                    LlmMessage(
+                      role: LlmMessageRole.user,
+                      parts: <LlmContentPart>[LlmTextPart('hi')],
+                    ),
+                  ],
+                ),
+              ),
+              cancellation: CancellationSource().token,
+            )
+            .drain<void>();
+        return client.requests.single.jsonBody;
+      }
+
+      final required = model(
+        ModelReasoningCapability.required,
+        <ReasoningEffort>[
+          ReasoningEffort.low,
+          ReasoningEffort.high,
+          ReasoningEffort.max,
+        ],
+      );
+      expect(
+        (await bodyFor(
+          required,
+          ReasoningMode.enabled,
+          ReasoningEffort.max,
+        ))['reasoning_effort'],
+        'max',
+      );
+      expect(
+        (await bodyFor(
+          required,
+          ReasoningMode.enabled,
+          ReasoningEffort.low,
+        ))['reasoning_effort'],
+        'low',
+      );
+      // "Авто" leaves the level to the provider.
+      expect(
+        (await bodyFor(
+          required,
+          ReasoningMode.enabled,
+          ReasoningEffort.modelDefault,
+        )).containsKey('reasoning_effort'),
+        isFalse,
+      );
+
+      final optional = model(
+        ModelReasoningCapability.optional,
+        <ReasoningEffort>[ReasoningEffort.low, ReasoningEffort.high],
+      );
+      expect(
+        (await bodyFor(
+          optional,
+          ReasoningMode.disabled,
+          ReasoningEffort.modelDefault,
+        ))['reasoning_effort'],
+        'none',
+      );
+      expect(
+        (await bodyFor(
+          optional,
+          ReasoningMode.enabled,
+          ReasoningEffort.high,
+        ))['reasoning_effort'],
+        'high',
+      );
+    });
+
+    test('accepts aliased reasoning delta fields', () async {
+      final events = await _deepSeek(
+        RecordingClient(
+          (_) => sseResponse(
+            'data: {"choices":[{"delta":{"reasoning":"think "}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        ),
+      ).stream(_prompt(), cancellation: CancellationSource().token).toList();
+      expect((events[0] as LlmReasoningDelta).text, 'think ');
+      expect((events[1] as LlmTextDelta).text, 'ok');
+    });
+
+    test('encodes provider-specific reasoning envelopes', () async {
+      Future<Map<String, dynamic>> bodyFor(
+        String providerId,
+        ChatCompletionsDialect dialect,
+        ReasoningMode mode,
+        ReasoningEffort effort, {
+        ModelReasoningCapability reasoning = ModelReasoningCapability.required,
+      }) async {
+        final model = LlmModel(
+          providerId: ProviderId(providerId),
+          id: ModelId('m'),
+          name: 'M',
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          capabilities: ModelCapabilities(
+            supportsTextInput: true,
+            reasoning: reasoning,
+            supportsTools: false,
+            supportsTemperature: false,
+            selectableEfforts: const <ReasoningEffort>[
+              ReasoningEffort.low,
+              ReasoningEffort.high,
+            ],
+          ),
+          contextBound: 1000,
+          outputBound: 100,
+        );
+        final client = RecordingClient((_) => sseResponse('data: [DONE]\n\n'));
+        final provider = OpenAiChatCompletionsLlmProvider(
+          profile: OpenAiCompatibleProfile.custom(
+            id: model.providerId,
+            endpoint: Uri.parse('https://example.test/v1/chat/completions'),
+            environmentVariable: 'KEY',
+            models: <LlmModel>[model],
+            dialect: dialect,
+          ),
+          client: client,
+          credentials: DefaultProviderCredentialResolver(
+            store: MemoryProviderCredentialStore(<ProviderId, String>{
+              model.providerId: 'k',
+            }),
+            readEnvironment: (_) => null,
+          ),
+        );
+        await provider
+            .stream(
+              LlmRequest(
+                model: model.ref,
+                generation: LlmGenerationConfig(
+                  reasoningMode: mode,
+                  reasoningEffort: effort,
+                ),
+                context: LlmContext(
+                  messages: <LlmMessage>[
+                    LlmMessage(
+                      role: LlmMessageRole.user,
+                      parts: <LlmContentPart>[LlmTextPart('hi')],
+                    ),
+                  ],
+                ),
+              ),
+              cancellation: CancellationSource().token,
+            )
+            .drain<void>();
+        return client.requests.single.jsonBody;
+      }
+
+      const enabled = ReasoningMode.enabled;
+      const disabled = ReasoningMode.disabled;
+      const modelDefault = ReasoningEffort.modelDefault;
+
+      final zai = await bodyFor(
+        'zai',
+        ChatCompletionsDialect.zaiThinking,
+        enabled,
+        ReasoningEffort.high,
+      );
+      expect(zai['thinking'], <String, Object?>{
+        'type': 'enabled',
+        'clear_thinking': false,
+      });
+      expect(zai['reasoning_effort'], 'high');
+      final zaiOff = await bodyFor(
+        'zai',
+        ChatCompletionsDialect.zaiThinking,
+        disabled,
+        modelDefault,
+        reasoning: ModelReasoningCapability.optional,
+      );
+      expect(zaiOff['thinking'], <String, Object?>{'type': 'disabled'});
+
+      final qwen = await bodyFor(
+        'qwen-token-plan',
+        ChatCompletionsDialect.qwenThinking,
+        enabled,
+        ReasoningEffort.low,
+      );
+      expect(qwen['enable_thinking'], isTrue);
+      expect(qwen['reasoning_effort'], 'low');
+
+      final openRouter = await bodyFor(
+        'openrouter',
+        ChatCompletionsDialect.openRouterReasoning,
+        enabled,
+        ReasoningEffort.high,
+      );
+      expect(openRouter['reasoning'], <String, Object?>{'effort': 'high'});
+
+      final antLing = await bodyFor(
+        'ant-ling',
+        ChatCompletionsDialect.antLingReasoning,
+        enabled,
+        ReasoningEffort.low,
+      );
+      expect(antLing['reasoning'], <String, Object?>{'effort': 'low'});
+
+      final together = await bodyFor(
+        'together',
+        ChatCompletionsDialect.togetherReasoning,
+        enabled,
+        ReasoningEffort.high,
+      );
+      expect(together['reasoning'], <String, Object?>{'enabled': true});
+      expect(together['reasoning_effort'], 'high');
+
+      final deepSeek = await bodyFor(
+        'deepseek',
+        ChatCompletionsDialect.catalogDeepSeekThinking,
+        enabled,
+        ReasoningEffort.high,
+      );
+      expect(deepSeek['thinking'], <String, Object?>{'type': 'enabled'});
+      expect(deepSeek['reasoning_effort'], 'high');
+      // "Авто" keeps thinking on but sends no explicit level.
+      final deepSeekAuto = await bodyFor(
+        'deepseek',
+        ChatCompletionsDialect.catalogDeepSeekThinking,
+        enabled,
+        modelDefault,
+      );
+      expect(deepSeekAuto['thinking'], <String, Object?>{'type': 'enabled'});
+      expect(deepSeekAuto.containsKey('reasoning_effort'), isFalse);
+    });
   });
 }
 

@@ -82,9 +82,14 @@ ProductionAgentStack buildProductionAgentStack({
         final profile = OpenAiCompatibleProfile.builtInDynamic(
           snapshot: spec.profile,
           models: initial,
-          dialectFor: spec.id == 'deepseek' || spec.id == 'moonshotai'
-              ? ChatCompletionsDialect.forBuiltInModel
-              : (_) => ChatCompletionsDialect.generic,
+          dialectFor: (modelId) {
+            if (spec.id == 'deepseek' || spec.id == 'moonshotai') {
+              final builtIn = ChatCompletionsDialect.forBuiltInModel(modelId);
+              if (builtIn != ChatCompletionsDialect.generic) return builtIn;
+            }
+            return _dialectForReasoningFormat(spec.reasoningFormat);
+          },
+          sessionAffinityHeader: spec.sessionAffinityHeader,
         );
         compatibleProfiles[spec.id] = profile;
         registry.registerProvider(
@@ -174,6 +179,26 @@ ProductionAgentStack buildProductionAgentStack({
     providerModelCatalog: providerModelCatalog,
   );
 }
+
+ChatCompletionsDialect _dialectForReasoningFormat(
+  ApiKeyProviderReasoningFormat format,
+) => switch (format) {
+  ApiKeyProviderReasoningFormat.none => ChatCompletionsDialect.generic,
+  ApiKeyProviderReasoningFormat.openAiEffort =>
+    ChatCompletionsDialect.openAiReasoningEffort,
+  ApiKeyProviderReasoningFormat.deepSeekThinking =>
+    ChatCompletionsDialect.catalogDeepSeekThinking,
+  ApiKeyProviderReasoningFormat.zaiThinking =>
+    ChatCompletionsDialect.zaiThinking,
+  ApiKeyProviderReasoningFormat.qwenThinking =>
+    ChatCompletionsDialect.qwenThinking,
+  ApiKeyProviderReasoningFormat.openRouterReasoning =>
+    ChatCompletionsDialect.openRouterReasoning,
+  ApiKeyProviderReasoningFormat.antLingReasoning =>
+    ChatCompletionsDialect.antLingReasoning,
+  ApiKeyProviderReasoningFormat.togetherReasoning =>
+    ChatCompletionsDialect.togetherReasoning,
+};
 
 String _newRuntimeNamespace() {
   final random = Random.secure();

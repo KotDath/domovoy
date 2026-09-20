@@ -135,6 +135,7 @@ Stream<LlmEvent> runLlmHttpStream({
   required ProviderCredentialResolver credentials,
   required String environmentVariable,
   Map<String, String> Function(String credential)? authorizationHeaders,
+  Map<String, String>? extraHeaders,
   required CancellationToken cancellation,
   required Future<void> Function(
     http.StreamedResponse response,
@@ -177,6 +178,7 @@ Stream<LlmEvent> runLlmHttpStream({
             credentials: credentials,
             environmentVariable: environmentVariable,
             authorizationHeaders: authorizationHeaders,
+            extraHeaders: extraHeaders,
             cancellation: local.token,
             requested: cancellation,
             consume: consume,
@@ -210,6 +212,7 @@ Future<void> _run({
   required String environmentVariable,
   required Map<String, String> Function(String credential)?
   authorizationHeaders,
+  Map<String, String>? extraHeaders,
   required CancellationToken cancellation,
   required CancellationToken requested,
   required Future<void> Function(
@@ -263,6 +266,7 @@ Future<void> _run({
             'Accept': 'text/event-stream',
             'Content-Type': 'application/json',
             ...?authorizationHeaders?.call(credential.value),
+            ...?extraHeaders,
           })
           ..body = jsonEncode(body);
     if (authorizationHeaders == null) {

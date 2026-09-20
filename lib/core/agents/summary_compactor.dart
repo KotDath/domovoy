@@ -197,6 +197,7 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
           outputAllowance: outputAllowance,
           priorSummary: rollingSummary,
           groups: groups.sublist(cursor, end),
+          sessionId: context.sessionId.value,
         );
         final estimate = _estimate(request, context, reports);
         if (estimate > inputCapacity) {
@@ -264,8 +265,10 @@ final class OpenCodeSummaryCompactor implements AgentHistoryCompactor {
     required int outputAllowance,
     required List<LlmMessage> priorSummary,
     required List<AgentInteractionGroup> groups,
+    required String sessionId,
   }) => LlmRequest(
     model: selectedModel.ref,
+    sessionId: sessionId,
     context: LlmContext(
       messages: <LlmMessage>[
         LlmMessage(

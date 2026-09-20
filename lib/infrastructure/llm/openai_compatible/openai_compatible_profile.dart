@@ -13,6 +13,7 @@ final class OpenAiCompatibleProfile {
     required List<LlmModel> models,
     required ChatCompletionsDialect Function(ModelId id) dialectFor,
     this.securityPolicy = LlmEndpointSecurityPolicy.productionHttpsOnly,
+    this.sessionAffinityHeader,
     bool allowEmptyModels = false,
   }) : _models = List<LlmModel>.unmodifiable(List<LlmModel>.from(models)),
        _dialectFor = dialectFor {
@@ -86,6 +87,7 @@ final class OpenAiCompatibleProfile {
     String dialectId = 'custom_chat_completions',
     LlmEndpointSecurityPolicy securityPolicy =
         LlmEndpointSecurityPolicy.productionHttpsOnly,
+    String? sessionAffinityHeader,
   }) {
     return OpenAiCompatibleProfile(
       snapshot: LlmProviderProfile(
@@ -99,6 +101,7 @@ final class OpenAiCompatibleProfile {
       models: models,
       dialectFor: (_) => dialect,
       securityPolicy: securityPolicy,
+      sessionAffinityHeader: sessionAffinityHeader,
     );
   }
 
@@ -106,10 +109,12 @@ final class OpenAiCompatibleProfile {
     required LlmProviderProfile snapshot,
     required List<LlmModel> models,
     required ChatCompletionsDialect Function(ModelId id) dialectFor,
+    String? sessionAffinityHeader,
   }) => OpenAiCompatibleProfile(
     snapshot: snapshot,
     models: models,
     dialectFor: dialectFor,
+    sessionAffinityHeader: sessionAffinityHeader,
     allowEmptyModels: true,
   );
 
@@ -117,6 +122,10 @@ final class OpenAiCompatibleProfile {
   List<LlmModel> _models;
   List<LlmModel> get models => _models;
   final LlmEndpointSecurityPolicy securityPolicy;
+
+  /// Request header that carries the per-conversation session id for gateways
+  /// that need session affinity (OpenCode Zen). Null for ordinary providers.
+  final String? sessionAffinityHeader;
   final ChatCompletionsDialect Function(ModelId id) _dialectFor;
 
   ProviderId get id => snapshot.id;
