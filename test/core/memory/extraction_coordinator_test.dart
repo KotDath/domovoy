@@ -283,6 +283,28 @@ void main() {
       expect(checkpoint.pendingSourceIds, isEmpty);
     });
 
+    test('manual analyze recovers an explicit natural phrase', () async {
+      final harness = _Harness(handler: (_) => const <MemoryCandidateDraft>[]);
+      final result = await harness.coordinator.analyzeNow(
+        sessionId: sessionId,
+        projectId: projectId,
+        completedSources: <MemoryExtractionSource>[
+          MemoryExtractionSource(
+            id: MemorySourceId('u-natural'),
+            role: MemoryTranscriptRole.user,
+            text: 'Запомни, что деплой делается только через kubernetes',
+          ),
+        ],
+      );
+
+      expect(result.isExtracted, isTrue);
+      expect(harness.extractor.calls, 1);
+      final stored = await harness.candidates.list(cancellation: open);
+      expect(stored, hasLength(1));
+      expect(stored.single.layer, MemoryLayer.working);
+      expect(stored.single.content, 'деплой делается только через kubernetes');
+    });
+
     test('idle debounce flushes after 30 minutes in the foreground', () async {
       final harness = _Harness();
       await harness.coordinator.onCompletedTurn(

@@ -31,6 +31,24 @@ void main() {
       expect(proposals[1].layer, MemoryLayer.longTerm);
     });
 
+    test('parses natural remember-that phrases', () {
+      final russian = parseMemoryRememberPhrases(
+        'Запомни, что деплой делается только через kubernetes',
+      );
+      final english = parseMemoryRememberPhrases(
+        'Remember globally that I prefer concise answers.',
+      );
+
+      expect(russian, hasLength(1));
+      expect(russian.single.scope, MemoryScope.project);
+      expect(russian.single.layer, MemoryLayer.working);
+      expect(russian.single.content, 'деплой делается только через kubernetes');
+      expect(english, hasLength(1));
+      expect(english.single.scope, MemoryScope.global);
+      expect(english.single.layer, MemoryLayer.longTerm);
+      expect(english.single.content, 'I prefer concise answers.');
+    });
+
     test('drops malformed and secret-bearing phrases', () {
       final proposals = parseMemoryRememberPhrases(
         'remember project:\n'

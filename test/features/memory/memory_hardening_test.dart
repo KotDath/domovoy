@@ -381,7 +381,7 @@ void main() {
         await chat.initialize();
         await chat.createChat(projectId: projectA);
         final sent = await chat.send(
-          'remember project: Deployment uses kubernetes.',
+          'Запомни, что деплой делается только через kubernetes',
         );
         expect(sent.isSuccess, isTrue);
 
@@ -395,6 +395,11 @@ void main() {
         );
         expect(candidates, hasLength(1));
         expect(candidates.single.projectId, projectA);
+        expect(candidates.single.layer, MemoryLayer.working);
+        expect(
+          candidates.single.content,
+          'деплой делается только через kubernetes',
+        );
 
         await chat.dispose();
         await runtime.close();

@@ -19,12 +19,12 @@ final class MemoryPhraseProposal {
 }
 
 final _englishRemember = RegExp(
-  r'^\s*remember(?:\s+(project|global))?\s*[:\-]\s*(.+)$',
+  r'^[ \t]*remember(?:[ \t]+(project|global(?:ly)?))?(?:[ \t]*[:\-][ \t]*|[ \t]*,?[ \t]+that[ \t]+)(.+)$',
   caseSensitive: false,
   multiLine: true,
 );
 final _russianRemember = RegExp(
-  r'^\s*запомни(?:\s+(проект|глобально))?\s*[:\-]\s*(.+)$',
+  r'^[ \t]*запомни(?:[ \t]+(проект|глобально))?(?:[ \t]*[:\-][ \t]*|[ \t]*,?[ \t]+что[ \t]+)(.+)$',
   caseSensitive: false,
   multiLine: true,
 );
@@ -54,7 +54,9 @@ void _collect(
   }
   final normalizedScope = scopeToken?.toLowerCase();
   final isGlobal =
-      normalizedScope == 'global' || normalizedScope == 'глобально';
+      normalizedScope == 'global' ||
+      normalizedScope == 'globally' ||
+      normalizedScope == 'глобально';
   final isProject =
       normalizedScope == null ||
       normalizedScope == 'project' ||

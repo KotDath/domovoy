@@ -20,9 +20,12 @@ never mixes them: a working record is only ever returned for its own project.
 - An idle flush becomes due **30 minutes** after the last completed response and
   runs in the foreground only.
 - **Analyze now** (memory inspector) flushes every pending source immediately.
+- **Analyze now** also replays deterministic explicit phrases, so it can recover
+  a missed automatic callback without relying on the extraction model.
 - Explicit phrases create candidates with no LLM call:
   `remember project: ...`, `remember global: ...`, `remember: ...`,
-  `запомни проект: ...`, `запомни глобально: ...`.
+  `remember that ...`, `запомни проект: ...`, `запомни глобально: ...`,
+  `запомни, что ...`.
 - Only one extractor runs per session; a failure never advances the checkpoint,
   so the same batch is retried. Candidate identities are deterministic per
   session/source/proposal, so a retried batch cannot duplicate records.
@@ -81,7 +84,7 @@ flutter run -d linux
 ```
 
 1. Create a project and a chat.
-2. Send `remember project: Deployment uses kubernetes.`
+2. Send `Запомни, что деплой делается только через kubernetes`.
 3. Open the memory inspector (brain icon in the header). Under **Кандидаты**
    confirm the candidate.
 4. Under **Рабочая** the confirmed record appears. Edit or forget it.
@@ -113,7 +116,7 @@ toolchain available.
 |---|---|---|
 | Formatting | `dart format .` | ✅ no changes required |
 | Static analysis | `flutter analyze` | ✅ `No issues found!` |
-| Test suite | `flutter test` | ✅ 704 passed, 1 skipped |
+| Test suite | `flutter test` | ✅ 706 passed, 1 skipped |
 | Android debug build | `flutter build apk --debug` | ✅ `build/app/outputs/flutter-apk/app-debug.apk` |
 | Linux debug build | `flutter build linux --debug` | ✅ `build/linux/x64/debug/bundle/domovoy` |
 | Linux launch | `./build/linux/x64/debug/bundle/domovoy` | ✅ Dart VM service started; GTK window remained alive until the smoke timeout (only a non-fatal `Gdk-Message: Unable to load … cursor theme` warning) |

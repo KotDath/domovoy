@@ -180,8 +180,21 @@ final class MemoryExtractionCoordinator {
     state.paused = false;
     state.projectId = projectId;
     _cacheSources(state, completedSources);
-    await _recordActivity(state, _now());
-    return _flush(sessionId, force: true);
+    final now = _now();
+    final explicit = await _persistExplicitPhrases(
+      state,
+      completedSources,
+      now,
+    );
+    await _recordActivity(state, now);
+    final result = await _flush(sessionId, force: true);
+    if (explicit.isEmpty) {
+      return result;
+    }
+    return MemoryExtractionResult.extracted(<MemoryCandidate>[
+      ...explicit,
+      ...result.candidates,
+    ]);
   }
 
   /// Pauses scheduling. Timers are cancelled; the checkpoint is unchanged.
