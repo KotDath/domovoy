@@ -313,6 +313,59 @@ void main() {
       await tester.runAsync(harness.dispose);
     },
   );
+
+  testWidgets('project delete action confirms that files are preserved', (
+    tester,
+  ) async {
+    final harness = (await tester.runAsync(_Harness.create))!;
+    harness.fs.mount(components: ['home', 'work']);
+    harness.fs.bindHandle('h', ['home', 'work']);
+    harness.picker.enqueue(
+      const ProjectPickedDirectory(handleId: 'h', safeLabel: 'work'),
+    );
+    final created = await tester.runAsync(
+      () => harness.projects.createProject(
+        const ProjectCreateDraft(
+          name: 'Alpha',
+          mode: ProjectDesktopRootMode.attachExisting,
+        ),
+      ),
+    );
+    expect(created!.isSuccess, isTrue);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: DomovoyTheme.light(),
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            child: SingleChildScrollView(
+              child: ProjectSidebarSection(
+                controller: harness.projects,
+                state: harness.projects.state,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('project-delete')));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('сам каталог проекта удалены не будут'),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('project-delete-cancel')));
+    await tester.pumpAndSettle();
+    expect(
+      harness.projects.state.groups.any((group) => group.title == 'Alpha'),
+      isTrue,
+    );
+
+    await tester.runAsync(harness.dispose);
+  });
 }
 
 final class _Harness {

@@ -144,7 +144,11 @@ class ProjectSidebarSection extends StatelessWidget {
                   alignment: Alignment.center,
                   onPressed: () => unawaited(unawaitedDelete(context)),
                   tooltip: 'Удалить проект',
-                  child: const Text('×'),
+                  child: Icon(
+                    Icons.delete_outline_rounded,
+                    size: DomovoyDimensions.iconMedium,
+                    color: tokens.danger,
+                  ),
                 ),
             ],
           ),

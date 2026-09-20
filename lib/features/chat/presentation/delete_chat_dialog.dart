@@ -59,7 +59,8 @@ class _DeleteChatConfirmation extends StatelessWidget {
             const SizedBox(height: DomovoyDimensions.space3),
             Text(
               'Чат будет необратимо удалён из истории Domovoy. '
-              'Отменить это действие нельзя.',
+              'Созданные и прикреплённые файлы удалены не будут. '
+              'Отменить удаление истории нельзя.',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: DomovoyDimensions.space6),

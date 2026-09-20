@@ -170,7 +170,10 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       issueCount: _state.catalogIssues.length,
       tokenProjection: _tokenProjection(),
       onOpenTokens: selected == null ? null : _openTokens,
-      onDeleteChat: selected == null || _state.isDisposed ? null : _deleteChat,
+      onDeleteChat:
+          _pane != WorkspacePane.chat || selected == null || _state.isDisposed
+          ? null
+          : _deleteChat,
       deleteFocusNode: _deleteFocusNode,
       newChatFocusNode: _newChatFocusNode,
       themeMode: widget.themeMode,

@@ -219,7 +219,25 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         size: DomovoyDimensions.iconMedium,
                       ),
                     ),
-                  const SizedBox.shrink(key: ValueKey('chat-delete')),
+                  if (widget.onDeleteChat != null) ...[
+                    const SizedBox(width: DomovoyDimensions.space1),
+                    DomovoyQuietButton(
+                      key: const ValueKey('chat-delete'),
+                      minSize: const Size.square(
+                        DomovoyDimensions.minimumTarget,
+                      ),
+                      alignment: Alignment.center,
+                      focusNode: widget.deleteFocusNode,
+                      onPressed: widget.onDeleteChat,
+                      tooltip: 'Удалить текущий чат',
+                      child: Icon(
+                        Icons.delete_outline_rounded,
+                        size: DomovoyDimensions.iconMedium,
+                        color: tokens.danger,
+                      ),
+                    ),
+                  ] else
+                    const SizedBox.shrink(key: ValueKey('chat-delete')),
                 ],
               ),
             ),
