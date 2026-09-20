@@ -16,12 +16,14 @@ class ProfileView extends StatefulWidget {
     required this.controller,
     this.interviewLlm,
     this.lastTrace,
+    this.onDirtyChanged,
     super.key,
   });
 
   final ProfileController controller;
   final ProfileInterviewLlm? interviewLlm;
   final ProfileContextTrace? lastTrace;
+  final ValueChanged<bool>? onDirtyChanged;
 
   @override
   State<ProfileView> createState() => _ProfileViewState();
@@ -33,10 +35,23 @@ class _ProfileViewState extends State<ProfileView> {
   final _user = TextEditingController();
   ProfileId? _selectedId;
   var _document = _ProfileDocument.user;
+  var _baselineName = '';
+  var _baselineSoul = '';
+  var _baselineUser = '';
+  var _loadingEditors = false;
+  var _reportedDirty = false;
+
+  bool get _isDirty =>
+      _name.text != _baselineName ||
+      _soul.text != _baselineSoul ||
+      _user.text != _baselineUser;
 
   @override
   void initState() {
     super.initState();
+    _name.addListener(_editorChanged);
+    _soul.addListener(_editorChanged);
+    _user.addListener(_editorChanged);
     widget.controller.addListener(_controllerChanged);
     _controllerChanged();
     unawaited(widget.controller.initialize());
@@ -57,6 +72,9 @@ class _ProfileViewState extends State<ProfileView> {
   @override
   void dispose() {
     widget.controller.removeListener(_controllerChanged);
+    _name.removeListener(_editorChanged);
+    _soul.removeListener(_editorChanged);
+    _user.removeListener(_editorChanged);
     _name.dispose();
     _soul.dispose();
     _user.dispose();
@@ -80,10 +98,29 @@ class _ProfileViewState extends State<ProfileView> {
   }
 
   void _load(AssistantProfile profile) {
+    _loadingEditors = true;
     _selectedId = profile.id;
     _name.text = profile.name;
     _soul.text = profile.soulMarkdown;
     _user.text = profile.userMarkdown;
+    _baselineName = profile.name;
+    _baselineSoul = profile.soulMarkdown;
+    _baselineUser = profile.userMarkdown;
+    _loadingEditors = false;
+    _reportDirty(false);
+  }
+
+  void _editorChanged() {
+    if (_loadingEditors || !mounted) return;
+    final dirty = _isDirty;
+    _reportDirty(dirty);
+    setState(() {});
+  }
+
+  void _reportDirty(bool value) {
+    if (_reportedDirty == value) return;
+    _reportedDirty = value;
+    widget.onDirtyChanged?.call(value);
   }
 
   AssistantProfile? _selected(ProfileState state) {
@@ -173,7 +210,15 @@ class _ProfileViewState extends State<ProfileView> {
                     subtitle: profile.id == state.activeProfileId
                         ? const Text('Активен')
                         : null,
-                    onTap: () => setState(() => _load(profile)),
+                    onTap: () {
+                      if (_isDirty && profile.id != selected?.id) {
+                        _showError(
+                          'Сохраните или отмените изменения перед переключением профиля.',
+                        );
+                        return;
+                      }
+                      setState(() => _load(profile));
+                    },
                   ),
               ],
             ),
@@ -220,7 +265,9 @@ class _ProfileViewState extends State<ProfileView> {
               ),
               FilledButton.icon(
                 key: const ValueKey('profile-save'),
-                onPressed: state.busy ? null : () => _save(profile),
+                onPressed: state.busy || !_isDirty
+                    ? null
+                    : () => _save(profile),
                 icon: const Icon(Icons.save_outlined),
                 label: const Text('Сохранить'),
               ),
@@ -310,9 +357,21 @@ class _ProfileViewState extends State<ProfileView> {
           ),
           const SizedBox(height: DomovoyDimensions.space3),
           Text(
+            _isDirty
+                ? 'Есть несохранённые изменения.'
+                : 'Сохранено: ревизия ${profile.revision}.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: _isDirty
+                  ? Theme.of(context).colorScheme.tertiary
+                  : Theme.of(context).colorScheme.primary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: DomovoyDimensions.space1),
+          Text(
             trace == null
-                ? 'Профиль будет применён автоматически к следующему запросу.'
-                : 'Последний запрос: ${trace.profileName}, ревизия ${trace.profileRevision}, ${trace.renderedCharacters} символов.',
+                ? 'Сохранённый профиль применится автоматически к следующему запросу.'
+                : 'Последний запрос использовал: ${trace.profileName}, ревизия ${trace.profileRevision}, ${trace.renderedCharacters} символов.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -329,7 +388,16 @@ class _ProfileViewState extends State<ProfileView> {
       soulMarkdown: _soul.text,
       userMarkdown: _user.text,
     );
-    if (updated != null && mounted) setState(() => _load(updated));
+    if (updated != null && mounted) {
+      setState(() => _load(updated));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Профиль сохранён. Ревизия ${updated.revision} применится к следующему запросу.',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _create() async {

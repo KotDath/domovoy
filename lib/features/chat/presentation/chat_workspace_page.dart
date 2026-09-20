@@ -65,12 +65,14 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   final _deleteFocusNode = FocusNode(debugLabel: 'chat-delete');
   final _newChatFocusNode = FocusNode(debugLabel: 'chat-new');
   var _pane = WorkspacePane.chat;
+  var _profileDirty = false;
   Timer? _durationTimer;
 
   @override
   void initState() {
     super.initState();
     _bind(widget.controller, widget.projects);
+    widget.profiles?.addListener(_profilesChanged);
     _syncMemory();
     if (widget.projects == null) {
       unawaited(widget.controller.initialize());
@@ -90,6 +92,10 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       if (widget.projects == null) {
         unawaited(widget.controller.initialize());
       }
+    }
+    if (!identical(oldWidget.profiles, widget.profiles)) {
+      oldWidget.profiles?.removeListener(_profilesChanged);
+      widget.profiles?.addListener(_profilesChanged);
     }
   }
 
@@ -127,10 +133,15 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     unawaited(memory.attachSession(session: session, projectId: projectId));
   }
 
+  void _profilesChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     unawaited(_subscription?.cancel());
     unawaited(_projectSubscription?.cancel());
+    widget.profiles?.removeListener(_profilesChanged);
     _durationTimer?.cancel();
     _deleteFocusNode.dispose();
     _newChatFocusNode.dispose();
@@ -159,6 +170,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
           ? 'Модель не выбрана'
           : _modelLabel(selected.selection.model),
       modelLabelFor: (summary) => _modelLabel(summary.selection.model),
+      profileLabel: _activeProfileLabel(),
       body: switch (_pane) {
         WorkspacePane.profiles =>
           widget.profiles == null
@@ -167,6 +179,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
                   controller: widget.profiles!,
                   interviewLlm: widget.profileInterviewLlm,
                   lastTrace: _lastProfileTrace(),
+                  onDirtyChanged: (value) => _profileDirty = value,
                 ),
         WorkspacePane.providers => widget.providersView ?? _body(context),
         WorkspacePane.usage => UsageView(projection: _tokenProjection()),
@@ -177,15 +190,14 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       onNewChat: enabled ? _createChat : null,
       onSelectChat: enabled
           ? (id) {
-              setState(() => _pane = WorkspacePane.chat);
-              _selectChat(id);
+              if (_switchPane(WorkspacePane.chat)) _selectChat(id);
             }
           : null,
       onOpenSettings: _openSettings,
-      onOpenUsage: () => setState(() => _pane = WorkspacePane.usage),
+      onOpenUsage: () => _switchPane(WorkspacePane.usage),
       onOpenProfiles: widget.profiles == null
           ? null
-          : () => setState(() => _pane = WorkspacePane.profiles),
+          : () => _switchPane(WorkspacePane.profiles),
       enabled: enabled,
       issueCount: _state.catalogIssues.length,
       tokenProjection: _tokenProjection(),
@@ -213,8 +225,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
               selectedChatId: _state.selectedId,
               onSelectChat: enabled
                   ? (id) {
-                      setState(() => _pane = WorkspacePane.chat);
-                      _selectChat(id);
+                      if (_switchPane(WorkspacePane.chat)) _selectChat(id);
                     }
                   : null,
               onNewChat: enabled ? _createChat : null,
@@ -293,6 +304,12 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     return null;
   }
 
+  String? _activeProfileLabel() {
+    final profile = widget.profiles?.state.activeProfile;
+    if (profile == null) return null;
+    return '${profile.name} · r${profile.revision}';
+  }
+
   Widget _composer() {
     final snapshot = _visibleSelectedSession;
     if (snapshot == null) return const ChatUnavailableComposer();
@@ -368,10 +385,27 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
 
   void _openSettings() {
     if (widget.providersView != null) {
-      setState(() => _pane = WorkspacePane.providers);
+      _switchPane(WorkspacePane.providers);
       return;
     }
     unawaited(widget.controller.openSettings());
+  }
+
+  bool _switchPane(WorkspacePane pane) {
+    if (_pane == WorkspacePane.profiles &&
+        pane != WorkspacePane.profiles &&
+        _profileDirty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Сохраните изменения профиля перед переходом в другой раздел.',
+          ),
+        ),
+      );
+      return false;
+    }
+    setState(() => _pane = pane);
+    return true;
   }
 
   void _syncDurationTimer() {

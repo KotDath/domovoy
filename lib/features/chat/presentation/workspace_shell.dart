@@ -13,6 +13,7 @@ class WorkspaceShell extends StatefulWidget {
     required this.title,
     required this.modelLabel,
     required this.modelLabelFor,
+    this.profileLabel,
     required this.body,
     required this.composer,
     required this.onNewChat,
@@ -47,6 +48,7 @@ class WorkspaceShell extends StatefulWidget {
   final String title;
   final String modelLabel;
   final String Function(AgentSessionSummary summary) modelLabelFor;
+  final String? profileLabel;
   final Widget body;
   final Widget composer;
   final VoidCallback? onNewChat;
@@ -208,6 +210,38 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
                   ),
+                  if (widget.profileLabel != null) ...[
+                    DomovoyQuietButton(
+                      key: const ValueKey('active-profile-indicator'),
+                      minSize: const Size(
+                        DomovoyDimensions.minimumTarget,
+                        DomovoyDimensions.minimumTarget,
+                      ),
+                      padding: DomovoyDimensions.controlInsets,
+                      tooltip:
+                          'Активный профиль для следующего запроса: ${widget.profileLabel}',
+                      onPressed: widget.onOpenProfiles,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.person_outline_rounded,
+                            size: DomovoyDimensions.iconSmall,
+                          ),
+                          const SizedBox(width: DomovoyDimensions.space2),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 160),
+                            child: Text(
+                              widget.profileLabel!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: DomovoyDimensions.space2),
+                  ],
                   if (widget.memoryPanel != null || widget.onOpenMemory != null)
                     DomovoyQuietButton(
                       key: const ValueKey('memory-open'),

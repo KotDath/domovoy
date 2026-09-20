@@ -39,6 +39,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('По умолчанию'), findsWidgets);
+    expect(find.text('Сохранено: ревизия 0.'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('profile-create')));
     await tester.pumpAndSettle();
@@ -59,12 +60,16 @@ void main() {
       find.byKey(const ValueKey('profile-editor:user')),
       expertUserMarkdown,
     );
+    await tester.pump();
+    expect(find.text('Есть несохранённые изменения.'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('profile-save')));
     await tester.pumpAndSettle();
     expect(
       controller.state.activeProfile?.userMarkdown,
       expertUserMarkdown.trim(),
     );
+    expect(find.text('Сохранено: ревизия 1.'), findsOneWidget);
+    expect(find.textContaining('Профиль сохранён.'), findsOneWidget);
   });
 }
 
