@@ -12,6 +12,9 @@
         "glob": "allow",
         "grep": "allow",
         "list": "allow",
+        "external_directory": {
+          "/home/kotdath/omp/personal/*": "allow"
+        },
         "bash": {
           "*": "deny",
           ".opencode/bin/read-check *": "allow",
