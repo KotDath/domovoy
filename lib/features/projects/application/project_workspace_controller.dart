@@ -5,6 +5,7 @@ import '../../../core/agents/errors.dart';
 import '../../../core/agents/ids.dart';
 import '../../../core/llm/cancellation.dart';
 import '../../../core/projects/catalog.dart';
+import '../../../core/projects/default_project.dart';
 import '../../../core/projects/enums.dart';
 import '../../../core/projects/errors.dart';
 import '../../../core/projects/grants.dart';
@@ -73,7 +74,6 @@ final class ProjectWorkspaceController {
       await service.cleanupOrphans();
       await chat.initialize();
       await _refresh();
-      await _selectDefaultProjectIfUnassigned();
       _initialized = true;
     } on Object catch (error) {
       _emit(
@@ -150,21 +150,9 @@ final class ProjectWorkspaceController {
       await _refresh(error: result.error);
     }
     if (result.isSuccess) {
-      await _selectDefaultProjectIfUnassigned();
+      await selectUnassigned();
     }
     return result;
-  }
-
-  Future<void> _selectDefaultProjectIfUnassigned() async {
-    if (_state.selectedKind != ProjectSelectionKind.unassigned) return;
-    final group = _state.groups.cast<ProjectChatGroup?>().firstWhere(
-      (candidate) => candidate?.project?.isDefaultProject ?? false,
-      orElse: () => null,
-    );
-    final id = group?.projectId;
-    if (id != null) {
-      await selectProject(id);
-    }
   }
 
   Future<ProjectCommandResult> regrantSelected() async {
@@ -197,17 +185,7 @@ final class ProjectWorkspaceController {
   }
 
   Future<ChatCommandResult> createChat() async {
-    var group = _state.selectedGroup;
-    if (group?.kind == ProjectSelectionKind.unassigned) {
-      final defaultGroup = _state.groups.cast<ProjectChatGroup?>().firstWhere(
-        (candidate) => candidate?.project?.isDefaultProject ?? false,
-        orElse: () => null,
-      );
-      if (defaultGroup?.projectId != null) {
-        await selectProject(defaultGroup!.projectId!);
-        group = defaultGroup;
-      }
-    }
+    final group = _state.selectedGroup;
     if (group == null || !group.admitsNewChat) {
       return ChatCommandResult.failed(
         ChatWorkspaceError(
@@ -216,10 +194,16 @@ final class ProjectWorkspaceController {
         ),
       );
     }
-    final projectId = group.kind == ProjectSelectionKind.project
-        ? group.projectId
-        : null;
-    if (projectId != null) {
+    ProjectId? projectId;
+    if (group.kind == ProjectSelectionKind.project) {
+      projectId = group.projectId;
+    } else {
+      final defaultProject = await projects.load(defaultProjectId);
+      if (defaultProject?.lifecycle == ProjectLifecycle.active) {
+        projectId = defaultProjectId;
+      }
+    }
+    if (group.kind == ProjectSelectionKind.project) {
       final recordReady = group.project?.lifecycle == ProjectLifecycle.active;
       if (!recordReady) {
         return ChatCommandResult.failed(
@@ -392,7 +376,7 @@ final class ProjectWorkspaceController {
     }
     for (final chatSummary in sessionsSnapshot.available) {
       final projectId = chatSummary.projectId;
-      if (projectId == null) {
+      if (projectId == null || projectId.isDefault) {
         unassigned.add(chatSummary);
         continue;
       }
@@ -409,6 +393,9 @@ final class ProjectWorkspaceController {
     }
     final groups = <ProjectChatGroup>[];
     for (final summary in projectsSnapshot.available) {
+      if (summary.isDefaultProject) {
+        continue;
+      }
       groups.add(
         ProjectChatGroup(
           kind: ProjectSelectionKind.project,
@@ -421,7 +408,9 @@ final class ProjectWorkspaceController {
         ),
       );
     }
-    final unresolved = unassigned.any((chat) => chat.projectId != null);
+    final unresolved = unassigned.any(
+      (chat) => chat.projectId != null && !chat.projectId!.isDefault,
+    );
     groups.add(
       ProjectChatGroup(
         kind: ProjectSelectionKind.unassigned,

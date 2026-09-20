@@ -29,7 +29,11 @@ class ProjectSidebarSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final projects = state.groups
-        .where((group) => group.kind == ProjectSelectionKind.project)
+        .where(
+          (group) =>
+              group.kind == ProjectSelectionKind.project &&
+              !(group.project?.isDefaultProject ?? false),
+        )
         .toList(growable: false);
     final unassigned = state.groups.cast<ProjectChatGroup?>().firstWhere(
       (group) => group?.kind == ProjectSelectionKind.unassigned,
@@ -64,18 +68,6 @@ class ProjectSidebarSection extends StatelessWidget {
           actionKey: 'section-new-chat',
           onAction: onNewChat,
           actionLabel: 'Новый чат в текущем проекте',
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            DomovoyDimensions.space3,
-            DomovoyDimensions.space1,
-            DomovoyDimensions.space3,
-            DomovoyDimensions.space2,
-          ),
-          child: Text(
-            unassignedProjectLabel,
-            style: Theme.of(context).textTheme.labelSmall,
-          ),
         ),
         if (unassigned != null) _unassigned(context, unassigned),
         if (state.mutationError != null)

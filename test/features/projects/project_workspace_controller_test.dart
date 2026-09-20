@@ -3,11 +3,14 @@ import 'dart:async';
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/projects/projects.dart';
+import 'package:domovoy/design_system/design_system.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_controller.dart';
 import 'package:domovoy/features/projects/application/project_application_service.dart';
 import 'package:domovoy/features/projects/application/project_workspace_controller.dart';
 import 'package:domovoy/features/projects/application/project_workspace_state.dart';
+import 'package:domovoy/features/projects/presentation/project_sidebar_section.dart';
 import 'package:domovoy/infrastructure/projects/projects.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/agent_harness.dart';
@@ -43,13 +46,19 @@ void main() {
       final unassigned = harness.projects.state.groups.firstWhere(
         (group) => group.kind == ProjectSelectionKind.unassigned,
       );
-      expect(unassigned.chats, isEmpty);
-      final defaultGroup = harness.projects.state.groups.singleWhere(
-        (group) => group.project?.isDefaultProject ?? false,
+      expect(unassigned.chats, hasLength(1));
+      expect(unassigned.chats.single.projectId, defaultProjectId);
+      expect(
+        harness.projects.state.groups.any(
+          (group) => group.project?.isDefaultProject ?? false,
+        ),
+        isFalse,
       );
-      expect(defaultGroup.chats, hasLength(1));
-      expect(defaultGroup.chats.single.projectId, defaultProjectId);
-      expect(harness.projects.state.selectedProjectId, defaultProjectId);
+      expect(
+        harness.projects.state.selectedKind,
+        ProjectSelectionKind.unassigned,
+      );
+      expect(harness.projects.state.selectedProjectId, isNull);
       await harness.dispose();
     },
   );
@@ -78,13 +87,19 @@ void main() {
     final unassigned = harness.projects.state.groups.singleWhere(
       (group) => group.kind == ProjectSelectionKind.unassigned,
     );
-    expect(unassigned.chats, isEmpty);
-    final defaultGroup = harness.projects.state.groups.singleWhere(
-      (group) => group.project?.isDefaultProject ?? false,
+    expect(unassigned.chats, isNotEmpty);
+    expect(unassigned.chats.single.projectId, defaultProjectId);
+    expect(
+      harness.projects.state.groups.any(
+        (group) => group.project?.isDefaultProject ?? false,
+      ),
+      isFalse,
     );
-    expect(defaultGroup.chats, isNotEmpty);
-    expect(defaultGroup.chats.single.projectId, defaultProjectId);
-    expect(harness.projects.state.selectedProjectId, defaultProjectId);
+    expect(
+      harness.projects.state.selectedKind,
+      ProjectSelectionKind.unassigned,
+    );
+    expect(harness.projects.state.selectedProjectId, isNull);
     await harness.dispose();
   });
 
@@ -118,8 +133,13 @@ void main() {
         harness.chat.state.selectedSession!.projectId,
         created.project!.id,
       );
-      await harness.projects.selectProject(defaultProjectId);
+      await harness.projects.selectChat(defaultChat.id);
       expect(harness.chat.state.selectedId, defaultChat.id);
+      expect(
+        harness.projects.state.selectedKind,
+        ProjectSelectionKind.unassigned,
+      );
+      expect(harness.projects.state.selectedProjectId, isNull);
       await harness.dispose();
     },
   );
@@ -166,6 +186,25 @@ void main() {
     expect(harness.projects.state.selectedGroup!.chats, isEmpty);
     await harness.dispose();
   });
+
+  test(
+    'web keeps general chats unassigned when no default project exists',
+    () async {
+      final harness = await _Harness.create(
+        rootProvisioner: WebUnsupportedProjectRootProvisioner(),
+      );
+
+      final result = await harness.projects.createChat();
+
+      expect(result.isSuccess, isTrue);
+      expect(harness.chat.state.selectedSession!.projectId, isNull);
+      expect(
+        harness.projects.state.selectedGroup!.chats.single.projectId,
+        isNull,
+      );
+      await harness.dispose();
+    },
+  );
 
   test('chat admission loses race to deleting Project', () async {
     final deletingPublished = Completer<void>();
@@ -238,6 +277,42 @@ void main() {
       await harness.dispose();
     },
   );
+
+  testWidgets(
+    'sidebar hides the default project and lists its chats under Chats',
+    (tester) async {
+      final harness = (await tester.runAsync(_Harness.create))!;
+      await tester.runAsync(harness.projects.createChat);
+      final chatId = harness.chat.state.selectedId!;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DomovoyTheme.light(),
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              child: SingleChildScrollView(
+                child: ProjectSidebarSection(
+                  controller: harness.projects,
+                  state: harness.projects.state,
+                  selectedChatId: chatId,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('project-row:default')), findsNothing);
+      expect(find.text(defaultProjectName), findsNothing);
+      expect(find.text(unassignedProjectLabel), findsNothing);
+      expect(find.text('Чаты'), findsOneWidget);
+      expect(find.byKey(ValueKey('chat-row:${chatId.value}')), findsOneWidget);
+
+      await tester.runAsync(harness.dispose);
+    },
+  );
 }
 
 final class _Harness {
@@ -257,7 +332,10 @@ final class _Harness {
   final ScriptedProjectDirectoryPicker picker;
   final InMemoryAgentSessionRepository sessions;
 
-  static Future<_Harness> create({ProjectBoundaryHook? hook}) async {
+  static Future<_Harness> create({
+    ProjectBoundaryHook? hook,
+    ProjectRootProvisioner? rootProvisioner,
+  }) async {
     final sessions = InMemoryAgentSessionRepository();
     final runtime = testRuntime(
       provider: QueueScriptedLlmProvider(
@@ -279,13 +357,15 @@ final class _Harness {
     final fs = FakeDesktopFilesystem(platformKind: ProjectPlatformKind.linux);
     final picker = ScriptedProjectDirectoryPicker();
     final grants = InMemoryProjectDirectoryGrantStore();
-    final provisioner = DesktopProjectRootProvisioner(
-      capabilities: ProjectPlatformCapabilities.linux,
-      filesystem: fs,
-      picker: picker,
-      grantStore: grants,
-      sandbox: FakeMobileSandbox(platformKind: ProjectPlatformKind.linux),
-    );
+    final provisioner =
+        rootProvisioner ??
+        DesktopProjectRootProvisioner(
+          capabilities: ProjectPlatformCapabilities.linux,
+          filesystem: fs,
+          picker: picker,
+          grantStore: grants,
+          sandbox: FakeMobileSandbox(platformKind: ProjectPlatformKind.linux),
+        );
     final controller = ProjectWorkspaceController(
       service: ProjectApplicationService(
         projects: projectRepo,

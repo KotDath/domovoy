@@ -113,7 +113,7 @@ toolchain available.
 |---|---|---|
 | Formatting | `dart format .` | ✅ no changes required |
 | Static analysis | `flutter analyze` | ✅ `No issues found!` |
-| Test suite | `flutter test` | ✅ 702 passed, 1 skipped |
+| Test suite | `flutter test` | ✅ 704 passed, 1 skipped |
 | Android debug build | `flutter build apk --debug` | ✅ `build/app/outputs/flutter-apk/app-debug.apk` |
 | Linux debug build | `flutter build linux --debug` | ✅ `build/linux/x64/debug/bundle/domovoy` |
 | Linux launch | `./build/linux/x64/debug/bundle/domovoy` | ✅ Dart VM service started; GTK window remained alive until the smoke timeout (only a non-fatal `Gdk-Message: Unable to load … cursor theme` warning) |
