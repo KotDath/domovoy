@@ -153,6 +153,46 @@ List<MemoryExtractionSource> _sources(
 
 void main() {
   group('MemoryExtractionCoordinator', () {
+    test('candidate identities stay compact for production runtime ids', () {
+      final factory = MemoryExtractionIdFactory(namespace: 'extract');
+      final session = AgentSessionId(
+        'runtime-hmh2876gs5-as2j9s-6ki29g-akesu3-f1o267-session-1',
+      );
+      final source = MemorySourceId(
+        'runtime-hmh2876gs5-as2j9s-6ki29g-akesu3-f1o267-message-3',
+      );
+
+      final first = factory.forExplicitPhrase(
+        sessionId: session,
+        sourceId: source,
+        phraseIndex: 0,
+      );
+      final repeated = factory.forExplicitPhrase(
+        sessionId: session,
+        sourceId: source,
+        phraseIndex: 0,
+      );
+      final next = factory.forExplicitPhrase(
+        sessionId: session,
+        sourceId: source,
+        phraseIndex: 1,
+      );
+      final batch = factory.forBatchProposal(
+        sessionId: session,
+        sourceIds: List<MemorySourceId>.generate(
+          40,
+          (index) => MemorySourceId('${source.value}-$index'),
+        ),
+        proposalIndex: 0,
+      );
+
+      expect(first, repeated);
+      expect(first, isNot(next));
+      expect(first.value, startsWith('memory-candidate-v2-'));
+      expect(first.value.length, lessThanOrEqualTo(64));
+      expect(batch.value.length, lessThanOrEqualTo(64));
+    });
+
     test('explicit phrases create candidates without an LLM call', () async {
       final harness = _Harness();
       final result = await harness.coordinator.onCompletedTurn(
@@ -303,6 +343,27 @@ void main() {
       expect(stored, hasLength(1));
       expect(stored.single.layer, MemoryLayer.working);
       expect(stored.single.content, 'деплой делается только через kubernetes');
+    });
+
+    test('session resume recovers an explicit phrase automatically', () async {
+      final harness = _Harness(handler: (_) => const <MemoryCandidateDraft>[]);
+      final result = await harness.coordinator.resume(
+        sessionId: sessionId,
+        projectId: projectId,
+        completedSources: <MemoryExtractionSource>[
+          MemoryExtractionSource(
+            id: MemorySourceId('u-resumed'),
+            role: MemoryTranscriptRole.user,
+            text: 'Запомни, что деплоим мы через kubernetes',
+          ),
+        ],
+      );
+
+      expect(result.isExtracted, isTrue);
+      expect(harness.extractor.calls, 0);
+      final stored = await harness.candidates.list(cancellation: open);
+      expect(stored, hasLength(1));
+      expect(stored.single.content, 'деплоим мы через kubernetes');
     });
 
     test('idle debounce flushes after 30 minutes in the foreground', () async {

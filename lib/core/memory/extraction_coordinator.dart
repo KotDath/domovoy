@@ -53,8 +53,35 @@ final class MemoryExtractionIdFactory {
         .encode(utf8.encode(jsonEncode(parts)))
         .replaceAll('=', '');
     final prefix = namespace == null ? 'memory-candidate' : namespace!;
-    return MemoryCandidateId('$prefix-$encoded');
+    final legacy = '$prefix-$encoded';
+    // Keep already-safe legacy identities stable, but compact production
+    // runtime IDs before the storage layer encodes them into a filename again.
+    // The bound also leaves room for the `memory-entry-` prefix used when a
+    // candidate is confirmed.
+    if (utf8.encode(legacy).length <= 160) {
+      return MemoryCandidateId(legacy);
+    }
+    return MemoryCandidateId('memory-candidate-v2-${_stableDigest(legacy)}');
   }
+}
+
+final _fnv64Prime = BigInt.parse('100000001b3', radix: 16);
+final _fnv64Mask = BigInt.parse('ffffffffffffffff', radix: 16);
+final _fnv64OffsetA = BigInt.parse('cbf29ce484222325', radix: 16);
+final _fnv64OffsetB = BigInt.parse('84222325cbf29ce4', radix: 16);
+
+String _stableDigest(String input) {
+  final bytes = utf8.encode(input);
+  return '${_fnv1a64(bytes, _fnv64OffsetA)}'
+      '${_fnv1a64(bytes.reversed, _fnv64OffsetB)}';
+}
+
+String _fnv1a64(Iterable<int> bytes, BigInt offset) {
+  var hash = offset;
+  for (final byte in bytes) {
+    hash = ((hash ^ BigInt.from(byte)) * _fnv64Prime) & _fnv64Mask;
+  }
+  return hash.toRadixString(16).padLeft(16, '0');
 }
 
 enum MemoryExtractionStatus { skipped, busy, extracted, failed }
@@ -218,6 +245,11 @@ final class MemoryExtractionCoordinator {
     state.projectId = projectId;
     _cacheSources(state, completedSources);
     final now = _now();
+    final explicit = await _persistExplicitPhrases(
+      state,
+      completedSources,
+      now,
+    );
     final previous = await checkpoints.load(
       sessionId,
       cancellation: _operations.token,
@@ -244,9 +276,19 @@ final class MemoryExtractionCoordinator {
         checkpoint.pendingSourceIds.isNotEmpty &&
         now - checkpoint.lastActivityMicros >= idleFlushAfter.inMicroseconds;
     if (overdue) {
-      return _flush(sessionId, force: true);
+      final result = await _flush(sessionId, force: true);
+      if (explicit.isEmpty) {
+        return result;
+      }
+      return MemoryExtractionResult.extracted(<MemoryCandidate>[
+        ...explicit,
+        ...result.candidates,
+      ]);
     }
     _rescheduleIdle(state);
+    if (explicit.isNotEmpty) {
+      return MemoryExtractionResult.extracted(explicit);
+    }
     return MemoryExtractionResult.skipped();
   }
 
