@@ -6,7 +6,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | --- | --- | --- | --- | --- | --- |
 | G0 | Specification and Android tooling | — | done | `c986067..b615ee5` | docs; `claude-in-mobile` 4.4.1 Android doctor passes |
 | G1 | FSM, DAG, and invariant domain | G0 | done | `b615ee5..94b6657` | 16 domain tests; paired review completed |
-| G2 | JSONL persistence and recovery | G1 | review | `94b6657..14dc097` | 6 repository/replay tests; full suite: 755 passed, 1 skipped |
+| G2 | JSONL persistence and recovery | G1 | done | `94b6657..72b2765` | 11 repository/replay tests; paired review settled; full suite: 760 passed, 1 skipped |
 | G3 | Scheduler and isolated agents | G2 | pending | — | orchestration tests |
 | G4 | Chat routing and task UI | G3 | pending | — | controller/widget tests |
 | G5 | Integration, Android, video scripts | G4 | pending | — | full suite and QA evidence |
@@ -39,3 +39,16 @@ attempts, validates versioned snapshots, and adds final repair guards. Invariant
 rejection is intentionally completed by the G3 `TaskService`, where resolved
 project/task policies are available; it must return `INVARIANT_VIOLATION` before
 any LLM call and `REPLAN_REQUIRED` after an applied policy revision changes.
+
+## G2 review settlement
+
+Both successful reviewers identified missing restart interruption, mutable task
+identity, and incomplete persistence boundary checks. The settlement adds an
+explicit persisted startup-recovery operation, rechecks the one-active-task
+invariant on every active save, pins session/project identity across revisions,
+and binds invariant-policy payloads to their owner key. It also isolates corrupt
+streams to their hinted chat, trims torn UTF-8 tails at the byte boundary, fails
+closed on fragment-only streams, and treats post-publication cleanup as
+best-effort. App composition in G4 must create exactly one shared store instance;
+the documented JSONL storage contract intentionally does not coordinate
+independent writers.
