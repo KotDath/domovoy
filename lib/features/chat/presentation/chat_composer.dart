@@ -7,9 +7,11 @@ import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
 import '../../../design_system/design_system.dart';
 import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
+import '../application/chat_token_presenter.dart';
 import '../application/chat_workspace_state.dart';
 import 'model_selector.dart';
 import 'reasoning_selector.dart';
+import 'token_details.dart';
 
 class ChatComposer extends StatefulWidget {
   const ChatComposer({
@@ -23,6 +25,10 @@ class ChatComposer extends StatefulWidget {
     this.initialDraft,
     this.providerCatalog,
     this.onRefreshModels,
+    this.tokenProjection,
+    this.onOpenTokens,
+    this.onOpenProviders,
+    this.selectedModel,
     super.key,
   });
 
@@ -37,6 +43,10 @@ class ChatComposer extends StatefulWidget {
   final String? initialDraft;
   final ProviderCatalogSnapshot? providerCatalog;
   final Future<ProviderCatalogSnapshot?> Function()? onRefreshModels;
+  final ChatTokenProjection? tokenProjection;
+  final VoidCallback? onOpenTokens;
+  final VoidCallback? onOpenProviders;
+  final LlmModel? selectedModel;
 
   @override
   State<ChatComposer> createState() => _ChatComposerState();
@@ -87,7 +97,10 @@ class _ChatComposerState extends State<ChatComposer> {
 
   @override
   Widget build(BuildContext context) {
-    final model = modelForSelection(widget.providerGroups, widget.selection);
+    final tokens = context.domovoyTheme;
+    final model =
+        widget.selectedModel ??
+        modelForSelection(widget.providerGroups, widget.selection);
     final canEdit = widget.enabled && !widget.running && !_submitting;
     return Semantics(
       textField: true,
@@ -97,121 +110,122 @@ class _ChatComposerState extends State<ChatComposer> {
         key: const ValueKey('chat-composer'),
         role: DomovoySurfaceRole.elevated,
         border: true,
-        shadow: true,
         borderRadius: BorderRadius.circular(DomovoyDimensions.radiusComposer),
         padding: DomovoyDimensions.composerInsets,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(
-            minHeight: DomovoyDimensions.composerMinHeight,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              CallbackShortcuts(
-                bindings: <ShortcutActivator, VoidCallback>{
-                  const SingleActivator(LogicalKeyboardKey.enter): _submit,
-                  const SingleActivator(LogicalKeyboardKey.enter, shift: true):
-                      _insertNewline,
-                },
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    minHeight: DomovoyDimensions.composerFieldMinHeight,
-                  ),
-                  child: TextField(
-                    key: const ValueKey('chat-composer-field'),
-                    controller: _textController,
-                    focusNode: _focusNode,
-                    enabled: canEdit,
-                    minLines: 1,
-                    maxLines: null,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      hintText: 'Спросите Domovoy…',
-                      border: InputBorder.none,
-                    ),
-                    onChanged: (_) => setState(() {}),
-                  ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            CallbackShortcuts(
+              bindings: <ShortcutActivator, VoidCallback>{
+                const SingleActivator(LogicalKeyboardKey.enter): _submit,
+                const SingleActivator(LogicalKeyboardKey.enter, shift: true):
+                    _insertNewline,
+              },
+              child: TextField(
+                key: const ValueKey('chat-composer-field'),
+                controller: _textController,
+                focusNode: _focusNode,
+                enabled: canEdit,
+                minLines: 2,
+                maxLines: 4,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                decoration: const InputDecoration(
+                  hintText: 'Что обдумаем вместе?',
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  filled: false,
+                  isDense: true,
+                  contentPadding: EdgeInsets.zero,
                 ),
+                onChanged: (_) => setState(() {}),
               ),
-              const SizedBox(height: DomovoyDimensions.space3),
-              Divider(color: context.domovoyTheme.divider),
-              Wrap(
-                spacing: DomovoyDimensions.space3,
-                runSpacing: DomovoyDimensions.space3,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  ChatModelSelector(
-                    groups: widget.providerGroups,
+            ),
+            const SizedBox(height: DomovoyDimensions.space3),
+            Row(
+              children: [
+                DomovoyQuietButton(
+                  key: const ValueKey('composer-context-plus'),
+                  minSize: const Size.square(DomovoyDimensions.toolTarget),
+                  onPressed: _openTokens,
+                  tooltip: 'Показать контекст',
+                  child: const Text('＋'),
+                ),
+                const Spacer(),
+                ChatContextChip(
+                  projection: widget.tokenProjection,
+                  model: model,
+                  onPressed: _openTokens,
+                ),
+                ChatModelSelector(
+                  groups: widget.providerGroups,
+                  selection: widget.selection,
+                  enabled: canEdit,
+                  onSelected: _changeSelection,
+                  catalog: widget.providerCatalog,
+                  onRefreshModels: widget.onRefreshModels,
+                  onManageProviders: widget.onOpenProviders,
+                ),
+                if (model != null)
+                  ChatReasoningSelector(
+                    model: model,
                     selection: widget.selection,
                     enabled: canEdit,
-                    onSelected: _changeSelection,
-                  ),
-                  if (model != null)
-                    ChatReasoningSelector(
-                      model: model,
-                      selection: widget.selection,
-                      enabled: canEdit,
-                      onSelected: (choice) => _changeSelection(
-                        AgentSessionSelection(
-                          model: widget.selection.model,
-                          reasoningMode: choice.mode,
-                          reasoningEffort: choice.effort,
-                        ),
+                    onSelected: (choice) => _changeSelection(
+                      AgentSessionSelection(
+                        model: widget.selection.model,
+                        reasoningMode: choice.mode,
+                        reasoningEffort: choice.effort,
                       ),
                     ),
-                  Semantics(
-                    button: true,
-                    enabled: widget.running ? !_stopping : _canSubmit,
-                    label: widget.running
+                  ),
+                Semantics(
+                  button: true,
+                  enabled: widget.running ? !_stopping : _canSubmit,
+                  label: widget.running
+                      ? 'Остановить ответ'
+                      : 'Отправить сообщение',
+                  child: DomovoyQuietButton(
+                    key: ValueKey(widget.running ? 'chat-stop' : 'chat-send'),
+                    minSize: const Size.square(DomovoyDimensions.toolTarget),
+                    tone: DomovoyButtonTone.accent,
+                    onPressed: widget.running
+                        ? _stopping
+                              ? null
+                              : _stop
+                        : _canSubmit
+                        ? _submit
+                        : null,
+                    tooltip: widget.running
                         ? 'Остановить ответ'
                         : 'Отправить сообщение',
-                    child: IconButton.filled(
-                      key: ValueKey(widget.running ? 'chat-stop' : 'chat-send'),
-                      tooltip: widget.running
-                          ? 'Остановить ответ'
-                          : 'Отправить сообщение',
-                      onPressed: widget.running
-                          ? _stopping
-                                ? null
-                                : _stop
-                          : _canSubmit
-                          ? _submit
-                          : null,
-                      icon: Icon(
-                        widget.running
-                            ? Icons.stop_rounded
-                            : Icons.arrow_upward_rounded,
-                      ),
-                    ),
+                    child: widget.running
+                        ? Icon(
+                            Icons.stop_rounded,
+                            size: DomovoyDimensions.iconSmall,
+                            color: tokens.accent,
+                          )
+                        : DomovoyIcon(
+                            DomovoyIconKind.send,
+                            color: tokens.accent,
+                          ),
                   ),
-                ],
-              ),
-              if (model == null)
-                const Text('Модель больше недоступна. Выберите замену.'),
-              if (widget.providerCatalog case final catalog?)
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Каталог: ${catalog.models.length} моделей · ${catalog.source}'
-                        '${catalog.stale ? ' · частично/офлайн' : ''}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                    if (widget.onRefreshModels != null)
-                      IconButton(
-                        key: const ValueKey('refresh-provider-models'),
-                        tooltip: 'Обновить модели',
-                        onPressed: () => unawaited(widget.onRefreshModels!()),
-                        icon: const Icon(Icons.refresh, size: 18),
-                      ),
-                  ],
                 ),
-            ],
-          ),
+              ],
+            ),
+            if (model == null)
+              Padding(
+                padding: const EdgeInsets.only(top: DomovoyDimensions.space2),
+                child: Text(
+                  'Модель больше недоступна. Выберите замену.',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: tokens.danger),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -282,5 +296,19 @@ class _ChatComposerState extends State<ChatComposer> {
   void _changeSelection(AgentSessionSelection selection) {
     if (!widget.enabled || widget.running || _submitting) return;
     unawaited(widget.onSelectionChanged(selection));
+  }
+
+  void _openTokens() {
+    final projection = widget.tokenProjection;
+    if (projection == null) return;
+    unawaited(
+      showChatTokenDetails(
+        context: context,
+        projection: projection,
+        model:
+            widget.selectedModel ??
+            modelForSelection(widget.providerGroups, widget.selection),
+      ),
+    );
   }
 }

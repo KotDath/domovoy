@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../design_system/design_system.dart';
 import '../application/chat_timeline_projector.dart';
+import 'assistant_markdown.dart';
 
 class ChatTimelinePart extends StatelessWidget {
   const ChatTimelinePart({
@@ -9,6 +10,7 @@ class ChatTimelinePart extends StatelessWidget {
     required this.reasoningExpanded,
     required this.onReasoningToggle,
     this.onOpenSettings,
+    this.durationLabel,
     super.key,
   });
 
@@ -16,18 +18,16 @@ class ChatTimelinePart extends StatelessWidget {
   final bool reasoningExpanded;
   final VoidCallback onReasoningToggle;
   final VoidCallback? onOpenSettings;
+  final String? durationLabel;
 
   @override
   Widget build(BuildContext context) => switch (item) {
-    ChatUserItem value => _MessageBubble(
-      itemKey: value.key,
-      text: value.text,
-      user: true,
-    ),
-    ChatAssistantItem value => _MessageBubble(
+    ChatUserItem value => _UserMessage(itemKey: value.key, text: value.text),
+    ChatAssistantItem value => _AssistantMessage(
       itemKey: value.key,
       text: value.text,
       partial: value.isPartial,
+      durationLabel: durationLabel ?? value.durationLabel,
     ),
     ChatReasoningItem value => _ReasoningPart(
       item: value,
@@ -44,60 +44,81 @@ class ChatTimelinePart extends StatelessWidget {
   };
 }
 
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({
+class _UserMessage extends StatelessWidget {
+  const _UserMessage({required this.itemKey, required this.text});
+
+  final String itemKey;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      key: ValueKey(itemKey),
+      alignment: Alignment.centerRight,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxWidth: DomovoyDimensions.messageMaxWidth,
+        ),
+        child: DomovoySurface(
+          role: DomovoySurfaceRole.elevated,
+          border: true,
+          borderRadius: BorderRadius.circular(DomovoyDimensions.radiusMessage),
+          padding: DomovoyDimensions.panelInsets,
+          child: Semantics(
+            label: 'Сообщение пользователя',
+            child: SelectableText(text),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AssistantMessage extends StatelessWidget {
+  const _AssistantMessage({
     required this.itemKey,
     required this.text,
-    this.user = false,
     this.partial = false,
+    this.durationLabel,
   });
 
   final String itemKey;
   final String text;
-  final bool user;
   final bool partial;
+  final String? durationLabel;
 
   @override
   Widget build(BuildContext context) {
     final tokens = context.domovoyTheme;
     return Align(
       key: ValueKey(itemKey),
-      alignment: user ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(
-          maxWidth: DomovoyDimensions.messageMaxWidth,
-        ),
-        child: DomovoySurface(
-          role: user
-              ? DomovoySurfaceRole.selected
-              : DomovoySurfaceRole.elevated,
-          border: true,
-          borderRadius: BorderRadius.circular(DomovoyDimensions.radiusMessage),
-          padding: DomovoyDimensions.panelInsets,
-          child: Semantics(
-            label: user
-                ? 'Сообщение пользователя'
-                : partial
-                ? 'Частичный ответ ассистента'
-                : 'Ответ ассистента',
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SelectableText(text),
-                if (partial) ...[
-                  const SizedBox(height: DomovoyDimensions.space3),
-                  Text(
-                    'Формируется…',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: tokens.textSecondary,
-                    ),
-                  ),
-                ],
-              ],
+      alignment: Alignment.centerLeft,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (durationLabel != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: DomovoyDimensions.space3),
+              child: Text(
+                durationLabel!,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: tokens.textMuted,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
             ),
-          ),
-        ),
+          AssistantMarkdown(data: text, partial: partial),
+          if (partial)
+            Padding(
+              padding: const EdgeInsets.only(top: DomovoyDimensions.space3),
+              child: Text(
+                'Формируется…',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: tokens.textSecondary),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -117,65 +138,58 @@ class _ReasoningPart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = context.domovoyTheme;
-    return DomovoySurface(
+    return Column(
       key: ValueKey(item.key),
-      role: DomovoySurfaceRole.surface,
-      border: true,
-      borderRadius: BorderRadius.circular(DomovoyDimensions.radiusMedium),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Semantics(
-            button: true,
-            expanded: expanded,
-            label: expanded ? 'Скрыть рассуждение' : 'Показать рассуждение',
-            child: InkWell(
-              key: ValueKey('${item.key}:toggle'),
-              borderRadius: BorderRadius.circular(
-                DomovoyDimensions.radiusMedium,
-              ),
-              onTap: onToggle,
-              child: Padding(
-                padding: DomovoyDimensions.panelInsets,
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.psychology_outlined,
-                      color: tokens.accent,
-                      size: DomovoyDimensions.iconMedium,
-                    ),
-                    const SizedBox(width: DomovoyDimensions.space3),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Рассуждение'),
-                          if (!expanded)
-                            Text(
-                              item.isPartial ? 'Формируется, скрыто' : 'Скрыто',
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(color: tokens.textSecondary),
-                            ),
-                        ],
-                      ),
-                    ),
-                    Icon(
-                      expanded
-                          ? Icons.expand_less_rounded
-                          : Icons.expand_more_rounded,
-                    ),
-                  ],
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Semantics(
+          button: true,
+          expanded: expanded,
+          label: expanded ? 'Скрыть рассуждение' : 'Показать рассуждение',
+          child: DomovoyQuietButton(
+            key: ValueKey('${item.key}:toggle'),
+            tone: DomovoyButtonTone.muted,
+            onPressed: onToggle,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  item.isPartial ? 'Рассуждение · формируется' : 'Рассуждение',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: tokens.textMuted),
                 ),
+                const SizedBox(width: DomovoyDimensions.space2),
+                Icon(
+                  expanded
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded,
+                  size: DomovoyDimensions.iconSmall,
+                  color: tokens.textMuted,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (expanded)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 220),
+            child: SingleChildScrollView(
+              primary: false,
+              padding: const EdgeInsets.only(
+                left: DomovoyDimensions.space3,
+                right: DomovoyDimensions.space3,
+                bottom: DomovoyDimensions.space3,
+              ),
+              child: SelectableText(
+                item.text,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: tokens.textMuted),
               ),
             ),
           ),
-          if (expanded)
-            Padding(
-              padding: DomovoyDimensions.panelInsets,
-              child: SelectableText(item.text),
-            ),
-        ],
-      ),
+      ],
     );
   }
 }

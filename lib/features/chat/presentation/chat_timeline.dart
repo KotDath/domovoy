@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../../design_system/design_system.dart';
@@ -9,12 +11,14 @@ class ChatTimeline extends StatefulWidget {
     required this.projection,
     this.announcement,
     this.onOpenSettings,
+    this.durationLabel,
     super.key,
   });
 
   final ChatTimelineProjection projection;
   final String? announcement;
   final VoidCallback? onOpenSettings;
+  final String? durationLabel;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -50,45 +54,80 @@ class _ChatTimelineState extends State<ChatTimeline> {
   }
 
   @override
-  Widget build(BuildContext context) => Stack(
-    children: [
-      ListView.separated(
-        key: const ValueKey('chat-timeline'),
-        controller: _scrollController,
-        padding: DomovoyDimensions.pageInsets,
-        itemCount: widget.projection.items.length,
-        separatorBuilder: (context, index) =>
-            const SizedBox(height: DomovoyDimensions.space5),
-        itemBuilder: (context, index) {
-          final item = widget.projection.items[index];
-          final responseKey = item is ChatReasoningItem
-              ? item.responseKey
-              : item.key;
-          return ChatTimelinePart(
-            key: ValueKey('timeline-part:${item.key}'),
-            item: item,
-            reasoningExpanded: _expandedReasoning.contains(responseKey),
-            onOpenSettings: widget.onOpenSettings,
-            onReasoningToggle: () {
-              setState(() {
-                if (!_expandedReasoning.add(responseKey)) {
-                  _expandedReasoning.remove(responseKey);
-                }
-              });
-            },
-          );
-        },
-      ),
-      if (widget.announcement != null)
-        Semantics(
-          key: const ValueKey('chat-live-status'),
-          container: true,
-          liveRegion: true,
-          label: widget.announcement,
-          child: const SizedBox.shrink(),
-        ),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final layout = resolveWorkspaceLayout(
+      media.size,
+      media.textScaler.scale(1),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final contentWidth = math.min(
+          layout.timelineMaxWidth,
+          constraints.maxWidth,
+        );
+        final side = math.max(0.0, (constraints.maxWidth - contentWidth) / 2);
+        return Stack(
+          children: [
+            Scrollbar(
+              controller: _scrollController,
+              thumbVisibility: true,
+              thickness: 6,
+              radius: const Radius.circular(DomovoyDimensions.space1),
+              child: ListView.separated(
+                key: const ValueKey('chat-timeline'),
+                controller: _scrollController,
+                padding: EdgeInsets.fromLTRB(
+                  side,
+                  DomovoyDimensions.pageInsets.top,
+                  side,
+                  DomovoyDimensions.space10 * 3 +
+                      MediaQuery.viewInsetsOf(context).bottom,
+                ),
+                itemCount: widget.projection.items.length,
+                separatorBuilder: (context, index) =>
+                    const SizedBox(height: DomovoyDimensions.space5),
+                itemBuilder: (context, index) {
+                  final item = widget.projection.items[index];
+                  final responseKey = item is ChatReasoningItem
+                      ? item.responseKey
+                      : item.key;
+                  final lastAssistant =
+                      item is ChatAssistantItem &&
+                      index ==
+                          widget.projection.items.lastIndexWhere(
+                            (entry) => entry is ChatAssistantItem,
+                          );
+                  return ChatTimelinePart(
+                    key: ValueKey('timeline-part:${item.key}'),
+                    item: item,
+                    durationLabel: lastAssistant ? widget.durationLabel : null,
+                    reasoningExpanded: _expandedReasoning.contains(responseKey),
+                    onOpenSettings: widget.onOpenSettings,
+                    onReasoningToggle: () {
+                      setState(() {
+                        if (!_expandedReasoning.add(responseKey)) {
+                          _expandedReasoning.remove(responseKey);
+                        }
+                      });
+                    },
+                  );
+                },
+              ),
+            ),
+            if (widget.announcement != null)
+              Semantics(
+                key: const ValueKey('chat-live-status'),
+                container: true,
+                liveRegion: true,
+                label: widget.announcement,
+                child: const SizedBox.shrink(),
+              ),
+          ],
+        );
+      },
+    );
+  }
 
   void _scrollToEnd() {
     if (!_scrollController.hasClients) return;

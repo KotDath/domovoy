@@ -15,6 +15,11 @@ class ChatSidebar extends StatelessWidget {
     this.issueCount = 0,
     this.newChatFocusNode,
     this.aboveChats,
+    this.onOpenUsage,
+    this.themeMode,
+    this.onThemeModeChanged,
+    this.usageSelected = false,
+    this.providersSelected = false,
     super.key,
   });
 
@@ -28,158 +33,219 @@ class ChatSidebar extends StatelessWidget {
   final int issueCount;
   final FocusNode? newChatFocusNode;
   final Widget? aboveChats;
+  final VoidCallback? onOpenUsage;
+  final ThemeMode? themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final bool usageSelected;
+  final bool providersSelected;
 
   @override
   Widget build(BuildContext context) {
     final tokens = context.domovoyTheme;
+    final nested = aboveChats != null;
     return DomovoySurface(
       role: DomovoySurfaceRole.sidebar,
       child: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: DomovoyDimensions.panelInsets,
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.blur_on_rounded,
-                    color: tokens.accent,
-                    size: DomovoyDimensions.iconLarge,
-                  ),
-                  const SizedBox(width: DomovoyDimensions.space3),
-                  Expanded(
-                    child: Text(
-                      'Domovoy',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ),
-                ],
+        child: Padding(
+          padding: DomovoyDimensions.sidebarInsets,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  DomovoyDimensions.space3,
+                  DomovoyDimensions.zero,
+                  DomovoyDimensions.space3,
+                  DomovoyDimensions.space5,
+                ),
+                child: Text(
+                  'domovoy',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
               ),
-            ),
-            Padding(
-              padding: DomovoyDimensions.listInsets,
-              child: FocusTraversalOrder(
+              FocusTraversalOrder(
                 order: const NumericFocusOrder(1),
-                child: FilledButton.tonalIcon(
+                child: DomovoyQuietButton(
                   key: const ValueKey('chat-new'),
-                  autofocus: true,
                   focusNode: newChatFocusNode,
                   onPressed: enabled ? onNewChat : null,
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('Новый чат'),
+                  expand: true,
+                  child: const Row(
+                    children: [
+                      DomovoyIcon(DomovoyIconKind.compose),
+                      SizedBox(width: DomovoyDimensions.space3),
+                      Expanded(
+                        child: Text(
+                          'Новый чат',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-            ),
-            ?aboveChats,
-            Padding(
-              padding: DomovoyDimensions.listInsets,
-              child: Text(
-                'НЕДАВНИЕ',
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-            ),
-            Expanded(
-              child: ListView.builder(
-                key: const ValueKey('chat-list'),
-                padding: DomovoyDimensions.listInsets,
-                itemCount: chats.length,
-                itemBuilder: (context, index) {
-                  final chat = chats[index];
-                  final selected = chat.id == selectedId;
-                  return FocusTraversalOrder(
-                    order: NumericFocusOrder(index + 2),
-                    child: Padding(
-                      padding: const EdgeInsets.only(
-                        bottom: DomovoyDimensions.space2,
-                      ),
-                      child: Semantics(
-                        selected: selected,
-                        button: true,
-                        label: chat.title ?? 'Новый чат',
-                        child: Material(
-                          color: selected
-                              ? tokens.selectedSurface
-                              : tokens.sidebar,
-                          borderRadius: BorderRadius.circular(
-                            DomovoyDimensions.radiusMedium,
+              if (nested) ...[
+                Expanded(child: SingleChildScrollView(child: aboveChats)),
+              ] else ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    DomovoyDimensions.space3,
+                    DomovoyDimensions.space4,
+                    DomovoyDimensions.space3,
+                    DomovoyDimensions.space2,
+                  ),
+                  child: Text(
+                    'Чаты',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    key: const ValueKey('chat-list'),
+                    itemCount: chats.length,
+                    itemBuilder: (context, index) {
+                      final chat = chats[index];
+                      final selected = chat.id == selectedId;
+                      return FocusTraversalOrder(
+                        order: NumericFocusOrder(index + 2),
+                        child: Padding(
+                          padding: const EdgeInsets.only(
+                            bottom: DomovoyDimensions.space1,
                           ),
-                          child: InkWell(
-                            key: ValueKey('chat-row:${chat.id.value}'),
-                            borderRadius: BorderRadius.circular(
-                              DomovoyDimensions.radiusMedium,
-                            ),
-                            onTap: enabled && onSelectChat != null
-                                ? () => onSelectChat!(chat.id)
-                                : null,
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                minHeight: DomovoyDimensions.minimumTarget,
-                              ),
-                              child: Padding(
-                                padding: DomovoyDimensions.controlInsets,
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Text(
-                                      chat.title ?? 'Новый чат',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
+                          child: Semantics(
+                            selected: selected,
+                            button: true,
+                            label:
+                                '${chat.title ?? 'Новый чат'}, ${modelLabelFor(chat)}',
+                            child: DomovoyQuietButton(
+                              key: ValueKey('chat-row:${chat.id.value}'),
+                              tone: selected
+                                  ? DomovoyButtonTone.selected
+                                  : DomovoyButtonTone.quiet,
+                              onPressed: enabled && onSelectChat != null
+                                  ? () => onSelectChat!(chat.id)
+                                  : null,
+                              padding: DomovoyDimensions.controlInsets,
+                              child: Text(
+                                chat.title ?? 'Новый чат',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(
+                                      fontSize: DomovoyDimensions.chatRowSize,
+                                      color: selected
+                                          ? tokens.textPrimary
+                                          : tokens.textSecondary,
                                     ),
-                                    const SizedBox(
-                                      height: DomovoyDimensions.space1,
-                                    ),
-                                    Text(
-                                      modelLabelFor(chat),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.bodySmall,
-                                    ),
-                                  ],
-                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            if (issueCount > 0)
-              Padding(
-                padding: DomovoyDimensions.listInsets,
-                child: DomovoyStatusChip(
-                  key: const ValueKey('catalog-warning'),
-                  label: 'Некоторые чаты недоступны',
-                  tone: DomovoyStatusTone.warning,
-                  icon: Icons.warning_amber_rounded,
+                      );
+                    },
+                  ),
                 ),
-              ),
-            Divider(height: DomovoyDimensions.hairline, color: tokens.divider),
-            Padding(
-              padding: DomovoyDimensions.listInsets,
-              child: FocusTraversalOrder(
-                order: const NumericFocusOrder(100),
-                child: TextButton.icon(
-                  key: const ValueKey('open-settings'),
-                  onPressed: onOpenSettings,
-                  icon: const Icon(Icons.settings_outlined),
-                  label: const Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('Настройки API-ключа'),
+              ],
+              if (issueCount > 0)
+                Padding(
+                  padding: DomovoyDimensions.listInsets,
+                  child: DomovoyStatusChip(
+                    key: const ValueKey('catalog-warning'),
+                    label: 'Некоторые чаты недоступны',
+                    tone: DomovoyStatusTone.warning,
+                  ),
+                ),
+              const SizedBox(height: DomovoyDimensions.space6),
+              FocusTraversalOrder(
+                order: const NumericFocusOrder(98),
+                child: DomovoyQuietButton(
+                  key: const ValueKey('open-usage'),
+                  tone: usageSelected
+                      ? DomovoyButtonTone.selected
+                      : DomovoyButtonTone.quiet,
+                  onPressed: onOpenUsage,
+                  expand: true,
+                  child: const Row(
+                    children: [
+                      DomovoyIcon(DomovoyIconKind.usage),
+                      SizedBox(width: DomovoyDimensions.space3),
+                      Expanded(
+                        child: Text(
+                          'Использование',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-            ),
-          ],
+              FocusTraversalOrder(
+                order: const NumericFocusOrder(100),
+                child: DomovoyQuietButton(
+                  key: const ValueKey('open-settings'),
+                  tone: providersSelected
+                      ? DomovoyButtonTone.selected
+                      : DomovoyButtonTone.quiet,
+                  onPressed: onOpenSettings,
+                  expand: true,
+                  child: const Row(
+                    children: [
+                      DomovoyIcon(DomovoyIconKind.providers),
+                      SizedBox(width: DomovoyDimensions.space3),
+                      Expanded(
+                        child: Text(
+                          'Провайдеры',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (onThemeModeChanged != null) ...[
+                const SizedBox(height: DomovoyDimensions.space3),
+                Row(
+                  children: [
+                    Text('Тема', style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(width: DomovoyDimensions.space3),
+                    Expanded(
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<ThemeMode>(
+                          isExpanded: true,
+                          key: const ValueKey('theme-mode'),
+                          value: themeMode ?? ThemeMode.system,
+                          isDense: true,
+                          borderRadius: BorderRadius.circular(
+                            DomovoyDimensions.radiusSmall,
+                          ),
+                          items: const [
+                            DropdownMenuItem(
+                              value: ThemeMode.system,
+                              child: Text('Системная'),
+                            ),
+                            DropdownMenuItem(
+                              value: ThemeMode.dark,
+                              child: Text('Тёмная'),
+                            ),
+                            DropdownMenuItem(
+                              value: ThemeMode.light,
+                              child: Text('Светлая'),
+                            ),
+                          ],
+                          onChanged: (value) {
+                            if (value != null) onThemeModeChanged!(value);
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

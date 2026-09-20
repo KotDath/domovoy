@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
 import '../../../design_system/design_system.dart';
+import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 
 class ChatModelSelector extends StatefulWidget {
   const ChatModelSelector({
@@ -12,6 +13,9 @@ class ChatModelSelector extends StatefulWidget {
     required this.selection,
     required this.onSelected,
     this.enabled = true,
+    this.catalog,
+    this.onRefreshModels,
+    this.onManageProviders,
     super.key,
   });
 
@@ -19,13 +23,15 @@ class ChatModelSelector extends StatefulWidget {
   final AgentSessionSelection selection;
   final ValueChanged<AgentSessionSelection> onSelected;
   final bool enabled;
+  final ProviderCatalogSnapshot? catalog;
+  final Future<ProviderCatalogSnapshot?> Function()? onRefreshModels;
+  final VoidCallback? onManageProviders;
 
   @override
   State<ChatModelSelector> createState() => _ChatModelSelectorState();
 }
 
 class _ChatModelSelectorState extends State<ChatModelSelector> {
-  final _menuController = MenuController();
   final _focusNode = FocusNode(debugLabel: 'model-selector');
 
   @override
@@ -43,69 +49,169 @@ class _ChatModelSelectorState extends State<ChatModelSelector> {
       media.size,
       media.textScaler.scale(1),
     );
-    final trigger = _trigger(
-      label,
-      layout.isDesktop && _modelCount <= 100 ? _toggleMenu : _openSheet,
-    );
-    if (!layout.isDesktop || _modelCount > 100) return trigger;
-    return MenuAnchor(
-      controller: _menuController,
-      menuChildren: _desktopRows(context),
-      builder: (context, controller, child) => trigger,
-    );
-  }
-
-  int get _modelCount =>
-      widget.groups.fold<int>(0, (count, group) => count + group.models.length);
-
-  Widget _trigger(String label, VoidCallback activate) => ConstrainedBox(
-    constraints: const BoxConstraints(
-      minHeight: DomovoyDimensions.minimumTarget,
-    ),
-    child: OutlinedButton.icon(
+    return DomovoyQuietButton(
       key: const ValueKey('model-selector'),
       focusNode: _focusNode,
-      onPressed: widget.enabled && widget.groups.isNotEmpty ? activate : null,
-      icon: const Icon(Icons.auto_awesome_outlined),
-      label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-    ),
-  );
-
-  void _toggleMenu() {
-    if (_menuController.isOpen) {
-      _menuController.close();
-    } else {
-      _menuController.open();
-    }
+      minSize: const Size(0, DomovoyDimensions.minimumTarget),
+      onPressed: widget.enabled && widget.groups.isNotEmpty
+          ? () => layout.isDesktop ? _openPopover() : unawaited(_openSheet())
+          : null,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 160),
+            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: DomovoyDimensions.space2),
+          const DomovoyIcon(DomovoyIconKind.chevron, size: 12),
+        ],
+      ),
+    );
   }
 
-  List<Widget> _desktopRows(BuildContext context) => <Widget>[
-    for (final group in widget.groups) ...[
-      Padding(
-        key: ValueKey('model-provider:${group.providerId.value}'),
-        padding: DomovoyDimensions.controlInsets,
-        child: Text(
-          group.displayName,
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-            color: context.domovoyTheme.textSecondary,
-          ),
-        ),
-      ),
-      for (final model in group.models)
-        MenuItemButton(
-          key: ValueKey(
-            'model-option:${model.providerId.value}:${model.id.value}',
-          ),
-          leadingIcon: Icon(
-            model.ref == widget.selection.model
-                ? Icons.radio_button_checked_rounded
-                : Icons.radio_button_unchecked_rounded,
-          ),
-          onPressed: () => _select(model),
-          child: Text(model.name),
-        ),
-    ],
-  ];
+  Future<void> _openPopover() async {
+    var activeProvider =
+        modelForSelection(widget.groups, widget.selection)?.providerId.value ??
+        widget.groups.first.providerId.value;
+    var query = '';
+    await showDomovoyAnchoredPopover<void>(
+      context: context,
+      width: DomovoyDimensions.modelsPopoverWidth,
+      builder: (popoverContext) {
+        return StatefulBuilder(
+          builder: (popoverContext, setPopoverState) {
+            final tokens = popoverContext.domovoyTheme;
+            final group = widget.groups.firstWhere(
+              (entry) => entry.providerId.value == activeProvider,
+              orElse: () => widget.groups.first,
+            );
+            final models = [
+              for (final model in group.models)
+                if (query.isEmpty ||
+                    '${group.displayName} ${model.name} ${model.id.value}'
+                        .toLowerCase()
+                        .contains(query))
+                  model,
+            ];
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                final height = constraints.maxHeight.isFinite
+                    ? constraints.maxHeight
+                    : 360.0;
+                return Material(
+                  color: DomovoyPrimitiveTokens.transparent,
+                  child: SizedBox(
+                    height: height,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                          width: DomovoyDimensions.providerMenuWidth,
+                          child: DomovoyPopoverCard(
+                            child: ListView(
+                              children: [
+                                for (final entry in widget.groups)
+                                  DomovoyQuietButton(
+                                    key: ValueKey(
+                                      'model-provider:${entry.providerId.value}',
+                                    ),
+                                    expand: true,
+                                    tone:
+                                        entry.providerId.value == activeProvider
+                                        ? DomovoyButtonTone.accent
+                                        : DomovoyButtonTone.quiet,
+                                    onPressed: () => setPopoverState(
+                                      () => activeProvider =
+                                          entry.providerId.value,
+                                    ),
+                                    child: Text(entry.displayName),
+                                  ),
+                                Divider(color: tokens.border),
+                                DomovoyQuietButton(
+                                  expand: true,
+                                  tone: DomovoyButtonTone.muted,
+                                  onPressed: () {
+                                    Navigator.maybePop(popoverContext);
+                                    widget.onManageProviders?.call();
+                                  },
+                                  child: const Text('Настроить провайдеров'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: DomovoyDimensions.space2),
+                        Expanded(
+                          child: DomovoyPopoverCard(
+                            child: Column(
+                              children: [
+                                TextField(
+                                  key: const ValueKey('model-search'),
+                                  decoration: const InputDecoration(
+                                    hintText: 'Поиск',
+                                    isDense: true,
+                                  ),
+                                  onChanged: (value) => setPopoverState(
+                                    () => query = value.trim().toLowerCase(),
+                                  ),
+                                ),
+                                const SizedBox(
+                                  height: DomovoyDimensions.space2,
+                                ),
+                                Expanded(
+                                  child: ListView(
+                                    children: [
+                                      for (final model in models)
+                                        DomovoyQuietButton(
+                                          key: ValueKey(
+                                            'model-option:${model.providerId.value}:${model.id.value}',
+                                          ),
+                                          expand: true,
+                                          tone:
+                                              model.ref ==
+                                                  widget.selection.model
+                                              ? DomovoyButtonTone.accent
+                                              : DomovoyButtonTone.quiet,
+                                          onPressed: () {
+                                            Navigator.maybePop(popoverContext);
+                                            _select(model);
+                                          },
+                                          child: Text(model.name),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                if (widget.catalog != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                      top: DomovoyDimensions.space2,
+                                    ),
+                                    child: Text(
+                                      'Каталог: ${widget.catalog!.models.length} · ${widget.catalog!.source}'
+                                      '${widget.catalog!.stale ? ' · частично/офлайн' : ''}',
+                                      style: Theme.of(popoverContext)
+                                          .textTheme
+                                          .labelSmall
+                                          ?.copyWith(color: tokens.textMuted),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+    if (mounted) _focusNode.requestFocus();
+  }
 
   Future<void> _openSheet() async {
     var query = '';
@@ -113,7 +219,7 @@ class _ChatModelSelectorState extends State<ChatModelSelector> {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      showDragHandle: true,
+      backgroundColor: context.domovoyTheme.elevatedSurface,
       builder: (sheetContext) => StatefulBuilder(
         builder: (sheetContext, setSheetState) {
           final entries = <(LlmProviderGroup, LlmModel)>[
@@ -137,7 +243,6 @@ class _ChatModelSelectorState extends State<ChatModelSelector> {
                       controller: search,
                       decoration: const InputDecoration(
                         labelText: 'Поиск модели или провайдера',
-                        prefixIcon: Icon(Icons.search),
                       ),
                       onChanged: (value) => setSheetState(
                         () => query = value.trim().toLowerCase(),
@@ -150,17 +255,28 @@ class _ChatModelSelectorState extends State<ChatModelSelector> {
                       itemCount: entries.length,
                       itemBuilder: (context, index) {
                         final (group, model) = entries[index];
-                        return ListTile(
+                        return DomovoyQuietButton(
                           key: ValueKey(
                             'model-option:${model.providerId.value}:${model.id.value}',
                           ),
-                          title: Text(model.name),
-                          subtitle: Text(group.displayName),
-                          selected: model.ref == widget.selection.model,
-                          onTap: () {
+                          expand: true,
+                          tone: model.ref == widget.selection.model
+                              ? DomovoyButtonTone.accent
+                              : DomovoyButtonTone.quiet,
+                          onPressed: () {
                             Navigator.pop(sheetContext);
                             _select(model);
                           },
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(model.name),
+                              Text(
+                                group.displayName,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
                         );
                       },
                     ),
@@ -177,7 +293,6 @@ class _ChatModelSelectorState extends State<ChatModelSelector> {
   }
 
   void _select(LlmModel model) {
-    _menuController.close();
     widget.onSelected(selectionForTargetModel(widget.selection, model));
     scheduleMicrotask(_focusNode.requestFocus);
   }

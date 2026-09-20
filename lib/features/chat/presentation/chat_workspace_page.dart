@@ -14,15 +14,29 @@ import '../application/chat_timeline_projector.dart';
 import '../application/chat_token_presenter.dart';
 import 'chat_composer.dart';
 import 'chat_timeline.dart';
+import 'model_selector.dart';
 import 'delete_chat_dialog.dart';
 import 'token_details.dart';
+import 'usage_view.dart';
 import 'workspace_shell.dart';
 
+enum WorkspacePane { chat, providers, usage }
+
 class ChatWorkspacePage extends StatefulWidget {
-  const ChatWorkspacePage({required this.controller, this.projects, super.key});
+  const ChatWorkspacePage({
+    required this.controller,
+    this.projects,
+    this.themeMode,
+    this.onThemeModeChanged,
+    this.providersView,
+    super.key,
+  });
 
   final ChatWorkspaceController controller;
   final ProjectWorkspaceController? projects;
+  final ThemeMode? themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final Widget? providersView;
 
   @override
   State<ChatWorkspacePage> createState() => _ChatWorkspacePageState();
@@ -37,6 +51,8 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   ProjectWorkspaceState? _projects;
   final _deleteFocusNode = FocusNode(debugLabel: 'chat-delete');
   final _newChatFocusNode = FocusNode(debugLabel: 'chat-new');
+  var _pane = WorkspacePane.chat;
+  Timer? _durationTimer;
 
   @override
   void initState() {
@@ -69,7 +85,10 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   ) {
     _state = controller.state;
     _subscription = controller.states.listen((state) {
-      if (mounted) setState(() => _state = state);
+      if (mounted) {
+        setState(() => _state = state);
+        _syncDurationTimer();
+      }
     });
     _projects = projects?.state;
     _projectSubscription = projects?.states.listen((state) {
@@ -81,6 +100,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   void dispose() {
     unawaited(_subscription?.cancel());
     unawaited(_projectSubscription?.cancel());
+    _durationTimer?.cancel();
     _deleteFocusNode.dispose();
     _newChatFocusNode.dispose();
     super.dispose();
@@ -93,20 +113,36 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     final projects = widget.projects;
     final projectState = _projects;
     final visibleChats = projectState?.selectedGroup?.chats ?? _state.chats;
+    final group = projectState?.selectedGroup;
     return WorkspaceShell(
       key: const ValueKey('chat-workspace-destination'),
       chats: visibleChats,
       selectedId: _state.selectedId,
-      title: selected?.title ?? 'Новый чат',
+      title: switch (_pane) {
+        WorkspacePane.providers => 'Провайдеры',
+        WorkspacePane.usage => 'Использование',
+        WorkspacePane.chat => selected?.title ?? 'Новый чат',
+      },
       modelLabel: selected == null
           ? 'Модель не выбрана'
           : _modelLabel(selected.selection.model),
       modelLabelFor: (summary) => _modelLabel(summary.selection.model),
-      body: _body(context),
+      body: switch (_pane) {
+        WorkspacePane.providers => widget.providersView ?? _body(context),
+        WorkspacePane.usage => UsageView(projection: _tokenProjection()),
+        WorkspacePane.chat => _body(context),
+      },
       composer: _composer(),
+      showComposer: _pane == WorkspacePane.chat,
       onNewChat: enabled ? _createChat : null,
-      onSelectChat: enabled ? _selectChat : null,
+      onSelectChat: enabled
+          ? (id) {
+              setState(() => _pane = WorkspacePane.chat);
+              _selectChat(id);
+            }
+          : null,
       onOpenSettings: _openSettings,
+      onOpenUsage: () => setState(() => _pane = WorkspacePane.usage),
       enabled: enabled,
       issueCount: _state.catalogIssues.length,
       tokenProjection: _tokenProjection(),
@@ -114,17 +150,36 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       onDeleteChat: selected == null || _state.isDisposed ? null : _deleteChat,
       deleteFocusNode: _deleteFocusNode,
       newChatFocusNode: _newChatFocusNode,
+      themeMode: widget.themeMode,
+      onThemeModeChanged: widget.onThemeModeChanged,
+      usageSelected: _pane == WorkspacePane.usage,
+      providersSelected: _pane == WorkspacePane.providers,
+      projectName: group?.kind == ProjectSelectionKind.unassigned
+          ? unassignedProjectLabel
+          : group?.title,
+      projectRoot: '—',
       aboveChats: projects == null || projectState == null
           ? null
-          : ProjectSidebarSection(controller: projects, state: projectState),
+          : ProjectSidebarSection(
+              controller: projects,
+              state: projectState,
+              selectedChatId: _state.selectedId,
+              onSelectChat: enabled
+                  ? (id) {
+                      setState(() => _pane = WorkspacePane.chat);
+                      _selectChat(id);
+                    }
+                  : null,
+              onNewChat: enabled ? _createChat : null,
+            ),
     );
   }
 
   Widget _body(BuildContext context) {
     if (_state.catalogStatus == ChatCatalogStatus.loading) {
-      return const Center(
-        key: ValueKey('workspace-loading'),
-        child: CircularProgressIndicator(),
+      return Center(
+        key: const ValueKey('workspace-loading'),
+        child: Text('Загрузка…', style: Theme.of(context).textTheme.bodySmall),
       );
     }
     if (_state.catalogStatus == ChatCatalogStatus.failed) {
@@ -166,6 +221,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       projection: projection,
       announcement: _announcement(),
       onOpenSettings: _openSettings,
+      durationLabel: _durationLabel(),
     );
   }
 
@@ -185,6 +241,10 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       enabled: !_state.isDisposed,
       providerCatalog: _state.providerCatalog,
       onRefreshModels: widget.controller.refreshProviderModels,
+      tokenProjection: _tokenProjection(),
+      onOpenTokens: _openTokens,
+      onOpenProviders: _openSettings,
+      selectedModel: _selectedModel(snapshot),
     );
   }
 
@@ -238,7 +298,43 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     );
   }
 
-  void _openSettings() => unawaited(widget.controller.openSettings());
+  void _openSettings() {
+    if (widget.providersView != null) {
+      setState(() => _pane = WorkspacePane.providers);
+      return;
+    }
+    unawaited(widget.controller.openSettings());
+  }
+
+  void _syncDurationTimer() {
+    final live = _state.liveRun;
+    final running = live != null && live.terminal == null;
+    if (running) {
+      _durationTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      _durationTimer?.cancel();
+      _durationTimer = null;
+    }
+  }
+
+  String? _durationLabel() {
+    final live = _state.liveRun;
+    if (live == null) return null;
+    final elapsed = live.elapsedAt(widget.controller.clock.elapsed);
+    if (elapsed == null) return null;
+    final seconds = elapsed.inSeconds;
+    return live.terminal == null ? 'Работает $seconds с' : 'Работал $seconds с';
+  }
+
+  LlmModel? _selectedModel(AgentSessionSnapshot snapshot) {
+    try {
+      return widget.controller.registry.requireModel(snapshot.selection.model);
+    } on Object {
+      return modelForSelection(_state.providerGroups, snapshot.selection);
+    }
+  }
 
   ChatTokenProjection? _tokenProjection() {
     final snapshot = _visibleSelectedSession;
@@ -254,7 +350,15 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   void _openTokens() {
     final projection = _tokenProjection();
     if (projection == null) return;
-    unawaited(showChatTokenDetails(context: context, projection: projection));
+    unawaited(
+      showChatTokenDetails(
+        context: context,
+        projection: projection,
+        model: _visibleSelectedSession == null
+            ? null
+            : _selectedModel(_visibleSelectedSession!),
+      ),
+    );
   }
 
   void _deleteChat() => unawaited(_confirmDelete());
@@ -362,7 +466,11 @@ class _WorkspaceNotice extends StatelessWidget {
                 ),
                 if (actionLabel != null) ...[
                   const SizedBox(height: DomovoyDimensions.space6),
-                  FilledButton(onPressed: onAction, child: Text(actionLabel!)),
+                  DomovoyQuietButton(
+                    tone: DomovoyButtonTone.accent,
+                    onPressed: onAction,
+                    child: Text(actionLabel!),
+                  ),
                 ],
               ],
             ),

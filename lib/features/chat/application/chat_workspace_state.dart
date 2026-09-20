@@ -95,6 +95,8 @@ final class ChatLiveRunState {
     List<ChatRunEventEntry> events = const <ChatRunEventEntry>[],
     this.terminal,
     this.isStopping = false,
+    this.startedElapsed,
+    this.terminalElapsed,
   }) : events = List<ChatRunEventEntry>.unmodifiable(
          List<ChatRunEventEntry>.from(events),
        );
@@ -105,8 +107,10 @@ final class ChatLiveRunState {
   final List<ChatRunEventEntry> events;
   final AgentRunEvent? terminal;
   final bool isStopping;
+  final Duration? startedElapsed;
+  final Duration? terminalElapsed;
 
-  ChatLiveRunState fold(AgentRunEvent event) {
+  ChatLiveRunState fold(AgentRunEvent event, {Duration? elapsed}) {
     final next = List<ChatRunEventEntry>.from(events);
     final identity = _eventIdentity(event, next.length);
     final replacement = next.indexWhere((entry) => entry.id == identity);
@@ -123,6 +127,10 @@ final class ChatLiveRunState {
       events: next,
       terminal: event.isTerminal ? event : terminal,
       isStopping: isStopping,
+      startedElapsed: startedElapsed,
+      terminalElapsed: event.isTerminal
+          ? (terminalElapsed ?? elapsed)
+          : terminalElapsed,
     );
   }
 
@@ -133,7 +141,17 @@ final class ChatLiveRunState {
     events: events,
     terminal: terminal,
     isStopping: true,
+    startedElapsed: startedElapsed,
+    terminalElapsed: terminalElapsed,
   );
+
+  Duration? elapsedAt(Duration now) {
+    final start = startedElapsed;
+    if (start == null) return null;
+    final end = terminalElapsed ?? now;
+    final value = end - start;
+    return value.isNegative ? Duration.zero : value;
+  }
 }
 
 final class ChatWorkspaceState {

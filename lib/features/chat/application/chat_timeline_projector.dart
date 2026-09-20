@@ -33,10 +33,12 @@ final class ChatAssistantItem extends ChatTimelineItem {
     required super.key,
     required this.text,
     this.isPartial = false,
+    this.durationLabel,
   });
 
   final String text;
   final bool isPartial;
+  final String? durationLabel;
 }
 
 final class ChatReasoningItem extends ChatTimelineItem {
