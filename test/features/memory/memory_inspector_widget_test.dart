@@ -3,6 +3,7 @@ import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/memory/memory.dart';
 import 'package:domovoy/core/projects/projects.dart';
 import 'package:domovoy/design_system/design_system.dart';
+import 'package:domovoy/features/chat/presentation/workspace_shell.dart';
 import 'package:domovoy/features/memory/application/memory_inspector_controller.dart';
 import 'package:domovoy/features/memory/application/memory_inspector_state.dart';
 import 'package:domovoy/features/memory/presentation/memory_inspector_panel.dart';
@@ -102,6 +103,28 @@ Widget _app(Widget child) {
   );
 }
 
+Widget _workspaceShell({required VoidCallback onOpenMemory, Key? key}) {
+  return WorkspaceShell(
+    key: key,
+    chats: const <AgentSessionSummary>[],
+    selectedId: null,
+    title: 'Memory test',
+    modelLabel: 'Test model',
+    modelLabelFor: (_) => 'Test model',
+    body: const ColoredBox(color: Colors.white),
+    composer: const SizedBox(height: 48),
+    onNewChat: null,
+    onSelectChat: null,
+    onOpenSettings: null,
+    enabled: true,
+    memoryPanel: const ColoredBox(
+      key: ValueKey('memory-panel-placeholder'),
+      color: Colors.blue,
+    ),
+    onOpenMemory: onOpenMemory,
+  );
+}
+
 void _setSize(WidgetTester tester, Size size) {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -125,6 +148,56 @@ Future<void> _pumpPanel(WidgetTester tester, _Fixture fixture) async {
 }
 
 void main() {
+  testWidgets('tablet and desktop open memory as a workspace side pane', (
+    tester,
+  ) async {
+    for (final size in <Size>[const Size(900, 900), const Size(1400, 900)]) {
+      _setSize(tester, size);
+      var sheetCalls = 0;
+      await tester.pumpWidget(
+        _app(
+          _workspaceShell(
+            key: ValueKey('workspace-${size.width}'),
+            onOpenMemory: () => sheetCalls += 1,
+          ),
+        ),
+      );
+      final shellContext = tester.element(find.byType(WorkspaceShell));
+      expect(MediaQuery.sizeOf(shellContext).width, size.width);
+      expect(resolveWorkspaceLayout(size, 1).isDesktop, isTrue);
+
+      await tester.tap(find.byKey(const ValueKey('memory-open')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('workspace-memory-pane')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('memory-panel-placeholder')),
+        findsOneWidget,
+      );
+      expect(sheetCalls, 0);
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('phone routes the memory button to the bottom-sheet callback', (
+    tester,
+  ) async {
+    _setSize(tester, const Size(400, 800));
+    var sheetCalls = 0;
+    await tester.pumpWidget(
+      _app(_workspaceShell(onOpenMemory: () => sheetCalls += 1)),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('memory-open')));
+    await tester.pump();
+
+    expect(sheetCalls, 1);
+    expect(find.byKey(const ValueKey('workspace-memory-pane')), findsNothing);
+  });
+
   testWidgets('desktop and tablet widths render the pane without overflow', (
     tester,
   ) async {

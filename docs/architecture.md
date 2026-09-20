@@ -75,3 +75,20 @@ foreground. Reprocessing is idempotent by source IDs.
 - Project and global scopes are assigned by the host.
 - UI inspection, edit, forget, and context trace are required behavior.
 
+## Final implementation notes
+
+- Composition lives in `lib/app.dart`: one `MemoryJsonlStack`, layered
+  retrieval, a live `MemoryReadTogglesController` behind the dynamic context
+  provider, a registry-backed `LlmMemoryBatchExtractor`, and a
+  `MemoryExtractionCoordinator`.
+- `ChatWorkspaceController.onTurnCompleted` records each completed turn without
+  delaying the chat command; attaching a session restores its pending
+  extraction and reschedules the idle deadline.
+- Candidate identities are derived deterministically from the session, source
+  identities, and proposal index, and confirmed creates recover idempotently, so
+  retried batches cannot duplicate records.
+- Confirmed records are editable in place; forgetting is a tombstone revision.
+  Only an accepted candidate produces an active record, and extraction itself
+  only ever writes candidates.
+- Android/iOS pause and resume extraction with the application lifecycle;
+  desktop and web are foreground-only.
