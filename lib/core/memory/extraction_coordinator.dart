@@ -7,6 +7,7 @@ import '../llm/cancellation.dart';
 import '../projects/ids.dart';
 import 'batch_extractor.dart';
 import 'candidate.dart';
+import 'command_classifier.dart';
 import 'enums.dart';
 import 'entry.dart';
 import 'errors.dart';
@@ -116,6 +117,7 @@ final class MemoryExtractionResult {
 final class MemoryExtractionCoordinator {
   MemoryExtractionCoordinator({
     required this.extractor,
+    this.commandClassifier,
     required this.repositories,
     required this.checkpoints,
     required this.clock,
@@ -146,6 +148,7 @@ final class MemoryExtractionCoordinator {
   }
 
   final MemoryBatchExtractor extractor;
+  final MemoryCommandClassifier? commandClassifier;
   final MemoryRepositories repositories;
   final MemoryExtractionCheckpointRepository checkpoints;
   final AgentClock clock;
@@ -180,6 +183,11 @@ final class MemoryExtractionCoordinator {
       completedSources,
       now,
     );
+    final classified = await _classifyLatestCommand(
+      state,
+      completedSources,
+      now,
+    );
     final checkpoint = await _recordActivity(state, now);
     _rescheduleIdle(state);
     final due =
@@ -187,11 +195,12 @@ final class MemoryExtractionCoordinator {
     final result = due
         ? await _flush(sessionId, force: false)
         : MemoryExtractionResult.skipped();
-    if (explicit.isEmpty) {
+    if (explicit.isEmpty && classified.isEmpty) {
       return result;
     }
     return MemoryExtractionResult.extracted(<MemoryCandidate>[
       ...explicit,
+      ...classified,
       ...result.candidates,
     ]);
   }
@@ -387,6 +396,86 @@ final class MemoryExtractionCoordinator {
     return created;
   }
 
+  Future<List<MemoryCandidate>> _classifyLatestCommand(
+    _SessionState state,
+    List<MemoryExtractionSource> sources,
+    int now,
+  ) async {
+    final classifier = commandClassifier;
+    if (classifier == null) {
+      return const <MemoryCandidate>[];
+    }
+    final userSources = sources.where(
+      (source) => source.role == MemoryTranscriptRole.user,
+    );
+    if (userSources.isEmpty) {
+      return const <MemoryCandidate>[];
+    }
+    final source = userSources.last;
+    if (parseMemoryRememberPhrases(source.text).isNotEmpty) {
+      return const <MemoryCandidate>[];
+    }
+    final candidateId = ids.forExplicitPhrase(
+      sessionId: state.sessionId,
+      sourceId: source.id,
+      phraseIndex: 0,
+    );
+    try {
+      final existing = await repositories.candidateRepository.load(
+        candidateId,
+        cancellation: _operations.token,
+      );
+      if (existing != null) {
+        return const <MemoryCandidate>[];
+      }
+    } on MemoryException {
+      return const <MemoryCandidate>[];
+    }
+
+    final MemoryPhraseProposal? proposal;
+    try {
+      proposal = await classifier.classify(
+        source.text,
+        cancellation: _operations.token,
+      );
+    } on Object {
+      // This best-effort fallback must never prevent checkpointing or the
+      // periodic batch extractor from progressing.
+      return const <MemoryCandidate>[];
+    }
+    if (proposal == null) {
+      return const <MemoryCandidate>[];
+    }
+    final projectId = proposal.scope == MemoryScope.project
+        ? state.projectId
+        : null;
+    if (proposal.scope == MemoryScope.project && projectId == null) {
+      return const <MemoryCandidate>[];
+    }
+    final MemoryCandidate candidate;
+    try {
+      candidate = MemoryCandidate(
+        id: candidateId,
+        revision: 0,
+        operation: MemoryProposalOperation.create,
+        layer: proposal.layer,
+        scope: proposal.scope,
+        kind: proposal.kind,
+        content: proposal.content,
+        sourceIds: <MemorySourceId>[source.id],
+        createdAtMicros: now,
+        updatedAtMicros: now,
+        projectId: projectId,
+      );
+    } on MemoryException {
+      return const <MemoryCandidate>[];
+    }
+    if (!await _saveCandidate(candidate)) {
+      return const <MemoryCandidate>[];
+    }
+    return <MemoryCandidate>[candidate];
+  }
+
   Future<MemoryExtractionResult> _flush(
     AgentSessionId sessionId, {
     required bool force,
@@ -564,11 +653,32 @@ final class MemoryExtractionCoordinator {
     MemoryCandidate candidate, {
     CancellationToken? cancellation,
   }) async {
+    final token = cancellation ?? _operations.token;
     try {
+      final existingCandidates = await repositories.candidateRepository.list(
+        cancellation: token,
+      );
+      if (existingCandidates.any(
+        (existing) =>
+            !existing.status.isRejected &&
+            _sameCandidateProposal(existing, candidate),
+      )) {
+        return false;
+      }
+      if (candidate.operation == MemoryProposalOperation.create) {
+        final entries = await repositories
+            .entryRepository(candidate.layer)
+            .list(projectId: candidate.projectId, cancellation: token);
+        if (entries.any(
+          (entry) => entry.isActive && _sameStoredFact(entry, candidate),
+        )) {
+          return false;
+        }
+      }
       await repositories.candidateRepository.save(
         candidate,
         expectedRevision: 0,
-        cancellation: cancellation ?? _operations.token,
+        cancellation: token,
       );
       return true;
     } on MemoryException catch (error) {
@@ -578,6 +688,29 @@ final class MemoryExtractionCoordinator {
       rethrow;
     }
   }
+
+  bool _sameCandidateProposal(
+    MemoryCandidate existing,
+    MemoryCandidate proposed,
+  ) {
+    if (existing.operation != proposed.operation ||
+        existing.layer != proposed.layer ||
+        existing.scope != proposed.scope ||
+        existing.projectId != proposed.projectId ||
+        existing.targetEntryId != proposed.targetEntryId) {
+      return false;
+    }
+    return _sameContent(existing.content, proposed.content);
+  }
+
+  bool _sameStoredFact(MemoryEntry existing, MemoryCandidate proposed) =>
+      existing.layer == proposed.layer &&
+      existing.scope == proposed.scope &&
+      existing.projectId == proposed.projectId &&
+      _sameContent(existing.content, proposed.content);
+
+  bool _sameContent(String? left, String? right) =>
+      left?.trim().toLowerCase() == right?.trim().toLowerCase();
 
   Future<List<MemoryEntry>> _activeEntries(
     ProjectId? projectId, {

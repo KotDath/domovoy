@@ -149,9 +149,10 @@ void main() {
           'entry-working-1',
         );
         expect(contextEvent.systemPromptText, contains('<memory>'));
+        expect(contextEvent.systemPromptText, contains(memoryHostProtocol));
         expect(
           memoryTrace.renderedCharacters,
-          contextEvent.systemPromptText.runes.length,
+          lessThan(contextEvent.systemPromptText.runes.length),
         );
 
         expect(
@@ -210,9 +211,9 @@ void main() {
       final events = await disabledSession.run('second').events.toList();
       expect(
         provider.requests.last.context.systemPrompt,
-        'You are a test agent.',
+        contains(memoryHostProtocol),
       );
-      expect(events.whereType<AgentDynamicContextEvent>(), isEmpty);
+      expect(events.whereType<AgentDynamicContextEvent>(), hasLength(1));
       await disabledSession.close();
       await runtime.close();
       await disabled.close();

@@ -23,7 +23,8 @@ makes a record active and eligible for retrieval.
    and extraction checkpoints with native/web conditional adapters.
 4. Add deterministic retrieval, prompt rendering, context budgets, and an
    auditable trace to agent requests without adding memory to the transcript.
-5. Add explicit commands and a batch extractor using the existing LLM registry.
+5. Add deterministic explicit commands, a one-message semantic fallback, and a
+   periodic batch extractor using the existing LLM registry.
 6. Add adaptive desktop/mobile memory UI and candidate confirmation.
 7. Complete integration, restart, isolation, lifecycle, and security tests.
 
@@ -34,6 +35,9 @@ makes a record active and eligible for retrieval.
 - An idle flush becomes due 30 minutes after the last completed response.
 - A manual `Analyze now` action flushes the pending batch immediately.
 - Explicit project/global remember phrases create candidates without an LLM call.
+- If that parser returns no match, an isolated classifier checks only the latest
+  user message and returns `none`, `working`, or `longTerm` plus content.
+- Equivalent command and periodic-extraction candidates are deduplicated.
 - Only one extractor runs per session; failures do not advance its checkpoint.
 - Mobile backgrounding persists scheduling state and cancels timers. On resume,
   an overdue flush runs in the foreground.
@@ -45,10 +49,10 @@ makes a record active and eligible for retrieval.
   its chats to the default project.
 - Working memory never crosses project boundaries; long-term memory crosses
   projects; candidates never enter prompts.
-- Retrieval does not require an LLM call. Extraction is not invoked per turn.
+- Retrieval does not require an LLM call. The narrow command classifier may run
+  once after a completed user turn; periodic batch extraction does not.
 - Context traces identify the exact records supplied to the provider.
 - Linux and Android smoke scenarios pass. iOS shares the native adapter and has
   platform/lifecycle tests; a physical iOS smoke requires a macOS host.
 - `dart format .`, `flutter analyze`, `flutter test`, and
   `flutter build apk --debug` succeed.
-

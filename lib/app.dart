@@ -276,9 +276,16 @@ final class DomovoyDependencies {
         toggles: memoryToggles,
       ),
     );
+    final memoryExtractionLlm = RegistryMemoryExtractionLlmInvocation(
+      stack.registry,
+    );
     final memoryExtraction = MemoryExtractionCoordinator(
       extractor: LlmMemoryBatchExtractor(
-        llm: RegistryMemoryExtractionLlmInvocation(stack.registry),
+        llm: memoryExtractionLlm,
+        model: stack.promptDefinition.model,
+      ),
+      commandClassifier: LlmMemoryCommandClassifier(
+        llm: memoryExtractionLlm,
         model: stack.promptDefinition.model,
       ),
       repositories: memoryRepositories,

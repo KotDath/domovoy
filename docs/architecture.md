@@ -24,17 +24,24 @@ reserved default identity while filesystem operations remain unsupported.
 
 ```text
 completed transcript messages
-  -> extraction policy (window, idle, manual, explicit phrase)
-  -> isolated LLM candidate extractor
+  -> deterministic explicit-command parser
+     -> match: candidate immediately, with no LLM call
+     -> no match: isolated LLM classifier sees only the latest user message
+  -> periodic extraction policy (window, idle, manual)
+  -> isolated LLM batch extractor
   -> schema/source/scope/secret validation
   -> persisted candidate
   -> user confirm/edit/reject
   -> active working or long-term record
 ```
 
-The extractor receives source message IDs and a bounded set of active records.
-It may propose create, update, or noop. The host owns scopes, IDs, revisions,
-project membership, and persistence. Automatic deletion is forbidden.
+The command classifier decides only `none`, project working memory, or global
+long-term memory; it cannot see chat history or call tools. The batch extractor
+receives source message IDs and a bounded set of active records and may propose
+create, update, or noop. Semantically equivalent pending/accepted candidates
+and active records are deduplicated across both paths. The host owns scopes,
+IDs, revisions, project membership, and persistence. Automatic deletion is
+forbidden.
 
 ## Read flow
 
@@ -79,8 +86,8 @@ foreground. Reprocessing is idempotent by source IDs.
 
 - Composition lives in `lib/app.dart`: one `MemoryJsonlStack`, layered
   retrieval, a live `MemoryReadTogglesController` behind the dynamic context
-  provider, a registry-backed `LlmMemoryBatchExtractor`, and a
-  `MemoryExtractionCoordinator`.
+  provider, a registry-backed `LlmMemoryCommandClassifier`, a
+  `LlmMemoryBatchExtractor`, and a `MemoryExtractionCoordinator`.
 - `ChatWorkspaceController.onTurnCompleted` records each completed turn without
   delaying the chat command; attaching a session restores its pending
   extraction and reschedules the idle deadline.

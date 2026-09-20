@@ -1,5 +1,6 @@
 export 'batch_extractor.dart';
 export 'candidate.dart';
+export 'command_classifier.dart';
 export 'context.dart';
 export 'enums.dart';
 export 'entry.dart';

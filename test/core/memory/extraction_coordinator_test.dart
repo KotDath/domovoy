@@ -30,6 +30,24 @@ final class _FakeExtractor implements MemoryBatchExtractor {
   }
 }
 
+final class _FakeCommandClassifier implements MemoryCommandClassifier {
+  _FakeCommandClassifier(this.result);
+
+  final MemoryPhraseProposal? result;
+  var calls = 0;
+  final List<String> messages = <String>[];
+
+  @override
+  Future<MemoryPhraseProposal?> classify(
+    String message, {
+    required CancellationToken cancellation,
+  }) async {
+    calls += 1;
+    messages.add(message);
+    return result;
+  }
+}
+
 final class _FailingAdvanceCheckpoints
     implements MemoryExtractionCheckpointRepository {
   final inner = InMemoryMemoryExtractionCheckpointRepository();
@@ -87,6 +105,7 @@ final class _Harness {
     )?
     cancellableHandler,
     MemoryExtractionCheckpointRepository? checkpointRepository,
+    MemoryCommandClassifier? commandClassifier,
   }) {
     extractor = _FakeExtractor(
       cancellableHandler ??
@@ -101,6 +120,7 @@ final class _Harness {
     clock = FakeAgentClock();
     coordinator = MemoryExtractionCoordinator(
       extractor: extractor,
+      commandClassifier: commandClassifier,
       repositories: MemoryRepositories(
         workingRepository: working,
         longTermRepository: longTerm,
@@ -239,6 +259,115 @@ void main() {
       expect(await harness.candidates.list(cancellation: open), hasLength(1));
       expect(harness.extractor.calls, 0);
     });
+
+    test('LLM fallback classifies only a missed latest command', () async {
+      final classifier = _FakeCommandClassifier(
+        const MemoryPhraseProposal(
+          layer: MemoryLayer.longTerm,
+          scope: MemoryScope.global,
+          kind: MemoryKind.fact,
+          content: 'Меня зовут Даниил.',
+        ),
+      );
+      final harness = _Harness(commandClassifier: classifier);
+      final source = MemoryExtractionSource(
+        id: MemorySourceId('u-typo'),
+        role: MemoryTranscriptRole.user,
+        text: 'Запомни гглобально, что меня зовут Даниил',
+      );
+
+      final result = await harness.coordinator.onCompletedTurn(
+        sessionId: sessionId,
+        projectId: projectId,
+        completedSources: <MemoryExtractionSource>[
+          MemoryExtractionSource(
+            id: MemorySourceId('u-old'),
+            role: MemoryTranscriptRole.user,
+            text: 'Обычное старое сообщение',
+          ),
+          source,
+        ],
+      );
+
+      expect(result.candidates, hasLength(1));
+      expect(classifier.calls, 1);
+      expect(classifier.messages, <String>[source.text]);
+      final stored = await harness.candidates.list(cancellation: open);
+      expect(stored, hasLength(1));
+      expect(stored.single.layer, MemoryLayer.longTerm);
+      expect(stored.single.scope, MemoryScope.global);
+      expect(stored.single.projectId, isNull);
+
+      await harness.coordinator.onCompletedTurn(
+        sessionId: sessionId,
+        projectId: projectId,
+        completedSources: <MemoryExtractionSource>[source],
+      );
+      expect(classifier.calls, 1, reason: 'the source was already classified');
+      expect(await harness.candidates.list(cancellation: open), hasLength(1));
+    });
+
+    test('deterministic fast path bypasses the LLM classifier', () async {
+      final classifier = _FakeCommandClassifier(null);
+      final harness = _Harness(commandClassifier: classifier);
+
+      await harness.coordinator.onCompletedTurn(
+        sessionId: sessionId,
+        projectId: projectId,
+        completedSources: <MemoryExtractionSource>[
+          MemoryExtractionSource(
+            id: MemorySourceId('u-fast'),
+            role: MemoryTranscriptRole.user,
+            text: 'Запомни глобально: меня зовут Даниил',
+          ),
+        ],
+      );
+
+      expect(classifier.calls, 0);
+      expect(await harness.candidates.list(cancellation: open), hasLength(1));
+    });
+
+    test(
+      'periodic extraction does not duplicate a command candidate',
+      () async {
+        final classifier = _FakeCommandClassifier(
+          const MemoryPhraseProposal(
+            layer: MemoryLayer.working,
+            scope: MemoryScope.project,
+            kind: MemoryKind.fact,
+            content: 'Deployment uses kubernetes.',
+          ),
+        );
+        final harness = _Harness(
+          commandClassifier: classifier,
+          handler: (_) => <MemoryCandidateDraft>[
+            _draft(content: 'Deployment uses kubernetes.'),
+          ],
+        );
+        final sources = <MemoryExtractionSource>[
+          MemoryExtractionSource(
+            id: MemorySourceId('u-command'),
+            role: MemoryTranscriptRole.user,
+            text: 'Please keep in mind that deployment uses kubernetes.',
+          ),
+        ];
+
+        await harness.coordinator.onCompletedTurn(
+          sessionId: sessionId,
+          projectId: projectId,
+          completedSources: sources,
+        );
+        await harness.coordinator.analyzeNow(
+          sessionId: sessionId,
+          projectId: projectId,
+          completedSources: sources,
+        );
+
+        expect(classifier.calls, 1);
+        expect(harness.extractor.calls, 1);
+        expect(await harness.candidates.list(cancellation: open), hasLength(1));
+      },
+    );
 
     test(
       'waits for 40 messages then advances by 38 keeping a 2 overlap',

@@ -38,10 +38,12 @@ or disappears during compaction/model switching.
 
 ## MEM-05 — Extraction
 
-Implement explicit phrase candidates, registry-backed batch extraction, strict
-JSON parsing, window/overlap, idle/manual flush, checkpoints, single-flight, and
-mobile lifecycle recovery. Acceptance: fake-clock and scripted-LLM tests prove
-that normal turns do not invoke extraction individually and failures are safe.
+Implement deterministic explicit phrase candidates, a one-message LLM command
+fallback, registry-backed batch extraction, strict JSON parsing, semantic
+deduplication, window/overlap, idle/manual flush, checkpoints, single-flight,
+and mobile lifecycle recovery. Acceptance: fake-clock and scripted-LLM tests
+prove fast-path bypass, fallback isolation, periodic scheduling, and safe
+failures.
 
 ## MEM-06 — Application and UI
 
@@ -56,4 +58,3 @@ Complete restart, default/user-project isolation, lifecycle, prompt-injection,
 secret, and end-to-end tests; update documentation and run the live demo.
 Acceptance: all repository checks, Android build/emulator smoke, Linux smoke,
 and the documented memory/no-memory comparison succeed.
-

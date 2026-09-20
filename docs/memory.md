@@ -26,11 +26,18 @@ never mixes them: a working record is only ever returned for its own project.
   `remember project: ...`, `remember global: ...`, `remember: ...`,
   `remember that ...`, `запомни проект: ...`, `запомни глобально: ...`,
   `запомни, что ...`.
+- When the deterministic parser finds no command, an isolated LLM classifier
+  checks only the latest user message. It returns `none`, `working`, or
+  `longTerm` with a self-contained fact, so typos and natural wording such as
+  `Запомни гглобально, что меня зовут Даниил` remain usable.
+- Equivalent candidates and already-confirmed active records are deduplicated
+  across the command and periodic batch paths.
 - Only one extractor runs per session; a failure never advances the checkpoint,
   so the same batch is retried. Candidate identities are deterministic per
   session/source/proposal, so a retried batch cannot duplicate records.
-- Extraction is requested after a completed chat turn and is not invoked per
-  individual model turn.
+- Command classification may run once after a completed user turn; periodic
+  batch extraction still runs only at the configured window, idle deadline, or
+  manual action.
 
 ## Confirmation and gating
 
@@ -67,11 +74,11 @@ still listed in the trace with reason `layerDisabled`.
 ## Composition and lifecycle
 
 `lib/app.dart` wires the JSONL memory stack, layered retrieval, a live read
-toggle provider, the registry-backed batch extractor, and the extraction
-coordinator. `ChatWorkspaceController.onTurnCompleted` records completed turns
-without delaying the chat command. On Android/iOS the app lifecycle pauses
-extraction when backgrounded and resumes an overdue flush in the foreground;
-desktop/web remain foreground-only.
+toggle provider, the registry-backed command classifier and batch extractor,
+and the extraction coordinator. `ChatWorkspaceController.onTurnCompleted`
+records completed turns without delaying the chat command. On Android/iOS the
+app lifecycle pauses extraction when backgrounded and resumes an overdue flush
+in the foreground; desktop/web remain foreground-only.
 
 ## Reproducible desktop demo
 
@@ -116,7 +123,7 @@ toolchain available.
 |---|---|---|
 | Formatting | `dart format .` | ✅ no changes required |
 | Static analysis | `flutter analyze` | ✅ `No issues found!` |
-| Test suite | `flutter test` | ✅ 712 passed, 1 skipped |
+| Test suite | `flutter test` | ✅ 718 passed, 1 skipped |
 | Android debug build | `flutter build apk --debug` | ✅ `build/app/outputs/flutter-apk/app-debug.apk` |
 | Linux debug build | `flutter build linux --debug` | ✅ `build/linux/x64/debug/bundle/domovoy` |
 | Linux launch | `./build/linux/x64/debug/bundle/domovoy` | ✅ Dart VM service started; GTK window remained alive until the smoke timeout (only a non-fatal `Gdk-Message: Unable to load … cursor theme` warning) |
