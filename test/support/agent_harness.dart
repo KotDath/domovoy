@@ -112,6 +112,7 @@ InMemoryAgentRuntime testRuntime({
   AgentCompactionTrigger? compactionTrigger,
   AgentModelSwitchFitPolicy? modelSwitchFitPolicy,
   AgentHistoryCompactor? historyCompactor,
+  AgentDynamicContextProvider? dynamicContextProvider,
 }) {
   final registry = LlmProviderRegistry();
   BuiltInLlmCatalog.registerInto(registry);
@@ -132,6 +133,7 @@ InMemoryAgentRuntime testRuntime({
     compactionTrigger: compactionTrigger,
     modelSwitchFitPolicy: modelSwitchFitPolicy,
     historyCompactor: historyCompactor,
+    dynamicContextProvider: dynamicContextProvider,
   );
 }
 

@@ -2,6 +2,7 @@ export 'clock.dart';
 export 'catalog.dart';
 export 'compaction.dart';
 export 'definition.dart';
+export 'dynamic_context.dart';
 export 'errors.dart';
 export 'events.dart';
 export 'hooks.dart';

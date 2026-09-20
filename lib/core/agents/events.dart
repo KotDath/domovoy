@@ -198,6 +198,15 @@ final class AgentRunStarted extends AgentRunEvent {
   final AgentSessionId sessionId;
 }
 
+/// Emitted when non-transcript dynamic context was supplied to a provider
+/// request. [audit] is the exact retrieval trace; it never enters the request.
+final class AgentDynamicContextEvent extends AgentRunEvent {
+  const AgentDynamicContextEvent({required this.systemPromptText, this.audit});
+
+  final String systemPromptText;
+  final Object? audit;
+}
+
 final class AgentInboundMessageConsumed extends AgentRunEvent {
   const AgentInboundMessageConsumed({
     required this.source,

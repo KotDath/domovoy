@@ -15,6 +15,7 @@ import '../llm/usage.dart';
 import 'clock.dart';
 import 'compaction.dart';
 import 'definition.dart';
+import 'dynamic_context.dart';
 import 'errors.dart';
 import 'events.dart';
 import 'hooks.dart';
@@ -126,6 +127,7 @@ final class InMemoryAgentRuntime implements AgentRuntime {
     AgentCompactionTrigger? compactionTrigger,
     AgentModelSwitchFitPolicy? modelSwitchFitPolicy,
     this.historyCompactor,
+    this.dynamicContextProvider,
   }) : tools = tools ?? AgentToolRegistry(),
        policies =
            policies ??
@@ -193,6 +195,9 @@ final class InMemoryAgentRuntime implements AgentRuntime {
   final AgentModelSwitchFitPolicy modelSwitchFitPolicy;
   final AgentCompactionTrigger? compactionTrigger;
   final AgentHistoryCompactor? historyCompactor;
+
+  /// Optional per-turn dynamic system-prompt context, e.g. retrieved memory.
+  final AgentDynamicContextProvider? dynamicContextProvider;
   AgentRunLimits? get profileLimits => profile.limits;
   AgentLivenessPolicy get profileLiveness => profile.liveness;
   AgentNoProgressPolicy get profileNoProgress => profile.noProgress;
@@ -3053,6 +3058,7 @@ final class _LiveRun implements AgentRun {
   late final ResolvedRunGuards guards;
   late final LlmGenerationConfig _generation;
   LlmGenerationConfig? _snapshotGeneration;
+  AgentDynamicContext? _dynamicContext;
   var _runModelTurns = 0;
   var _runToolAttempts = 0;
   LlmUsage _usageBaseline = LlmUsage();
@@ -3235,10 +3241,18 @@ final class _LiveRun implements AgentRun {
     }
   }
 
-  LlmRequest _currentRequest() => LlmRequest(
+  LlmRequest _currentRequest() =>
+      _requestWithSystemPrompt(session.definition.systemPrompt);
+
+  /// Provider requests append the resolved dynamic context. Compaction and
+  /// planning keep using [_currentRequest] so memory never enters their input.
+  LlmRequest _providerRequest() =>
+      _requestWithSystemPrompt(_composedSystemPrompt());
+
+  LlmRequest _requestWithSystemPrompt(String? systemPrompt) => LlmRequest(
     model: selection.model,
     context: LlmContext(
-      systemPrompt: session.definition.systemPrompt,
+      systemPrompt: systemPrompt,
       messages: session.transcript.messages,
       tools: session.runtime.tools.descriptorsFor(
         session.definition.enabledTools,
@@ -3248,6 +3262,45 @@ final class _LiveRun implements AgentRun {
     generation: _generation,
     sessionId: session.id.value,
   );
+
+  String? _composedSystemPrompt() {
+    final contribution = _dynamicContext?.systemPromptText;
+    if (contribution == null || contribution.isEmpty) {
+      return session.definition.systemPrompt;
+    }
+    final base = session.definition.systemPrompt.trim();
+    return base.isEmpty ? contribution : '$base\n\n$contribution';
+  }
+
+  Future<AgentDynamicContext?> _resolveDynamicContext() async {
+    final provider = session.runtime.dynamicContextProvider;
+    if (provider == null) {
+      return null;
+    }
+    try {
+      return await provider.provide(
+        AgentDynamicContextRequest(
+          sessionId: session.id,
+          projectId: session.projectId,
+          query: _queryText(),
+        ),
+      );
+    } on AgentException {
+      rethrow;
+    } on Object {
+      throw AgentException(sanitizedRuntimeError());
+    }
+  }
+
+  String _queryText() {
+    final buffer = StringBuffer();
+    for (final part in input.parts) {
+      if (part is LlmTextPart) {
+        buffer.write(part.text);
+      }
+    }
+    return buffer.toString();
+  }
 
   Future<void> _loop() async {
     while (true) {
@@ -3276,6 +3329,19 @@ final class _LiveRun implements AgentRun {
         request: request,
       );
       request = _currentRequest();
+      if (session.runtime.dynamicContextProvider != null) {
+        _dynamicContext = await _resolveDynamicContext();
+        final dynamic = _dynamicContext;
+        if (dynamic != null && !dynamic.isEmpty) {
+          _emit(
+            AgentDynamicContextEvent(
+              systemPromptText: dynamic.systemPromptText,
+              audit: dynamic.audit,
+            ),
+          );
+        }
+        request = _providerRequest();
+      }
       _runModelTurns += 1;
       session.modelTurns += 1;
       late _ToolCallAssembler assembler;
@@ -3370,13 +3436,13 @@ final class _LiveRun implements AgentRun {
         overflowRecoveryOffered = true;
         final recovery = await _attemptAutomaticCompaction(
           reason: AgentCompactionReason.providerOverflow,
-          request: request,
+          request: _currentRequest(),
         );
         if (recovery != _AutomaticCompactionOutcome.compacted) {
           throw AgentException(agentErrorFromLlm(failure));
         }
         retryOrdinal += 1;
-        request = _currentRequest();
+        request = _providerRequest();
       }
       _throwIfCancelled();
       _checkBudgets(preWork: false);

@@ -207,6 +207,7 @@ final class PromptController extends ChangeNotifier {
         _finishWithFailure(_interruptedFailure);
         unawaited(_subscription?.cancel());
       case AgentRunStarted():
+      case AgentDynamicContextEvent():
       case AgentInboundMessageConsumed():
       case AgentToolAssembled():
       case AgentPermissionDecision():
