@@ -515,7 +515,7 @@ final class TaskReducer {
 
   TaskTransitionResult _interrupt(TaskSnapshot current) {
     final nextNodes = _interruptActiveNodes(current.nodes);
-    if (identical(nextNodes, current.nodes) && current.paused) {
+    if (identical(nextNodes, current.nodes)) {
       return _invalid('В задаче нет незавершённого вызова для восстановления.');
     }
     return _accepted(

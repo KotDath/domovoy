@@ -53,11 +53,38 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
       _serial(() async => (await _readTask(id)).snapshot);
 
   @override
-  Future<TaskSnapshot?> activeForSession(String sessionId) => _serial(() async {
+  Future<TaskSnapshot?> activeForSession(String sessionId) =>
+      _serial(() => _findActiveForSession(sessionId));
+
+  @override
+  Future<TaskSnapshot?> recoverActiveForSession(
+    String sessionId, {
+    required int occurredAtMicros,
+  }) => _serial(() async {
+    final current = await _findActiveForSession(sessionId);
+    if (current == null || !_hasInFlightNode(current)) return current;
+    final result = const TaskReducer().reduce(
+      current,
+      TaskTransition(
+        kind: TaskTransitionKind.interrupted,
+        expectedRevision: current.revision,
+        occurredAtMicros: occurredAtMicros,
+      ),
+    );
+    if (!result.isAccepted) {
+      _corrupt('Не удалось восстановить незавершённую задачу.');
+    }
+    await _save(result.snapshot!, expectedRevision: current.revision);
+    return result.snapshot;
+  });
+
+  Future<TaskSnapshot?> _findActiveForSession(String sessionId) async {
     final candidates = <TaskSnapshot>[];
     for (final key in await _safeListKeys()) {
       final id = keys.tryTask(key);
       if (id == null) continue;
+      final hint = await _taskSessionHint(id);
+      if (hint != sessionId) continue;
       final snapshot = (await _readTask(id)).snapshot;
       if (snapshot != null &&
           snapshot.sessionId == sessionId &&
@@ -73,63 +100,87 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
       _corrupt('Several active tasks belong to one chat session.');
     }
     return candidates.firstOrNull;
-  });
+  }
 
   @override
   Future<void> save(TaskSnapshot snapshot, {required int expectedRevision}) =>
-      _serial(() async {
-        snapshot.validate();
-        final replay = await _readTask(snapshot.id);
-        final existing = replay.snapshot;
-        if (existing == null) {
-          if (expectedRevision != 0 || snapshot.revision != 0) _conflict();
-          final active = await _activeForSessionExcluding(
-            snapshot.sessionId,
-            snapshot.id,
-          );
-          if (active != null) {
-            _conflict('В этом чате уже есть активная задача.');
-          }
-        } else if (existing.revision != expectedRevision ||
-            snapshot.revision != expectedRevision + 1) {
-          _conflict();
-        }
-        final line = _encode(<String, Object?>{
-          'type': _taskType,
-          'version': _version,
-          'taskId': snapshot.id.value,
-          'sessionId': snapshot.sessionId,
-          'sequence': replay.nextSequence,
-          'expectedRevision': expectedRevision,
-          'snapshotRevision': snapshot.revision,
-          'snapshot': snapshot.toJson(),
-        });
-        await _publish(keys.task(snapshot.id), <int>[
-          ...replay.validPrefix,
-          ...line,
-        ]);
-      });
+      _serial(() => _save(snapshot, expectedRevision: expectedRevision));
+
+  Future<void> _save(
+    TaskSnapshot snapshot, {
+    required int expectedRevision,
+  }) async {
+    try {
+      snapshot.validate();
+    } on Object {
+      _corrupt('Нельзя сохранить недопустимое состояние задачи.');
+    }
+    final replay = await _readTask(snapshot.id);
+    final existing = replay.snapshot;
+    if (existing == null) {
+      if (expectedRevision != 0 || snapshot.revision != 0) _conflict();
+    } else {
+      if (existing.sessionId != snapshot.sessionId ||
+          existing.projectId != snapshot.projectId) {
+        _conflict('Идентичность задачи не может изменяться.');
+      }
+      if (existing.revision != expectedRevision ||
+          snapshot.revision != expectedRevision + 1) {
+        _conflict();
+      }
+    }
+    if (_isActive(snapshot)) {
+      final active = await _activeForSessionExcluding(
+        snapshot.sessionId,
+        snapshot.id,
+      );
+      if (active != null) {
+        _conflict('В этом чате уже есть активная задача.');
+      }
+    }
+    final line = _encode(<String, Object?>{
+      'type': _taskType,
+      'version': _version,
+      'taskId': snapshot.id.value,
+      'sessionId': snapshot.sessionId,
+      'sequence': replay.nextSequence,
+      'expectedRevision': expectedRevision,
+      'snapshotRevision': snapshot.revision,
+      'snapshot': snapshot.toJson(),
+    });
+    await _publish(keys.task(snapshot.id), <int>[
+      ...replay.validPrefix,
+      ...line,
+    ]);
+  }
 
   @override
-  Future<TaskInvariantPolicy?> forTask(TaskId taskId) =>
-      _serial(() async => (await _readPolicy(keys.taskPolicy(taskId))).policy);
+  Future<TaskInvariantPolicy?> forTask(TaskId taskId) => _serial(
+    () async => (await _readPolicy(
+      keys.taskPolicy(taskId),
+      expectedOwnerId: taskId.value,
+      expectedScope: TaskInvariantScope.task,
+    )).policy,
+  );
 
   @override
   Future<TaskInvariantPolicy?> forProject(String projectId) => _serial(
-    () async => (await _readPolicy(keys.projectPolicy(projectId))).policy,
+    () async => (await _readPolicy(
+      keys.projectPolicy(projectId),
+      expectedOwnerId: projectId,
+      expectedScope: TaskInvariantScope.project,
+    )).policy,
   );
 
   @override
   Future<void> saveTaskPolicy(
     TaskInvariantPolicy policy, {
     required int expectedRevision,
-  }) {
+  }) async {
     if (policy.scope != TaskInvariantScope.task) {
-      return Future<void>.error(
-        ArgumentError('Task policy must use task scope.'),
-      );
+      throw ArgumentError('Task policy must use task scope.');
     }
-    return _savePolicy(
+    await _savePolicy(
       keys.taskPolicy(TaskId.parse(policy.ownerId)),
       policy,
       expectedRevision,
@@ -140,13 +191,11 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
   Future<void> saveProjectPolicy(
     TaskInvariantPolicy policy, {
     required int expectedRevision,
-  }) {
+  }) async {
     if (policy.scope != TaskInvariantScope.project) {
-      return Future<void>.error(
-        ArgumentError('Project policy must use project scope.'),
-      );
+      throw ArgumentError('Project policy must use project scope.');
     }
-    return _savePolicy(
+    await _savePolicy(
       keys.projectPolicy(policy.ownerId),
       policy,
       expectedRevision,
@@ -158,7 +207,11 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
     TaskInvariantPolicy policy,
     int expectedRevision,
   ) => _serial(() async {
-    final replay = await _readPolicy(key);
+    final replay = await _readPolicy(
+      key,
+      expectedOwnerId: policy.ownerId,
+      expectedScope: policy.scope,
+    );
     final existing = replay.policy;
     if (existing == null) {
       if (expectedRevision != 0 || policy.revision != 0) _conflict();
@@ -188,11 +241,10 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
     for (final key in await _safeListKeys()) {
       final id = keys.tryTask(key);
       if (id == null || id == excluded) continue;
+      final hint = await _taskSessionHint(id);
+      if (hint != sessionId) continue;
       final candidate = (await _readTask(id)).snapshot;
-      if (candidate != null &&
-          candidate.sessionId == sessionId &&
-          !candidate.cancelled &&
-          candidate.phase != TaskPhase.done) {
+      if (candidate != null && _isActive(candidate)) {
         return candidate;
       }
     }
@@ -232,6 +284,9 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
       }
       if (snapshot.id != id ||
           snapshot.sessionId != map['sessionId'] ||
+          (current != null &&
+              (snapshot.sessionId != current.sessionId ||
+                  snapshot.projectId != current.projectId)) ||
           snapshot.revision != revision) {
         _corrupt();
       }
@@ -245,7 +300,11 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
     );
   }
 
-  Future<_PolicyReplay> _readPolicy(String key) async {
+  Future<_PolicyReplay> _readPolicy(
+    String key, {
+    required String expectedOwnerId,
+    required TaskInvariantScope expectedScope,
+  }) async {
     final decoded = await _readLines(key);
     TaskInvariantPolicy? current;
     var sequence = -1;
@@ -277,6 +336,8 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
       }
       if (policy.ownerId != map['ownerId'] ||
           policy.scope.name != map['scope'] ||
+          policy.ownerId != expectedOwnerId ||
+          policy.scope != expectedScope ||
           policy.revision != revision) {
         _corrupt();
       }
@@ -299,10 +360,11 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
         bytes.addAll(chunk);
         if (bytes.length > _maximumStreamBytes) _corrupt();
       }
-      final text = utf8.decode(bytes);
-      final lastNewline = text.lastIndexOf('\n');
-      if (lastNewline < 0) return const _DecodedTaskLines();
-      final prefix = text.substring(0, lastNewline + 1);
+      if (bytes.isEmpty) return const _DecodedTaskLines();
+      final lastNewline = bytes.lastIndexOf(0x0a);
+      if (lastNewline < 0) _corrupt();
+      final prefixBytes = bytes.sublist(0, lastNewline + 1);
+      final prefix = utf8.decode(prefixBytes);
       final lines = <Map<String, Object?>>[];
       for (final raw in prefix.split('\n')) {
         if (raw.isEmpty) continue;
@@ -310,7 +372,7 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
         if (decoded is! Map) _corrupt();
         lines.add(decoded.cast<String, Object?>());
       }
-      return _DecodedTaskLines(lines: lines, validPrefix: utf8.encode(prefix));
+      return _DecodedTaskLines(lines: lines, validPrefix: prefixBytes);
     } on TaskRepositoryException {
       rethrow;
     } on FormatException {
@@ -341,14 +403,65 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
     if (bytes.length > _maximumStreamBytes) _corrupt();
     try {
       await storage.publish(key, bytes);
-      await storage.cleanup(key);
     } on Object {
       throw const TaskRepositoryException(
         TaskRepositoryErrorKind.unavailable,
         'Не удалось сохранить задачу.',
       );
     }
+    try {
+      await storage.cleanup(key);
+    } on Object {
+      // Publication already committed the new generation; cleanup is optional.
+    }
   }
+
+  Future<String?> _taskSessionHint(TaskId id) async {
+    final List<int> bytes;
+    try {
+      final stream = await storage.read(keys.task(id));
+      if (stream == null) return null;
+      final collected = <int>[];
+      await for (final chunk in stream) {
+        collected.addAll(chunk);
+        if (collected.length > _maximumStreamBytes) _corrupt();
+      }
+      bytes = collected;
+    } on TaskRepositoryException {
+      rethrow;
+    } on Object {
+      throw const TaskRepositoryException(
+        TaskRepositoryErrorKind.unavailable,
+        'Хранилище задач временно недоступно.',
+      );
+    }
+    try {
+      final newline = bytes.indexOf(0x0a);
+      if (newline < 0) return null;
+      final decoded = jsonDecode(utf8.decode(bytes.sublist(0, newline)));
+      if (decoded is! Map) return null;
+      final map = decoded.cast<String, Object?>();
+      if (map['type'] != _taskType ||
+          map['version'] != _version ||
+          map['taskId'] != id.value ||
+          map['sessionId'] is! String) {
+        return null;
+      }
+      return map['sessionId']! as String;
+    } on Object {
+      return null;
+    }
+  }
+
+  bool _isActive(TaskSnapshot snapshot) =>
+      !snapshot.cancelled && snapshot.phase != TaskPhase.done;
+
+  bool _hasInFlightNode(TaskSnapshot snapshot) => snapshot.nodes.any(
+    (node) =>
+        node.status == TaskNodeStatus.running ||
+        node.status == TaskNodeStatus.verifying ||
+        node.status == TaskNodeStatus.repairing,
+  );
 
   Future<T> _serial<T>(Future<T> Function() action) {
     final predecessor = _tail;

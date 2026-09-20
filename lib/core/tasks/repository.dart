@@ -7,6 +7,15 @@ abstract interface class TaskRepository {
 
   Future<TaskSnapshot?> activeForSession(String sessionId);
 
+  /// Recovers the active workflow after a process restart.
+  ///
+  /// Unlike [activeForSession], this deliberately turns an in-flight model
+  /// invocation into an interrupted, paused checkpoint and persists it.
+  Future<TaskSnapshot?> recoverActiveForSession(
+    String sessionId, {
+    required int occurredAtMicros,
+  });
+
   Future<void> save(TaskSnapshot snapshot, {required int expectedRevision});
 }
 

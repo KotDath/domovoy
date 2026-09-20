@@ -9,6 +9,7 @@ import 'package:domovoy/infrastructure/agents/jsonl/jsonl_stream_storage.dart';
 final class FakeMemoryJsonlStorage implements JsonlStreamStorage {
   final Map<String, List<int>> _streams = <String, List<int>>{};
   var failList = false;
+  var failCleanup = false;
 
   Iterable<String> get keys => _streams.keys;
 
@@ -22,6 +23,10 @@ final class FakeMemoryJsonlStorage implements JsonlStreamStorage {
 
   void appendText(String key, String fragment) {
     _streams[key] = <int>[...?_streams[key], ...utf8.encode(fragment)];
+  }
+
+  void appendBytes(String key, List<int> fragment) {
+    _streams[key] = <int>[...?_streams[key], ...fragment];
   }
 
   @override
@@ -47,5 +52,7 @@ final class FakeMemoryJsonlStorage implements JsonlStreamStorage {
   }
 
   @override
-  Future<void> cleanup(String key) async {}
+  Future<void> cleanup(String key) async {
+    if (failCleanup) throw StateError('cleanup failed');
+  }
 }
