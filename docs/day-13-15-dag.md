@@ -5,7 +5,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | ID | Group | Depends on | Status | Commit range | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | G0 | Specification and Android tooling | — | done | `c986067..b615ee5` | docs; `claude-in-mobile` 4.4.1 Android doctor passes |
-| G1 | FSM, DAG, and invariant domain | G0 | review | `b615ee5..2f0d67e` | 12 domain tests; full suite 745 passed, 1 skipped |
+| G1 | FSM, DAG, and invariant domain | G0 | done | `b615ee5..G1 review fixes` | 16 domain tests; paired review completed |
 | G2 | JSONL persistence and recovery | G1 | pending | — | repository/replay tests |
 | G3 | Scheduler and isolated agents | G2 | pending | — | orchestration tests |
 | G4 | Chat routing and task UI | G3 | pending | — | controller/widget tests |
@@ -28,3 +28,14 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 Final certification repeats with fresh pairs until no shared actionable finding
 remains. Android manual QA is performed by a separate retained Codex session
 using `gpt-5.6-luna` at `xhigh` and the `claude-in-mobile` MCP.
+
+## G1 review settlement
+
+Both reviewers identified restart/resume dead-ending in `interrupted`, unsafe
+snapshot decoding, and missing authority-layer integration for invariant errors.
+The G1 fix rearms interrupted nodes only after explicit resume, enforces a single
+active node for sequential DAG execution, separates repair count from interrupted
+attempts, validates versioned snapshots, and adds final repair guards. Invariant
+rejection is intentionally completed by the G3 `TaskService`, where resolved
+project/task policies are available; it must return `INVARIANT_VIOLATION` before
+any LLM call and `REPLAN_REQUIRED` after an applied policy revision changes.

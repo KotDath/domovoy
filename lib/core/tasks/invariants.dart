@@ -101,7 +101,9 @@ final class TaskInvariantCheck {
   final List<TaskInvariantViolation> violations;
   final List<TaskInvariantRule> semanticRules;
 
-  bool get isAllowed => violations.isEmpty;
+  bool get isDeterministicallyClean => violations.isEmpty;
+  bool get requiresSemanticReview => semanticRules.isNotEmpty;
+  bool get isAllowed => isDeterministicallyClean && !requiresSemanticReview;
 }
 
 final class DeterministicTaskInvariantChecker {
@@ -142,12 +144,13 @@ final class DeterministicTaskInvariantChecker {
             );
           }
         case TaskInvariantChecker.maximumCharacters:
-          if (candidate.length > rule.maximumCharacters!) {
+          final characterCount = candidate.runes.length;
+          if (characterCount > rule.maximumCharacters!) {
             violations.add(
               TaskInvariantViolation(
                 ruleId: rule.id,
                 reason:
-                    'Длина ${candidate.length} превышает лимит '
+                    'Длина $characterCount превышает лимит '
                     '${rule.maximumCharacters}.',
               ),
             );

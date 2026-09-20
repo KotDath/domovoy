@@ -109,7 +109,9 @@ void main() {
 
       final result = checker.check('candidate', <TaskInvariantRule>[rule]);
 
-      expect(result.isAllowed, isTrue);
+      expect(result.isDeterministicallyClean, isTrue);
+      expect(result.requiresSemanticReview, isTrue);
+      expect(result.isAllowed, isFalse);
       expect(result.semanticRules, <TaskInvariantRule>[rule]);
     });
   });
@@ -263,6 +265,113 @@ void main() {
       expect(current.nodes.first.status, TaskNodeStatus.interrupted);
       expect(current.nodes.first.output, isNull);
       expect(current.expectedAction, TaskExpectedAction.resume);
+
+      current = _accept(reducer, current, TaskTransitionKind.resumed);
+      expect(current.nodes.first.status, TaskNodeStatus.ready);
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeStarted,
+        nodeId: const TaskNodeId('one'),
+      );
+      expect(current.nodes.first.status, TaskNodeStatus.running);
+      expect(current.nodes.first.attempt, 2);
+      expect(current.nodes.first.repairCount, 0);
+    });
+
+    test('pause interrupts an active node and resume rearms it', () {
+      var current = _withPlan(_withGoal(_initial()));
+      current = _accept(reducer, current, TaskTransitionKind.planApproved);
+      current = _accept(reducer, current, TaskTransitionKind.executionStarted);
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeStarted,
+        nodeId: const TaskNodeId('one'),
+      );
+
+      current = _accept(reducer, current, TaskTransitionKind.paused);
+      expect(current.nodes.first.status, TaskNodeStatus.interrupted);
+      current = _accept(reducer, current, TaskTransitionKind.resumed);
+
+      expect(current.phase, TaskPhase.execution);
+      expect(current.nodes.first.status, TaskNodeStatus.ready);
+      expect(current.currentNodeId, const TaskNodeId('one'));
+    });
+
+    test('sequential scheduler refuses a second active root', () {
+      final parallelPlan = TaskPlan(<TaskPlanNode>[_node('one'), _node('two')]);
+      var current = _withGoal(_initial());
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.planProposed,
+        plan: parallelPlan,
+      );
+      current = _accept(reducer, current, TaskTransitionKind.planApproved);
+      current = _accept(reducer, current, TaskTransitionKind.executionStarted);
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeStarted,
+        nodeId: const TaskNodeId('one'),
+      );
+
+      final result = reducer.reduce(
+        current,
+        _transition(
+          current,
+          TaskTransitionKind.nodeStarted,
+          nodeId: const TaskNodeId('two'),
+        ),
+      );
+
+      expect(result.isAccepted, isFalse);
+      expect(current.expectedAction, TaskExpectedAction.runNode);
+    });
+
+    test('one repair is separate from interrupted attempts', () {
+      var current = _withPlan(_withGoal(_initial()));
+      current = _accept(reducer, current, TaskTransitionKind.planApproved);
+      current = _accept(reducer, current, TaskTransitionKind.executionStarted);
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeStarted,
+        nodeId: const TaskNodeId('one'),
+      );
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeVerificationStarted,
+        nodeId: const TaskNodeId('one'),
+        text: 'bad output',
+      );
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeRepairStarted,
+        nodeId: const TaskNodeId('one'),
+        evidence: 'rejected once',
+      );
+      expect(current.nodes.first.repairCount, 1);
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeVerificationStarted,
+        nodeId: const TaskNodeId('one'),
+        text: 'still bad',
+      );
+      current = _accept(
+        reducer,
+        current,
+        TaskTransitionKind.nodeFailed,
+        nodeId: const TaskNodeId('one'),
+        evidence: 'rejected twice',
+      );
+
+      expect(current.nodes.first.status, TaskNodeStatus.failed);
+      expect(current.failureCode, 'REPAIR_EXHAUSTED');
     });
 
     test('snapshot round trips through JSON', () {
@@ -273,6 +382,18 @@ void main() {
       expect(restored.id, current.id);
       expect(restored.goal, current.goal);
       expect(restored.plan!.nodes.length, 2);
+    });
+
+    test('snapshot decoder rejects fabricated states as FormatException', () {
+      final json = _withPlan(_withGoal(_initial())).toJson();
+      json['planApproved'] = true;
+      json['plan'] = null;
+
+      expect(() => TaskSnapshot.fromJson(json), throwsFormatException);
+
+      final unknownPhase = _initial().toJson();
+      unknownPhase['phase'] = 'future';
+      expect(() => TaskSnapshot.fromJson(unknownPhase), throwsFormatException);
     });
   });
 }

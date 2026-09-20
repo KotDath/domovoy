@@ -14,6 +14,8 @@ enum TaskTransitionKind {
   validationStarted,
   finalComposed,
   finalValidated,
+  finalRepairStarted,
+  finalFailed,
   paused,
   resumed,
   replanned,
@@ -100,6 +102,7 @@ final class TaskReducer {
     }
     if (current.paused &&
         transition.kind != TaskTransitionKind.resumed &&
+        transition.kind != TaskTransitionKind.interrupted &&
         transition.kind != TaskTransitionKind.cancelled) {
       return const TaskTransitionResult.rejected(
         TaskTransitionFailureCode.taskPaused,
@@ -123,6 +126,11 @@ final class TaskReducer {
       TaskTransitionKind.validationStarted => _startValidation(current),
       TaskTransitionKind.finalComposed => _composeFinal(current, transition),
       TaskTransitionKind.finalValidated => _validateFinal(current, transition),
+      TaskTransitionKind.finalRepairStarted => _repairFinal(
+        current,
+        transition,
+      ),
+      TaskTransitionKind.finalFailed => _failFinal(current, transition),
       TaskTransitionKind.paused => _pause(current),
       TaskTransitionKind.resumed => _resume(current),
       TaskTransitionKind.replanned => _replan(current, transition),
@@ -172,6 +180,8 @@ final class TaskReducer {
         currentNodeId: null,
         finalOutput: null,
         finalValidationEvidence: null,
+        finalAttempt: 0,
+        finalRepairCount: 0,
         failureCode: null,
         failureMessage: null,
         appliedInvariantIds: transition.invariantIds,
@@ -211,8 +221,18 @@ final class TaskReducer {
       return _invalid('Узел можно запустить только на этапе execution.');
     }
     final node = _node(current, transition.nodeId);
+    final activeElsewhere = current.nodes.any(
+      (item) =>
+          item.id != transition.nodeId &&
+          (item.status == TaskNodeStatus.running ||
+              item.status == TaskNodeStatus.verifying ||
+              item.status == TaskNodeStatus.repairing),
+    );
     if (node == null || node.status != TaskNodeStatus.ready) {
       return _invalid('Узел не готов к выполнению.');
+    }
+    if (activeElsewhere) {
+      return _invalid('Последовательный workflow уже выполняет другой узел.');
     }
     return _accepted(
       current.copyWith(
@@ -237,6 +257,7 @@ final class TaskReducer {
     final node = _node(current, transition.nodeId);
     if (current.phase != TaskPhase.execution ||
         node == null ||
+        current.currentNodeId != node.id ||
         (node.status != TaskNodeStatus.running &&
             node.status != TaskNodeStatus.repairing) ||
         (transition.text?.trim().isEmpty ?? true)) {
@@ -299,7 +320,7 @@ final class TaskReducer {
     if (node == null || node.status != TaskNodeStatus.verifying) {
       return _invalid('Repair доступен только после отклонённой проверки.');
     }
-    if (node.attempt >= 2) {
+    if (node.repairCount >= 1) {
       return const TaskTransitionResult.rejected(
         TaskTransitionFailureCode.repairExhausted,
         'Единственная repair-попытка уже использована.',
@@ -312,6 +333,7 @@ final class TaskReducer {
           node.copyWith(
             status: TaskNodeStatus.repairing,
             attempt: node.attempt + 1,
+            repairCount: node.repairCount + 1,
             verificationEvidence: transition.evidence,
           ),
         ),
@@ -326,6 +348,11 @@ final class TaskReducer {
     final node = _node(current, transition.nodeId);
     if (node == null || node.status != TaskNodeStatus.verifying) {
       return _invalid('Текущий узел нельзя перевести в failed.');
+    }
+    if (node.repairCount < 1 || (transition.evidence?.trim().isEmpty ?? true)) {
+      return _invalid(
+        'Failed доступен только после repair-попытки с evidence.',
+      );
     }
     return _accepted(
       current.copyWith(
@@ -362,10 +389,56 @@ final class TaskReducer {
     TaskTransition transition,
   ) {
     if (current.phase != TaskPhase.validation ||
+        current.finalOutput != null ||
         (transition.text?.trim().isEmpty ?? true)) {
       return _invalid('Финальный результат создаётся только в validation.');
     }
-    return _accepted(current.copyWith(finalOutput: transition.text!.trim()));
+    return _accepted(
+      current.copyWith(
+        finalOutput: transition.text!.trim(),
+        finalAttempt: current.finalAttempt + 1,
+      ),
+    );
+  }
+
+  TaskTransitionResult _repairFinal(
+    TaskSnapshot current,
+    TaskTransition transition,
+  ) {
+    if (current.phase != TaskPhase.validation || current.finalOutput == null) {
+      return _invalid('Repair финала требует проверяемый результат.');
+    }
+    if (current.finalRepairCount >= 1) {
+      return const TaskTransitionResult.rejected(
+        TaskTransitionFailureCode.repairExhausted,
+        'Единственная repair-попытка финала уже использована.',
+      );
+    }
+    return _accepted(
+      current.copyWith(
+        finalOutput: null,
+        finalRepairCount: current.finalRepairCount + 1,
+        failureMessage: transition.evidence,
+      ),
+    );
+  }
+
+  TaskTransitionResult _failFinal(
+    TaskSnapshot current,
+    TaskTransition transition,
+  ) {
+    if (current.phase != TaskPhase.validation ||
+        current.finalOutput == null ||
+        current.finalRepairCount < 1 ||
+        (transition.evidence?.trim().isEmpty ?? true)) {
+      return _invalid('Финал можно отклонить только после repair-попытки.');
+    }
+    return _accepted(
+      current.copyWith(
+        failureCode: TaskTransitionFailureCode.repairExhausted.wireName,
+        failureMessage: transition.evidence!.trim(),
+      ),
+    );
   }
 
   TaskTransitionResult _validateFinal(
@@ -390,12 +463,27 @@ final class TaskReducer {
 
   TaskTransitionResult _pause(TaskSnapshot current) {
     if (current.paused) return _invalid('Задача уже приостановлена.');
-    return _accepted(current.copyWith(paused: true));
+    return _accepted(
+      current.copyWith(
+        paused: true,
+        nodes: _interruptActiveNodes(current.nodes),
+      ),
+    );
   }
 
   TaskTransitionResult _resume(TaskSnapshot current) {
     if (!current.paused) return _invalid('Задача не приостановлена.');
-    return _accepted(current.copyWith(paused: false));
+    final rearmed = current.plan == null
+        ? current.nodes
+        : _markReadyNodes(current.nodes, current.plan!);
+    final next = current.plan
+        ?.topologicalOrder()
+        .map((node) => rearmed.firstWhere((state) => state.id == node.id))
+        .where((state) => state.status == TaskNodeStatus.ready)
+        .firstOrNull;
+    return _accepted(
+      current.copyWith(paused: false, nodes: rearmed, currentNodeId: next?.id),
+    );
   }
 
   TaskTransitionResult _replan(
@@ -413,6 +501,8 @@ final class TaskReducer {
         currentNodeId: null,
         finalOutput: null,
         finalValidationEvidence: null,
+        finalAttempt: 0,
+        finalRepairCount: 0,
         failureCode: null,
         failureMessage: null,
       ),
@@ -424,22 +514,33 @@ final class TaskReducer {
   }
 
   TaskTransitionResult _interrupt(TaskSnapshot current) {
-    final currentNode = _node(current, current.currentNodeId);
-    final nextNodes =
-        currentNode == null ||
-            (currentNode.status != TaskNodeStatus.running &&
-                currentNode.status != TaskNodeStatus.verifying &&
-                currentNode.status != TaskNodeStatus.repairing)
-        ? current.nodes
-        : _replace(
-            current.nodes,
-            currentNode.copyWith(
-              status: TaskNodeStatus.interrupted,
-              output: null,
-              verificationEvidence: null,
-            ),
+    final nextNodes = _interruptActiveNodes(current.nodes);
+    if (identical(nextNodes, current.nodes) && current.paused) {
+      return _invalid('В задаче нет незавершённого вызова для восстановления.');
+    }
+    return _accepted(
+      current.copyWith(nodes: nextNodes, paused: true, currentNodeId: null),
+    );
+  }
+
+  List<TaskNodeState> _interruptActiveNodes(List<TaskNodeState> nodes) {
+    var changed = false;
+    final result = nodes
+        .map((node) {
+          final active =
+              node.status == TaskNodeStatus.running ||
+              node.status == TaskNodeStatus.verifying ||
+              node.status == TaskNodeStatus.repairing;
+          if (!active) return node;
+          changed = true;
+          return node.copyWith(
+            status: TaskNodeStatus.interrupted,
+            output: null,
+            verificationEvidence: null,
           );
-    return _accepted(current.copyWith(nodes: nextNodes, paused: true));
+        })
+        .toList(growable: false);
+    return changed ? result : nodes;
   }
 
   TaskNodeState? _node(TaskSnapshot snapshot, TaskNodeId? id) => id == null

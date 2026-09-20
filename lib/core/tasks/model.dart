@@ -155,6 +155,7 @@ final class TaskNodeState {
     this.output,
     this.verificationEvidence,
     this.attempt = 0,
+    this.repairCount = 0,
   });
 
   final TaskNodeId id;
@@ -162,12 +163,14 @@ final class TaskNodeState {
   final String? output;
   final String? verificationEvidence;
   final int attempt;
+  final int repairCount;
 
   TaskNodeState copyWith({
     TaskNodeStatus? status,
     Object? output = _keep,
     Object? verificationEvidence = _keep,
     int? attempt,
+    int? repairCount,
   }) => TaskNodeState(
     id: id,
     status: status ?? this.status,
@@ -176,6 +179,7 @@ final class TaskNodeState {
         ? this.verificationEvidence
         : verificationEvidence as String?,
     attempt: attempt ?? this.attempt,
+    repairCount: repairCount ?? this.repairCount,
   );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -184,14 +188,16 @@ final class TaskNodeState {
     'output': output,
     'verificationEvidence': verificationEvidence,
     'attempt': attempt,
+    'repairCount': repairCount,
   };
 
   factory TaskNodeState.fromJson(Map<String, Object?> json) => TaskNodeState(
-    id: TaskNodeId(json['id']! as String),
+    id: TaskNodeId.parse(json['id']! as String),
     status: TaskNodeStatus.values.byName(json['status']! as String),
     output: json['output'] as String?,
     verificationEvidence: json['verificationEvidence'] as String?,
     attempt: json['attempt']! as int,
+    repairCount: json['repairCount']! as int,
   );
 }
 
@@ -213,6 +219,8 @@ final class TaskSnapshot {
     this.currentNodeId,
     this.finalOutput,
     this.finalValidationEvidence,
+    this.finalAttempt = 0,
+    this.finalRepairCount = 0,
     this.paused = false,
     this.cancelled = false,
     this.failureCode,
@@ -250,6 +258,8 @@ final class TaskSnapshot {
   final TaskNodeId? currentNodeId;
   final String? finalOutput;
   final String? finalValidationEvidence;
+  final int finalAttempt;
+  final int finalRepairCount;
   final bool paused;
   final bool cancelled;
   final String? failureCode;
@@ -278,9 +288,11 @@ final class TaskSnapshot {
   }
 
   TaskExpectedAction get _executionExpectedAction {
-    final current = currentNodeId == null
-        ? null
-        : nodes.where((node) => node.id == currentNodeId).firstOrNull;
+    final current = nodes.where((node) {
+      return node.status == TaskNodeStatus.running ||
+          node.status == TaskNodeStatus.verifying ||
+          node.status == TaskNodeStatus.repairing;
+    }).firstOrNull;
     return switch (current?.status) {
       TaskNodeStatus.running => TaskExpectedAction.runNode,
       TaskNodeStatus.verifying => TaskExpectedAction.verifyNode,
@@ -300,6 +312,8 @@ final class TaskSnapshot {
     Object? currentNodeId = _keep,
     Object? finalOutput = _keep,
     Object? finalValidationEvidence = _keep,
+    int? finalAttempt,
+    int? finalRepairCount,
     bool? paused,
     bool? cancelled,
     Object? failureCode = _keep,
@@ -326,6 +340,8 @@ final class TaskSnapshot {
     finalValidationEvidence: identical(finalValidationEvidence, _keep)
         ? this.finalValidationEvidence
         : finalValidationEvidence as String?,
+    finalAttempt: finalAttempt ?? this.finalAttempt,
+    finalRepairCount: finalRepairCount ?? this.finalRepairCount,
     paused: paused ?? this.paused,
     cancelled: cancelled ?? this.cancelled,
     failureCode: identical(failureCode, _keep)
@@ -338,6 +354,7 @@ final class TaskSnapshot {
   );
 
   Map<String, Object?> toJson() => <String, Object?>{
+    'schemaVersion': 1,
     'id': id.value,
     'sessionId': sessionId,
     'projectId': projectId,
@@ -352,6 +369,8 @@ final class TaskSnapshot {
     'currentNodeId': currentNodeId?.value,
     'finalOutput': finalOutput,
     'finalValidationEvidence': finalValidationEvidence,
+    'finalAttempt': finalAttempt,
+    'finalRepairCount': finalRepairCount,
     'paused': paused,
     'cancelled': cancelled,
     'failureCode': failureCode,
@@ -359,33 +378,115 @@ final class TaskSnapshot {
     'appliedInvariantIds': appliedInvariantIds,
   };
 
-  factory TaskSnapshot.fromJson(Map<String, Object?> json) => TaskSnapshot(
-    id: TaskId(json['id']! as String),
-    sessionId: json['sessionId']! as String,
-    projectId: json['projectId'] as String?,
-    phase: TaskPhase.values.byName(json['phase']! as String),
-    revision: json['revision']! as int,
-    createdAtMicros: json['createdAtMicros']! as int,
-    updatedAtMicros: json['updatedAtMicros']! as int,
-    goal: json['goal'] as String?,
-    plan: json['plan'] == null
-        ? null
-        : TaskPlan.fromJson(json['plan']! as Map<String, Object?>),
-    planApproved: json['planApproved']! as bool,
-    nodes: (json['nodes']! as List<Object?>)
-        .cast<Map<String, Object?>>()
-        .map(TaskNodeState.fromJson)
-        .toList(),
-    currentNodeId: json['currentNodeId'] == null
-        ? null
-        : TaskNodeId(json['currentNodeId']! as String),
-    finalOutput: json['finalOutput'] as String?,
-    finalValidationEvidence: json['finalValidationEvidence'] as String?,
-    paused: json['paused']! as bool,
-    cancelled: json['cancelled']! as bool,
-    failureCode: json['failureCode'] as String?,
-    failureMessage: json['failureMessage'] as String?,
-    appliedInvariantIds: (json['appliedInvariantIds']! as List<Object?>)
-        .cast<String>(),
-  );
+  factory TaskSnapshot.fromJson(Map<String, Object?> json) {
+    try {
+      if (json['schemaVersion'] != 1) {
+        throw const FormatException('Unsupported task snapshot version.');
+      }
+      final snapshot = TaskSnapshot(
+        id: TaskId.parse(json['id']! as String),
+        sessionId: json['sessionId']! as String,
+        projectId: json['projectId'] as String?,
+        phase: TaskPhase.values.byName(json['phase']! as String),
+        revision: json['revision']! as int,
+        createdAtMicros: json['createdAtMicros']! as int,
+        updatedAtMicros: json['updatedAtMicros']! as int,
+        goal: json['goal'] as String?,
+        plan: json['plan'] == null
+            ? null
+            : TaskPlan.fromJson(
+                (json['plan']! as Map<Object?, Object?>)
+                    .cast<String, Object?>(),
+              ),
+        planApproved: json['planApproved']! as bool,
+        nodes: (json['nodes']! as List<Object?>)
+            .map(
+              (value) => TaskNodeState.fromJson(
+                (value! as Map<Object?, Object?>).cast<String, Object?>(),
+              ),
+            )
+            .toList(),
+        currentNodeId: json['currentNodeId'] == null
+            ? null
+            : TaskNodeId.parse(json['currentNodeId']! as String),
+        finalOutput: json['finalOutput'] as String?,
+        finalValidationEvidence: json['finalValidationEvidence'] as String?,
+        finalAttempt: json['finalAttempt']! as int,
+        finalRepairCount: json['finalRepairCount']! as int,
+        paused: json['paused']! as bool,
+        cancelled: json['cancelled']! as bool,
+        failureCode: json['failureCode'] as String?,
+        failureMessage: json['failureMessage'] as String?,
+        appliedInvariantIds: (json['appliedInvariantIds']! as List<Object?>)
+            .cast<String>(),
+      );
+      snapshot.validate();
+      return snapshot;
+    } on FormatException {
+      rethrow;
+    } on Object catch (error) {
+      throw FormatException('Invalid task snapshot.', error);
+    }
+  }
+
+  void validate() {
+    if (sessionId.trim().isEmpty ||
+        revision < 0 ||
+        createdAtMicros < 0 ||
+        updatedAtMicros < createdAtMicros ||
+        finalAttempt < 0 ||
+        finalRepairCount < 0 ||
+        finalRepairCount > 1) {
+      throw const FormatException('Invalid task snapshot metadata.');
+    }
+    if (plan == null) {
+      if (planApproved || nodes.isNotEmpty || currentNodeId != null) {
+        throw const FormatException('Task state requires a plan.');
+      }
+    } else {
+      final planIds = plan!.nodes.map((node) => node.id).toSet();
+      final stateIds = nodes.map((node) => node.id).toSet();
+      if (nodes.length != plan!.nodes.length ||
+          stateIds.length != nodes.length ||
+          !stateIds.containsAll(planIds) ||
+          !planIds.containsAll(stateIds)) {
+        throw const FormatException('Task nodes do not match the plan.');
+      }
+      if (currentNodeId != null && !stateIds.contains(currentNodeId)) {
+        throw const FormatException('Current task node is unknown.');
+      }
+    }
+    final active = nodes.where((node) {
+      return node.status == TaskNodeStatus.running ||
+          node.status == TaskNodeStatus.verifying ||
+          node.status == TaskNodeStatus.repairing;
+    }).toList();
+    if (active.length > 1 ||
+        active.any((node) => node.id != currentNodeId) ||
+        nodes.any(
+          (node) =>
+              node.attempt < 0 ||
+              node.repairCount < 0 ||
+              node.repairCount > 1 ||
+              (node.status == TaskNodeStatus.verifying &&
+                  (node.output?.trim().isEmpty ?? true)) ||
+              (node.status == TaskNodeStatus.succeeded &&
+                  ((node.output?.trim().isEmpty ?? true) ||
+                      (node.verificationEvidence?.trim().isEmpty ?? true))),
+        )) {
+      throw const FormatException('Invalid task node state.');
+    }
+    if (phase != TaskPhase.planning && (!planApproved || plan == null)) {
+      throw const FormatException('Task phase requires an approved plan.');
+    }
+    if ((phase == TaskPhase.validation || phase == TaskPhase.done) &&
+        nodes.any((node) => node.status != TaskNodeStatus.succeeded)) {
+      throw const FormatException('Validation requires successful nodes.');
+    }
+    if (phase == TaskPhase.done &&
+        ((finalOutput?.trim().isEmpty ?? true) ||
+            (finalValidationEvidence?.trim().isEmpty ?? true))) {
+      throw const FormatException('Done task requires validation evidence.');
+    }
+  }
 }

@@ -1,6 +1,11 @@
 final class TaskId {
   const TaskId(this.value) : assert(value != '');
 
+  factory TaskId.parse(String value) {
+    if (value.trim().isEmpty) throw const FormatException('Empty task id.');
+    return TaskId(value);
+  }
+
   final String value;
 
   @override
@@ -15,6 +20,13 @@ final class TaskId {
 
 final class TaskNodeId {
   const TaskNodeId(this.value) : assert(value != '');
+
+  factory TaskNodeId.parse(String value) {
+    if (value.trim().isEmpty) {
+      throw const FormatException('Empty task node id.');
+    }
+    return TaskNodeId(value);
+  }
 
   final String value;
 
