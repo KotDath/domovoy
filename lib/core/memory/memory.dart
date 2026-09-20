@@ -3,6 +3,7 @@ export 'context.dart';
 export 'enums.dart';
 export 'entry.dart';
 export 'errors.dart';
+export 'extraction.dart';
 export 'ids.dart';
 export 'repository.dart';
 export 'service.dart';
