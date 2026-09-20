@@ -8,6 +8,9 @@ import '../../../design_system/design_system.dart';
 import '../../projects/application/project_workspace_controller.dart';
 import '../../projects/application/project_workspace_state.dart';
 import '../../projects/presentation/project_sidebar_section.dart';
+import '../../memory/application/memory_inspector_controller.dart';
+import '../../memory/presentation/memory_inspector_panel.dart';
+import '../../memory/presentation/memory_inspector_sheet.dart';
 import '../application/chat_workspace_controller.dart';
 import '../application/chat_workspace_state.dart';
 import '../application/chat_timeline_projector.dart';
@@ -26,6 +29,7 @@ class ChatWorkspacePage extends StatefulWidget {
   const ChatWorkspacePage({
     required this.controller,
     this.projects,
+    this.memory,
     this.themeMode,
     this.onThemeModeChanged,
     this.providersView,
@@ -34,6 +38,7 @@ class ChatWorkspacePage extends StatefulWidget {
 
   final ChatWorkspaceController controller;
   final ProjectWorkspaceController? projects;
+  final MemoryInspectorController? memory;
   final ThemeMode? themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final Widget? providersView;
@@ -58,6 +63,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   void initState() {
     super.initState();
     _bind(widget.controller, widget.projects);
+    _syncMemory();
     if (widget.projects == null) {
       unawaited(widget.controller.initialize());
     } else {
@@ -88,12 +94,29 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       if (mounted) {
         setState(() => _state = state);
         _syncDurationTimer();
+        _syncMemory();
       }
     });
     _projects = projects?.state;
     _projectSubscription = projects?.states.listen((state) {
-      if (mounted) setState(() => _projects = state);
+      if (mounted) {
+        setState(() => _projects = state);
+        _syncMemory();
+      }
     });
+  }
+
+  void _syncMemory() {
+    final memory = widget.memory;
+    if (memory == null) {
+      return;
+    }
+    final session = _visibleSelectedSession;
+    final group = _projects?.selectedGroup;
+    final projectId =
+        session?.projectId ??
+        (group?.kind == ProjectSelectionKind.project ? group?.projectId : null);
+    unawaited(memory.attachSession(session: session, projectId: projectId));
   }
 
   @override
@@ -172,6 +195,12 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
                   : null,
               onNewChat: enabled ? _createChat : null,
             ),
+      memoryPanel: widget.memory == null
+          ? null
+          : MemoryInspectorPanel(controller: widget.memory!),
+      onOpenMemory: widget.memory == null
+          ? null
+          : () => unawaited(showMemoryInspectorSheet(context, widget.memory!)),
     );
   }
 

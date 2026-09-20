@@ -22,6 +22,7 @@ final class ChatWorkspaceController {
     this.providerModelCatalog,
     AgentSessionTitlePolicy? titlePolicy,
     this.settingsLauncher,
+    this.onTurnCompleted,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
     AgentClock? clock,
@@ -40,6 +41,7 @@ final class ChatWorkspaceController {
   final ProviderModelCatalog? providerModelCatalog;
   final AgentSessionTitlePolicy titlePolicy;
   final ChatSettingsLauncher? settingsLauncher;
+  final Future<void> Function(AgentSessionSnapshot snapshot)? onTurnCompleted;
   final ChatStreamPacingPolicy pacingPolicy;
   final ChatStreamScheduler scheduler;
   final AgentClock clock;
@@ -412,6 +414,16 @@ final class ChatWorkspaceController {
       }
       if (event is AgentRunCancelled) {
         return const ChatCommandResult.cancelled();
+      }
+      if (event is AgentRunCompleted) {
+        final callback = onTurnCompleted;
+        if (callback != null) {
+          unawaited(
+            Future<void>.sync(
+              () => callback(session.snapshot),
+            ).catchError((Object error, StackTrace stackTrace) {}),
+          );
+        }
       }
       return const ChatCommandResult.succeeded();
     } on Object catch (error) {

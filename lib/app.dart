@@ -9,9 +9,12 @@ import 'package:http/http.dart' as http;
 import 'core/agents/agents.dart';
 import 'core/environment/platform_environment_reader.dart';
 import 'core/llm/llm.dart';
+import 'core/memory/memory.dart';
 import 'design_system/design_system.dart';
 import 'features/chat/application/chat_workspace_controller.dart';
 import 'features/chat/presentation/chat_workspace_page.dart';
+import 'features/memory/application/memory_inspector_controller.dart';
+import 'features/memory/application/memory_inspector_state.dart';
 import 'features/projects/application/project_application_service.dart';
 import 'features/projects/application/project_workspace_controller.dart';
 import 'features/projects/presentation/project_workspace_page.dart';
@@ -24,6 +27,7 @@ import 'features/settings/presentation/api_key_settings_dialog.dart';
 import 'features/settings/presentation/provider_api_keys_dialog.dart';
 import 'infrastructure/credentials/credentials.dart';
 import 'infrastructure/agents/jsonl/jsonl.dart';
+import 'infrastructure/memory/memory.dart';
 import 'infrastructure/projects/platform_projects.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
@@ -58,6 +62,7 @@ ProductionAgentStack buildProductionAgentStack({
   AgentSessionCatalog? catalog,
   bool diagnosticNoCompaction = false,
   AgentIdFactory? ids,
+  AgentDynamicContextProvider? dynamicContextProvider,
 }) {
   if ((repository == null) != (catalog == null)) {
     throw ArgumentError(
@@ -168,6 +173,7 @@ ProductionAgentStack buildProductionAgentStack({
     modelSwitchFitPolicy: modelSwitchFitPolicy,
     historyCompactor: diagnosticNoCompaction ? null : historyCompactor,
     ids: ids ?? AgentIdFactory(namespace: _newRuntimeNamespace()),
+    dynamicContextProvider: dynamicContextProvider,
   );
   return ProductionAgentStack(
     registry: registry,
@@ -222,6 +228,7 @@ final class DomovoyDependencies {
     required this.overrideStore,
     required this.apiKeyResolver,
     this.projectStack,
+    this.memoryInspector,
     DeepSeekModelSettingsStore? modelSettingsStore,
     http.Client? httpClient,
     this.disposeCallback,
@@ -249,9 +256,41 @@ final class DomovoyDependencies {
       store: providerCredentialStore,
       readEnvironment: environment.read,
     );
+    final memoryToggles = MemoryReadTogglesController();
+    final memoryStack = MemoryJsonlStack(
+      storage: createPlatformMemoryJsonlStreamStorage(),
+    );
+    final memoryRepositories = MemoryRepositories(
+      workingRepository: memoryStack.workingRepository,
+      longTermRepository: memoryStack.longTermRepository,
+      candidateRepository: memoryStack.candidateRepository,
+    );
+    final memoryRetrieval = LayeredMemoryRetrievalService(
+      repositories: memoryRepositories,
+    );
     final stack = buildProductionAgentStack(
       httpClient: client,
       credentials: credentials,
+      dynamicContextProvider: MemoryDynamicContextProvider(
+        retrieval: memoryRetrieval,
+        toggles: memoryToggles,
+      ),
+    );
+    final memoryExtraction = MemoryExtractionCoordinator(
+      extractor: LlmMemoryBatchExtractor(
+        llm: RegistryMemoryExtractionLlmInvocation(stack.registry),
+        model: stack.promptDefinition.model,
+      ),
+      repositories: memoryRepositories,
+      checkpoints: memoryStack.extractionCheckpointRepository,
+      clock: SystemAgentClock(),
+      ids: MemoryExtractionIdFactory(namespace: 'extract'),
+    );
+    final memoryInspector = MemoryInspectorController(
+      repositories: memoryRepositories,
+      retrieval: memoryRetrieval,
+      toggles: memoryToggles,
+      extraction: memoryExtraction,
     );
     return DomovoyDependencies(
       runtime: stack.runtime,
@@ -267,6 +306,7 @@ final class DomovoyDependencies {
       modelSettingsStore: modelSettingsStore,
       httpClient: client,
       projectStack: createPlatformProjectStack(),
+      memoryInspector: memoryInspector,
     );
   }
 
@@ -282,6 +322,7 @@ final class DomovoyDependencies {
   final ApiKeyResolver apiKeyResolver;
   final DeepSeekModelSettingsStore modelSettingsStore;
   final ProjectPlatformStack? projectStack;
+  final MemoryInspectorController? memoryInspector;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -291,9 +332,14 @@ final class DomovoyDependencies {
   Future<void> _close() async {
     AgentError? firstError;
     try {
-      await runtime.close();
+      memoryInspector?.dispose();
     } on Object catch (error) {
       firstError = sanitizeCloseFailure(error);
+    }
+    try {
+      await runtime.close();
+    } on Object catch (error) {
+      firstError ??= sanitizeCloseFailure(error);
     }
     try {
       await providerModelCatalog?.close();
@@ -333,7 +379,7 @@ class DomovoyApp extends StatefulWidget {
   State<DomovoyApp> createState() => _DomovoyAppState();
 }
 
-class _DomovoyAppState extends State<DomovoyApp> {
+class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
   final _navigatorKey = GlobalKey<NavigatorState>();
   late final ChatWorkspaceController _chatController;
   ProjectWorkspaceController? _projectController;
@@ -342,6 +388,7 @@ class _DomovoyAppState extends State<DomovoyApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final dependencies = widget.dependencies;
     _chatController = ChatWorkspaceController(
       runtime: dependencies.runtime,
@@ -350,6 +397,7 @@ class _DomovoyAppState extends State<DomovoyApp> {
       repository: dependencies.repository,
       registry: dependencies.registry,
       providerModelCatalog: dependencies.providerModelCatalog,
+      onTurnCompleted: dependencies.memoryInspector?.recordCompletedTurn,
       settingsLauncher: _ApiKeyDialogLauncher(
         navigatorKey: _navigatorKey,
         overrideStore: dependencies.overrideStore,
@@ -382,6 +430,7 @@ class _DomovoyAppState extends State<DomovoyApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     unawaited(
       (_projectController?.dispose() ?? Future<void>.value())
           .then((_) => _chatController.dispose())
@@ -391,6 +440,27 @@ class _DomovoyAppState extends State<DomovoyApp> {
           }),
     );
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final memory = widget.dependencies.memoryInspector;
+    if (memory == null) {
+      return;
+    }
+    if (defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS) {
+      return;
+    }
+    switch (state) {
+      case AppLifecycleState.resumed:
+        unawaited(memory.resumeExtraction());
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        memory.pauseExtraction();
+    }
   }
 
   @override
@@ -405,12 +475,14 @@ class _DomovoyAppState extends State<DomovoyApp> {
       home: _projectController == null
           ? ChatWorkspacePage(
               controller: _chatController,
+              memory: widget.dependencies.memoryInspector,
               themeMode: _themeMode,
               onThemeModeChanged: _setThemeMode,
               providersView: _providersView(),
             )
           : ProjectWorkspacePage(
               controller: _projectController!,
+              memory: widget.dependencies.memoryInspector,
               themeMode: _themeMode,
               onThemeModeChanged: _setThemeMode,
               providersView: _providersView(),

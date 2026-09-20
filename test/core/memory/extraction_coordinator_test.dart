@@ -522,6 +522,21 @@ void main() {
       },
     );
 
+    test('dispose cancels pending foreground timers', () async {
+      final harness = _Harness();
+      await harness.coordinator.onCompletedTurn(
+        sessionId: sessionId,
+        projectId: projectId,
+        completedSources: _sources(5),
+      );
+
+      harness.coordinator.dispose();
+      harness.clock.elapse(const Duration(minutes: 30));
+      await harness.coordinator.settle(sessionId);
+
+      expect(harness.extractor.calls, 0);
+    });
+
     test(
       'resume schedules the remaining idle delay, not a fresh 30 minutes',
       () async {

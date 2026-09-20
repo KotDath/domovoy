@@ -3,6 +3,13 @@ import 'context.dart';
 import 'render.dart';
 import 'service.dart';
 
+/// Live read toggles resolved for every retrieval plan.
+abstract interface class MemoryReadToggles {
+  bool get includeWorking;
+
+  bool get includeLongTerm;
+}
+
 /// Adapts deterministic memory retrieval to the agent runtime's dynamic
 /// system-prompt hook.
 ///
@@ -13,6 +20,7 @@ final class MemoryDynamicContextProvider
     implements AgentDynamicContextProvider {
   MemoryDynamicContextProvider({
     required this.retrieval,
+    this.toggles,
     this.characterBudget = defaultMemoryCharacterBudget,
     this.maxLongTermRecords = defaultMaxLongTermRecords,
     this.includeWorking = true,
@@ -20,6 +28,7 @@ final class MemoryDynamicContextProvider
   });
 
   final MemoryRetrievalService retrieval;
+  final MemoryReadToggles? toggles;
   final int characterBudget;
   final int maxLongTermRecords;
   final bool includeWorking;
@@ -39,8 +48,8 @@ final class MemoryDynamicContextProvider
         query: request.query,
         characterBudget: characterBudget,
         maxLongTermRecords: maxLongTermRecords,
-        includeWorking: includeWorking,
-        includeLongTerm: includeLongTerm,
+        includeWorking: toggles?.includeWorking ?? includeWorking,
+        includeLongTerm: toggles?.includeLongTerm ?? includeLongTerm,
       ),
     );
     if (plan.items.isEmpty) {

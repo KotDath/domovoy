@@ -130,6 +130,7 @@ final class MemoryExtractionCoordinator {
 
   final CancellationSource _operations = CancellationSource();
   final Map<String, _SessionState> _states = <String, _SessionState>{};
+  var _disposed = false;
 
   int _now() => clock.nowMicros();
 
@@ -142,6 +143,7 @@ final class MemoryExtractionCoordinator {
     required ProjectId projectId,
     required List<MemoryExtractionSource> completedSources,
   }) async {
+    if (_disposed) return MemoryExtractionResult.failed();
     final state = _state(sessionId);
     state.projectId = projectId;
     _cacheSources(state, completedSources);
@@ -173,6 +175,7 @@ final class MemoryExtractionCoordinator {
     required ProjectId projectId,
     required List<MemoryExtractionSource> completedSources,
   }) async {
+    if (_disposed) return MemoryExtractionResult.failed();
     final state = _state(sessionId);
     state.paused = false;
     state.projectId = projectId;
@@ -183,6 +186,7 @@ final class MemoryExtractionCoordinator {
 
   /// Pauses scheduling. Timers are cancelled; the checkpoint is unchanged.
   void pause(AgentSessionId sessionId) {
+    if (_disposed) return;
     final state = _state(sessionId);
     state.paused = true;
     _cancelTimer(state);
@@ -195,6 +199,7 @@ final class MemoryExtractionCoordinator {
     required ProjectId projectId,
     required List<MemoryExtractionSource> completedSources,
   }) async {
+    if (_disposed) return MemoryExtractionResult.failed();
     final state = _state(sessionId);
     state.paused = false;
     state.projectId = projectId;
@@ -237,6 +242,7 @@ final class MemoryExtractionCoordinator {
 
   /// Awaits any timer-triggered extraction currently running for [sessionId].
   Future<void> settle(AgentSessionId sessionId) async {
+    if (_disposed) return;
     final state = _state(sessionId);
     while (true) {
       final inflight = state.inflight;
@@ -330,6 +336,7 @@ final class MemoryExtractionCoordinator {
     AgentSessionId sessionId, {
     required bool force,
   }) async {
+    if (_disposed) return MemoryExtractionResult.failed();
     final state = _state(sessionId);
     if (state.running) {
       state.rerun = true;
@@ -550,7 +557,7 @@ final class MemoryExtractionCoordinator {
 
   void _rescheduleIdle(_SessionState state) {
     _cancelTimer(state);
-    if (state.paused || !state.hasPending) {
+    if (_disposed || state.paused || !state.hasPending) {
       return;
     }
     final elapsedMicros = state.lastActivityMicros == null
@@ -584,6 +591,18 @@ final class MemoryExtractionCoordinator {
   void _cancelTimer(_SessionState state) {
     state.timer?.cancel();
     state.timer = null;
+  }
+
+  /// Cancels every foreground timer and in-flight extractor invocation.
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _operations.cancel();
+    for (final state in _states.values) {
+      _cancelTimer(state);
+      state.activeExtraction?.cancel();
+    }
+    _states.clear();
   }
 }
 

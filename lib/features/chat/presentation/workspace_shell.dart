@@ -34,6 +34,9 @@ class WorkspaceShell extends StatefulWidget {
     this.projectName,
     this.projectRoot,
     this.showComposer = true,
+    this.memoryPanel,
+    this.onOpenMemory,
+    this.memorySelected = false,
     super.key,
   });
 
@@ -63,6 +66,9 @@ class WorkspaceShell extends StatefulWidget {
   final String? projectName;
   final String? projectRoot;
   final bool showComposer;
+  final Widget? memoryPanel;
+  final VoidCallback? onOpenMemory;
+  final bool memorySelected;
 
   @override
   State<WorkspaceShell> createState() => _WorkspaceShellState();
@@ -70,6 +76,7 @@ class WorkspaceShell extends StatefulWidget {
 
 class _WorkspaceShellState extends State<WorkspaceShell> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  var _panelOpen = false;
 
   @override
   Widget build(BuildContext context) {
@@ -195,47 +202,96 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
                   ),
+                  if (widget.memoryPanel != null || widget.onOpenMemory != null)
+                    DomovoyQuietButton(
+                      key: const ValueKey('memory-open'),
+                      minSize: const Size.square(
+                        DomovoyDimensions.minimumTarget,
+                      ),
+                      alignment: Alignment.center,
+                      tooltip: 'Память',
+                      tone: _panelOpen || widget.memorySelected
+                          ? DomovoyButtonTone.selected
+                          : DomovoyButtonTone.quiet,
+                      onPressed: () => _openMemory(layout),
+                      child: const Icon(
+                        Icons.psychology_outlined,
+                        size: DomovoyDimensions.iconMedium,
+                      ),
+                    ),
                   const SizedBox.shrink(key: ValueKey('chat-delete')),
                 ],
               ),
             ),
           ),
           Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(child: widget.body),
-                if (widget.showComposer)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: ColoredBox(
-                      color: tokens.canvas,
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(
-                          layout.contentInsets.left,
-                          DomovoyDimensions.space4,
-                          layout.contentInsets.right,
-                          DomovoyDimensions.space5 +
-                              MediaQuery.viewInsetsOf(context).bottom,
-                        ),
-                        child: Center(
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                              maxWidth: layout.composerMaxWidth,
-                            ),
-                            child: widget.composer,
-                          ),
-                        ),
+            child: layout.isDesktop && widget.memoryPanel != null && _panelOpen
+                ? Row(
+                    key: const ValueKey('workspace-memory-pane'),
+                    children: [
+                      Expanded(child: _bodyArea(context, layout, tokens)),
+                      VerticalDivider(
+                        width: DomovoyDimensions.hairline,
+                        thickness: DomovoyDimensions.hairline,
+                        color: tokens.border,
                       ),
-                    ),
-                  ),
-              ],
-            ),
+                      SizedBox(
+                        width: DomovoyDimensions.memoryPanelWidth,
+                        child: widget.memoryPanel,
+                      ),
+                    ],
+                  )
+                : _bodyArea(context, layout, tokens),
           ),
         ],
       ),
     );
+  }
+
+  Widget _bodyArea(
+    BuildContext context,
+    WorkspaceLayoutSpec layout,
+    DomovoyThemeTokens tokens,
+  ) {
+    return Stack(
+      children: [
+        Positioned.fill(child: widget.body),
+        if (widget.showComposer)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: ColoredBox(
+              color: tokens.canvas,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  layout.contentInsets.left,
+                  DomovoyDimensions.space4,
+                  layout.contentInsets.right,
+                  DomovoyDimensions.space5 +
+                      MediaQuery.viewInsetsOf(context).bottom,
+                ),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: layout.composerMaxWidth,
+                    ),
+                    child: widget.composer,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  void _openMemory(WorkspaceLayoutSpec layout) {
+    if (layout.isDesktop && widget.memoryPanel != null) {
+      setState(() => _panelOpen = !_panelOpen);
+      return;
+    }
+    widget.onOpenMemory?.call();
   }
 
   void _newChat() {
@@ -286,6 +342,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   void _dismissTopmost() {
+    if (_panelOpen && widget.memoryPanel != null) {
+      setState(() => _panelOpen = false);
+      return;
+    }
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
       Navigator.maybePop(context);
     }

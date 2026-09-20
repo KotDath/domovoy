@@ -116,6 +116,39 @@ void main() {
   });
 
   group('chat workspace lifecycle and command lane', () {
+    test('completed turns notify memory without delaying send', () async {
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[textTurn('remembered answer')],
+      );
+      final repository = InMemoryAgentSessionRepository();
+      final runtime = testRuntime(provider: provider, repository: repository);
+      final callbackStarted = Completer<void>();
+      final callbackGate = Completer<void>();
+      final controller = _controller(
+        runtime,
+        repository,
+        repository,
+        onTurnCompleted: (snapshot) async {
+          expect(snapshot.transcript.messages, hasLength(2));
+          callbackStarted.complete();
+          await callbackGate.future;
+        },
+      );
+      await controller.initialize();
+      await controller.createChat(id: AgentSessionId('memory-callback'));
+
+      final result = await controller.send('remember this');
+
+      expect(result.isSuccess, isTrue);
+      await callbackStarted.future;
+      expect(callbackGate.isCompleted, isFalse);
+      callbackGate.complete();
+      await controller.dispose();
+      await runtime.close();
+    });
+
     test(
       'two durable chats send multiple turns and restore exact selection',
       () async {
@@ -635,13 +668,15 @@ void main() {
 ChatWorkspaceController _controller(
   InMemoryAgentRuntime runtime,
   AgentSessionRepository repository,
-  AgentSessionCatalog catalog,
-) => ChatWorkspaceController(
+  AgentSessionCatalog catalog, {
+  Future<void> Function(AgentSessionSnapshot snapshot)? onTurnCompleted,
+}) => ChatWorkspaceController(
   runtime: runtime,
   definition: testDefinition(),
   catalog: catalog,
   repository: repository,
   registry: runtime.registry,
+  onTurnCompleted: onTurnCompleted,
 );
 
 AgentSessionRecord _emptyRecord(String id) => AgentSessionRecord(

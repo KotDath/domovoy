@@ -57,6 +57,8 @@ abstract final class DomovoyDimensions {
   static const reasoningPopoverWidth = 260.0;
   static const folderPopoverWidth = 280.0;
   static const providerMenuWidth = 190.0;
+  static const memoryPanelWidth = 340.0;
+  static const memoryTraceMaxHeight = 160.0;
 
   static const elevationLow = 1.0;
   static const elevationFloating = 12.0;
