@@ -1,4 +1,5 @@
 export 'catalog.dart';
+export 'default_project.dart';
 export 'enums.dart';
 export 'errors.dart';
 export 'grants.dart';

@@ -122,6 +122,13 @@ ProjectError sanitizedProjectDeniedError() {
   );
 }
 
+ProjectError sanitizedProjectProtectedError() {
+  return ProjectError(
+    kind: ProjectErrorKind.denied,
+    message: 'Защищённый проект нельзя удалить.',
+  );
+}
+
 ProjectException wrapProjectCodecFailure(Object error) {
   if (error is ProjectException) {
     return error;

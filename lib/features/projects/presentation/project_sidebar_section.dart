@@ -143,7 +143,9 @@ class ProjectSidebarSection extends StatelessWidget {
                   ),
                 ),
               ),
-              if (selected && !group.deleting)
+              if (selected &&
+                  !group.deleting &&
+                  !(group.project?.isDefaultProject ?? false))
                 DomovoyQuietButton(
                   key: const ValueKey('project-delete'),
                   minSize: const Size.square(DomovoyDimensions.minimumTarget),

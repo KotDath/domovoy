@@ -2,7 +2,7 @@ import 'package:domovoy/core/projects/projects.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('ProjectRecord v1', () {
+  group('ProjectRecord v2', () {
     test('desktop Project round-trips without native material', () {
       final record = ProjectRecord(
         id: ProjectId('p1'),
@@ -15,12 +15,93 @@ void main() {
       );
       const codec = ProjectCodec();
       final encoded = codec.encode(record);
-      expect(encoded['version'], 1);
+      expect(encoded['version'], 2);
+      expect(encoded['kind'], ProjectKind.user.name);
       expect(encoded.toString(), isNot(contains('bookmark')));
       expect(encoded.toString(), isNot(contains('/tmp')));
       expect(codec.decode(encoded), record);
       expect(record.root.kind, ProjectRootKind.externalGrant);
       expect(record.additionalGrantIds, hasLength(2));
+      expect(record.isDefaultProject, isFalse);
+    });
+
+    test('v1 record migrates to an explicit user kind', () {
+      final legacyRecord = ProjectRecord(
+        id: ProjectId('legacy'),
+        revision: 0,
+        name: 'Legacy',
+        root: ExternalGrantRootReference(DirectoryGrantId('g-legacy')),
+        createdAtMicros: 1,
+        updatedAtMicros: 2,
+      );
+      final legacy = Map<String, Object?>.from(legacyRecord.toJson())
+        ..['version'] = ProjectRecord.legacyJsonVersion
+        ..remove('kind');
+      const codec = ProjectCodec();
+      final decoded = codec.decode(legacy);
+      expect(decoded.kind, ProjectKind.user);
+      expect(decoded.id, ProjectId('legacy'));
+      // Re-encoding publishes the migrated schema version.
+      expect(
+        codec.encode(decoded)['version'],
+        ProjectRecord.currentJsonVersion,
+      );
+    });
+
+    test('protected default record round-trips as a sandbox', () {
+      final record = ProjectRecord(
+        id: defaultProjectId,
+        revision: 0,
+        name: defaultProjectName,
+        root: AppSandboxRootReference(defaultProjectRootId),
+        kind: ProjectKind.defaultProject,
+        createdAtMicros: 1,
+        updatedAtMicros: 1,
+      );
+      const codec = ProjectCodec();
+      final encoded = codec.encode(record);
+      expect(encoded['kind'], ProjectKind.defaultProject.name);
+      expect(record.isDefaultProject, isTrue);
+      expect(codec.decode(encoded), record);
+      expect(record.additionalGrantIds, isEmpty);
+    });
+
+    test('reserved identity and kind are mutually exclusive', () {
+      expect(
+        () => ProjectRecord(
+          id: ProjectId('user-project'),
+          revision: 0,
+          name: 'Impostor',
+          root: AppSandboxRootReference(ProjectRootId('r')),
+          kind: ProjectKind.defaultProject,
+          createdAtMicros: 1,
+          updatedAtMicros: 1,
+        ),
+        throwsA(isA<ProjectException>()),
+      );
+      expect(
+        () => ProjectRecord(
+          id: defaultProjectId,
+          revision: 0,
+          name: 'Reserved',
+          root: ExternalGrantRootReference(DirectoryGrantId('g')),
+          createdAtMicros: 1,
+          updatedAtMicros: 1,
+        ),
+        throwsA(isA<ProjectException>()),
+      );
+      expect(
+        () => ProjectRecord(
+          id: defaultProjectId,
+          revision: 0,
+          name: 'Reserved',
+          root: AppSandboxRootReference(defaultProjectRootId),
+          kind: ProjectKind.defaultProject,
+          createdAtMicros: 1,
+          updatedAtMicros: 1,
+        ),
+        returnsNormally,
+      );
     });
 
     test('mobile sandbox Project round-trips without grants', () {

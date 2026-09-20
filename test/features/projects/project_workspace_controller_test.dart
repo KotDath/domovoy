@@ -13,39 +13,48 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../support/agent_harness.dart';
 
 void main() {
-  test('groups chats under Project and Без проекта', () async {
-    final harness = await _Harness.create();
-    harness.fs.mount(components: ['home', 'work']);
-    harness.fs.bindHandle('h', ['home', 'work']);
-    harness.picker.enqueue(
-      const ProjectPickedDirectory(handleId: 'h', safeLabel: 'work'),
-    );
-    final created = await harness.projects.createProject(
-      const ProjectCreateDraft(
-        name: 'Alpha',
-        mode: ProjectDesktopRootMode.attachExisting,
-      ),
-    );
-    expect(created.isSuccess, isTrue);
-    await harness.projects.selectProject(created.project!.id);
-    final chat = await harness.projects.createChat();
-    expect(chat.isSuccess, isTrue);
-    await harness.projects.selectUnassigned();
-    await harness.projects.createChat();
-    final titles = harness.projects.state.groups.map((group) => group.title);
-    expect(titles, containsAll(['Alpha', unassignedProjectLabel]));
-    final alpha = harness.projects.state.groups.firstWhere(
-      (group) => group.title == 'Alpha',
-    );
-    expect(alpha.chats, hasLength(1));
-    final unassigned = harness.projects.state.groups.firstWhere(
-      (group) => group.kind == ProjectSelectionKind.unassigned,
-    );
-    expect(unassigned.chats, hasLength(1));
-    await harness.dispose();
-  });
+  test(
+    'routes new chats to default after a legacy unassigned selection',
+    () async {
+      final harness = await _Harness.create();
+      harness.fs.mount(components: ['home', 'work']);
+      harness.fs.bindHandle('h', ['home', 'work']);
+      harness.picker.enqueue(
+        const ProjectPickedDirectory(handleId: 'h', safeLabel: 'work'),
+      );
+      final created = await harness.projects.createProject(
+        const ProjectCreateDraft(
+          name: 'Alpha',
+          mode: ProjectDesktopRootMode.attachExisting,
+        ),
+      );
+      expect(created.isSuccess, isTrue);
+      await harness.projects.selectProject(created.project!.id);
+      final chat = await harness.projects.createChat();
+      expect(chat.isSuccess, isTrue);
+      await harness.projects.selectUnassigned();
+      await harness.projects.createChat();
+      final titles = harness.projects.state.groups.map((group) => group.title);
+      expect(titles, containsAll(['Alpha', unassignedProjectLabel]));
+      final alpha = harness.projects.state.groups.firstWhere(
+        (group) => group.title == 'Alpha',
+      );
+      expect(alpha.chats, hasLength(1));
+      final unassigned = harness.projects.state.groups.firstWhere(
+        (group) => group.kind == ProjectSelectionKind.unassigned,
+      );
+      expect(unassigned.chats, isEmpty);
+      final defaultGroup = harness.projects.state.groups.singleWhere(
+        (group) => group.project?.isDefaultProject ?? false,
+      );
+      expect(defaultGroup.chats, hasLength(1));
+      expect(defaultGroup.chats.single.projectId, defaultProjectId);
+      expect(harness.projects.state.selectedProjectId, defaultProjectId);
+      await harness.dispose();
+    },
+  );
 
-  test('deleting Project moves chats to Без проекта', () async {
+  test('deleting Project reassigns chats to the default project', () async {
     final harness = await _Harness.create();
     harness.fs.mount(components: ['home', 'work']);
     harness.fs.bindHandle('h', ['home', 'work']);
@@ -69,7 +78,13 @@ void main() {
     final unassigned = harness.projects.state.groups.singleWhere(
       (group) => group.kind == ProjectSelectionKind.unassigned,
     );
-    expect(unassigned.chats, isNotEmpty);
+    expect(unassigned.chats, isEmpty);
+    final defaultGroup = harness.projects.state.groups.singleWhere(
+      (group) => group.project?.isDefaultProject ?? false,
+    );
+    expect(defaultGroup.chats, isNotEmpty);
+    expect(defaultGroup.chats.single.projectId, defaultProjectId);
+    expect(harness.projects.state.selectedProjectId, defaultProjectId);
     await harness.dispose();
   });
 
@@ -94,8 +109,8 @@ void main() {
       await harness.projects.selectUnassigned();
       expect(harness.chat.state.selectedSession, isNull);
       await harness.projects.createChat();
-      final unassignedChat = harness.chat.state.selectedSession!;
-      expect(unassignedChat.projectId, isNull);
+      final defaultChat = harness.chat.state.selectedSession!;
+      expect(defaultChat.projectId, defaultProjectId);
 
       await harness.projects.selectProject(created.project!.id);
       expect(harness.chat.state.selectedId, projectChat.id);
@@ -103,8 +118,8 @@ void main() {
         harness.chat.state.selectedSession!.projectId,
         created.project!.id,
       );
-      await harness.projects.selectUnassigned();
-      expect(harness.chat.state.selectedId, unassignedChat.id);
+      await harness.projects.selectProject(defaultProjectId);
+      expect(harness.chat.state.selectedId, defaultChat.id);
       await harness.dispose();
     },
   );
@@ -269,6 +284,7 @@ final class _Harness {
       filesystem: fs,
       picker: picker,
       grantStore: grants,
+      sandbox: FakeMobileSandbox(platformKind: ProjectPlatformKind.linux),
     );
     final controller = ProjectWorkspaceController(
       service: ProjectApplicationService(

@@ -8,6 +8,7 @@ import '../../../core/projects/policy.dart';
 import '../../../core/projects/provisioning.dart';
 import '../fs/desktop_filesystem.dart';
 import '../grants/macos_security_scope.dart';
+import 'mobile_sandbox_provisioner.dart';
 
 final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
   DesktopProjectRootProvisioner({
@@ -15,6 +16,7 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
     required this.filesystem,
     required this.picker,
     required this.grantStore,
+    this.sandbox,
     this.macosScope,
     this.nowMicros,
   }) : assert(
@@ -27,10 +29,16 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
   final DesktopFilesystem filesystem;
   final ProjectDirectoryPicker picker;
   final ProjectDirectoryGrantStore grantStore;
+
+  /// Optional application-managed sandbox used to provision the protected
+  /// default project without a user filesystem grant.
+  final MobileProjectSandbox? sandbox;
   final MacosSecurityScopeBroker? macosScope;
   final int Function()? nowMicros;
 
   final Map<String, CanonicalDirectoryIdentity> _stagedIdentities =
+      <String, CanonicalDirectoryIdentity>{};
+  final Map<String, CanonicalDirectoryIdentity> _sandboxIdentities =
       <String, CanonicalDirectoryIdentity>{};
   final Map<String, String> _macosBookmarks = <String, String>{};
   int stageCount = 0;
@@ -46,10 +54,13 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
     required CancellationToken cancellation,
   }) async {
     if (mobile != null) {
-      throwProject(
-        ProjectErrorKind.configuration,
-        'Desktop provisioner cannot create sandbox roots.',
-      );
+      if (desktop != null) {
+        throwProject(
+          ProjectErrorKind.configuration,
+          'Desktop provisioner accepts one root request at a time.',
+        );
+      }
+      return _stageSandbox(mobile, cancellation);
     }
     if (desktop == null) {
       throwProject(
@@ -104,6 +115,33 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
       }
       rethrow;
     }
+  }
+
+  Future<ProjectRootProvisionResult> _stageSandbox(
+    MobileSandboxProvisionRequest mobile,
+    CancellationToken cancellation,
+  ) async {
+    final sandbox = this.sandbox;
+    if (sandbox == null || !capabilities.appManagedSandboxRoots) {
+      throw ProjectException(sanitizedProjectUnsupportedError());
+    }
+    _throwIfCancelled(cancellation);
+    if (await sandbox.rootExists(mobile.projectId)) {
+      throw ProjectException(sanitizedProjectCollisionError());
+    }
+    final identity = await sandbox.createRoot(mobile.projectId);
+    _sandboxIdentities[mobile.rootId.value] = identity;
+    return MobileSandboxRootResult(
+      descriptor: SandboxRootDescriptor(
+        rootId: mobile.rootId,
+        projectId: mobile.projectId,
+        platformKind: capabilities.platformKind,
+        canonicalRelativeIdentity: mobile.projectId.value,
+        status: ProjectAccessStatus.active,
+      ),
+      identity: identity,
+      createdNewDirectory: true,
+    );
   }
 
   Future<StagedDesktopGrant> _stageOne({
@@ -181,6 +219,10 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
 
   @override
   Future<void> acknowledgeRoot(ProjectRootProvisionResult staged) async {
+    if (staged is MobileSandboxRootResult) {
+      acknowledgeCount += 1;
+      return;
+    }
     if (staged is! DesktopExternalRootResult) {
       throwProject(
         ProjectErrorKind.configuration,
@@ -210,6 +252,9 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
     DirectoryGrantRole expectedRole = DirectoryGrantRole.root,
     DirectoryGrantAccess expectedAccess = DirectoryGrantAccess.readWrite,
   }) async {
+    if (rootId != null) {
+      return _revalidateSandbox(rootId: rootId, projectId: projectId);
+    }
     if (grantId == null) {
       return ProjectAccessStatus.unverifiable;
     }
@@ -275,12 +320,36 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
     }
   }
 
+  Future<ProjectAccessStatus> _revalidateSandbox({
+    required ProjectRootId rootId,
+    required ProjectId projectId,
+  }) async {
+    final sandbox = this.sandbox;
+    if (sandbox == null || !capabilities.appManagedSandboxRoots) {
+      return ProjectAccessStatus.unsupported;
+    }
+    final identity = await sandbox.currentRoot(projectId);
+    if (identity == null) {
+      return ProjectAccessStatus.missing;
+    }
+    final known = _sandboxIdentities[rootId.value];
+    if (known != null && known.fingerprint != identity.fingerprint) {
+      return ProjectAccessStatus.unverifiable;
+    }
+    _sandboxIdentities[rootId.value] = identity;
+    return ProjectAccessStatus.active;
+  }
+
   @override
   Future<void> retireRoot({
     DirectoryGrantId? grantId,
     ProjectRootId? rootId,
     required ProjectId projectId,
   }) async {
+    if (rootId != null) {
+      _sandboxIdentities.remove(rootId.value);
+      return;
+    }
     if (grantId == null) {
       return;
     }
@@ -296,6 +365,13 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
   Future<OrphanCleanupResult> cleanupOrphan(
     OrphanRootCleanupRequest request,
   ) async {
+    final sandbox = this.sandbox;
+    if (sandbox != null &&
+        _sandboxIdentities.values.any(
+          (identity) => identity.fingerprint == request.identity.fingerprint,
+        )) {
+      return _cleanupSandboxOrphan(sandbox, request);
+    }
     if (!request.createdNewDirectory) {
       return const OrphanCleanupResult(outcome: OrphanCleanupOutcome.retained);
     }
@@ -320,11 +396,43 @@ final class DesktopProjectRootProvisioner implements ProjectRootProvisioner {
     }
   }
 
+  Future<OrphanCleanupResult> _cleanupSandboxOrphan(
+    MobileProjectSandbox sandbox,
+    OrphanRootCleanupRequest request,
+  ) async {
+    if (!request.createdNewDirectory) {
+      return const OrphanCleanupResult(outcome: OrphanCleanupOutcome.retained);
+    }
+    final current = await sandbox.currentRoot(request.projectId);
+    if (current == null) {
+      return const OrphanCleanupResult(outcome: OrphanCleanupOutcome.removed);
+    }
+    if (current.fingerprint != request.identity.fingerprint) {
+      return const OrphanCleanupResult(
+        outcome: OrphanCleanupOutcome.quarantined,
+        warning: true,
+      );
+    }
+    final removed = await sandbox.removeIfEmpty(
+      request.projectId,
+      request.identity,
+    );
+    return OrphanCleanupResult(
+      outcome: removed
+          ? OrphanCleanupOutcome.removed
+          : OrphanCleanupOutcome.retained,
+      warning: !removed,
+    );
+  }
+
   @override
   CanonicalDirectoryIdentity? identityForRoot({
     DirectoryGrantId? grantId,
     ProjectRootId? rootId,
   }) {
+    if (rootId != null) {
+      return _sandboxIdentities[rootId.value];
+    }
     if (grantId == null) {
       return null;
     }

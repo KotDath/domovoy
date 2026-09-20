@@ -1,5 +1,9 @@
 enum ProjectLifecycle { active, deleting }
 
+/// Distinguishes the protected, application-managed default project from
+/// user-created projects.
+enum ProjectKind { user, defaultProject }
+
 enum ProjectRootKind { externalGrant, appSandbox }
 
 enum DirectoryGrantRole { root, additional }
@@ -27,6 +31,15 @@ extension ProjectLifecycleCodec on ProjectLifecycle {
     return ProjectLifecycle.values.firstWhere(
       (value) => value.name == name,
       orElse: () => throw FormatException('Unknown project lifecycle "$name".'),
+    );
+  }
+}
+
+extension ProjectKindCodec on ProjectKind {
+  static ProjectKind parse(String name) {
+    return ProjectKind.values.firstWhere(
+      (value) => value.name == name,
+      orElse: () => throw FormatException('Unknown project kind "$name".'),
     );
   }
 }

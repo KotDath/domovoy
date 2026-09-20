@@ -67,6 +67,10 @@ ProjectPlatformStack createPlatformProjectStack() {
         filesystem: filesystem,
         picker: const NativeProjectDirectoryPicker(),
         grantStore: grants,
+        sandbox: IoMobileProjectSandbox(
+          platformKind: capabilities.platformKind,
+          applicationSupportDirectoryResolver: getApplicationSupportDirectory,
+        ),
         macosScope: scope,
       ),
     );

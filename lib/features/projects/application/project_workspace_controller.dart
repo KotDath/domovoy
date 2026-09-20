@@ -59,6 +59,9 @@ final class ProjectWorkspaceController {
   Future<void> initialize() async {
     _emit(_state.copyWith(status: ProjectWorkspaceStatus.loading, busy: true));
     try {
+      await service.bootstrapDefaultProject(
+        cancellation: CancellationSource().token,
+      );
       await service.recoverDeletingProjects(
         stopSelectedMember: (id) async {
           if (chat.state.selectedSession != null) {
@@ -70,6 +73,7 @@ final class ProjectWorkspaceController {
       await service.cleanupOrphans();
       await chat.initialize();
       await _refresh();
+      await _selectDefaultProjectIfUnassigned();
       _initialized = true;
     } on Object catch (error) {
       _emit(
@@ -146,9 +150,21 @@ final class ProjectWorkspaceController {
       await _refresh(error: result.error);
     }
     if (result.isSuccess) {
-      await selectUnassigned();
+      await _selectDefaultProjectIfUnassigned();
     }
     return result;
+  }
+
+  Future<void> _selectDefaultProjectIfUnassigned() async {
+    if (_state.selectedKind != ProjectSelectionKind.unassigned) return;
+    final group = _state.groups.cast<ProjectChatGroup?>().firstWhere(
+      (candidate) => candidate?.project?.isDefaultProject ?? false,
+      orElse: () => null,
+    );
+    final id = group?.projectId;
+    if (id != null) {
+      await selectProject(id);
+    }
   }
 
   Future<ProjectCommandResult> regrantSelected() async {
@@ -181,7 +197,17 @@ final class ProjectWorkspaceController {
   }
 
   Future<ChatCommandResult> createChat() async {
-    final group = _state.selectedGroup;
+    var group = _state.selectedGroup;
+    if (group?.kind == ProjectSelectionKind.unassigned) {
+      final defaultGroup = _state.groups.cast<ProjectChatGroup?>().firstWhere(
+        (candidate) => candidate?.project?.isDefaultProject ?? false,
+        orElse: () => null,
+      );
+      if (defaultGroup?.projectId != null) {
+        await selectProject(defaultGroup!.projectId!);
+        group = defaultGroup;
+      }
+    }
     if (group == null || !group.admitsNewChat) {
       return ChatCommandResult.failed(
         ChatWorkspaceError(

@@ -82,6 +82,7 @@ final class ProjectRecord {
     List<DirectoryGrantId> additionalGrantIds = const <DirectoryGrantId>[],
     required this.createdAtMicros,
     required this.updatedAtMicros,
+    this.kind = ProjectKind.user,
     this.lifecycle = ProjectLifecycle.active,
     this.deletionOperationId,
   }) : name = requireNormalizedProjectName(name),
@@ -99,6 +100,28 @@ final class ProjectRecord {
         ProjectErrorKind.configuration,
         'Project timestamps must be non-negative.',
       );
+    }
+    switch (kind) {
+      case ProjectKind.defaultProject:
+        if (!id.isDefault) {
+          throwProject(
+            ProjectErrorKind.configuration,
+            'The default project must use the reserved identity.',
+          );
+        }
+        if (root is! AppSandboxRootReference) {
+          throwProject(
+            ProjectErrorKind.configuration,
+            'The default project requires an app-managed sandbox root.',
+          );
+        }
+      case ProjectKind.user:
+        if (id.isDefault) {
+          throwProject(
+            ProjectErrorKind.configuration,
+            'The reserved default project identity is protected.',
+          );
+        }
     }
     final seen = <String>{};
     for (final grantId in this.additionalGrantIds) {
@@ -143,10 +166,12 @@ final class ProjectRecord {
   factory ProjectRecord.fromJson(Object? json) {
     try {
       _rejectOpaqueMaterial(json);
+      final raw = asJsonObject(json);
+      final isLegacy = raw?[llmJsonVersionKey] == legacyJsonVersion;
       final map = decodeTypedJson(
         json,
         type: jsonType,
-        version: currentJsonVersion,
+        version: isLegacy ? legacyJsonVersion : currentJsonVersion,
       );
       final expected = <String>{
         llmJsonTypeKey,
@@ -160,6 +185,9 @@ final class ProjectRecord {
         'updatedAtMicros',
         'lifecycle',
       };
+      if (!isLegacy) {
+        expected.add('kind');
+      }
       final lifecycle = ProjectLifecycleCodec.parse(
         requireNonBlankString(map, 'lifecycle'),
       );
@@ -179,6 +207,9 @@ final class ProjectRecord {
         additionalGrantIds: additional,
         createdAtMicros: requireInt(map, 'createdAtMicros'),
         updatedAtMicros: requireInt(map, 'updatedAtMicros'),
+        kind: isLegacy
+            ? ProjectKind.user
+            : ProjectKindCodec.parse(requireNonBlankString(map, 'kind')),
         lifecycle: lifecycle,
         deletionOperationId: map['deletionOperationId'] == null
             ? null
@@ -192,7 +223,8 @@ final class ProjectRecord {
   }
 
   static const jsonType = 'project.record';
-  static const currentJsonVersion = 1;
+  static const legacyJsonVersion = 1;
+  static const currentJsonVersion = 2;
 
   final ProjectId id;
   final int revision;
@@ -201,6 +233,7 @@ final class ProjectRecord {
   final List<DirectoryGrantId> additionalGrantIds;
   final int createdAtMicros;
   final int updatedAtMicros;
+  final ProjectKind kind;
   final ProjectLifecycle lifecycle;
   final ProjectDeletionOperationId? deletionOperationId;
 
@@ -209,6 +242,8 @@ final class ProjectRecord {
   bool get isActive => lifecycle == ProjectLifecycle.active;
 
   bool get isDeleting => lifecycle == ProjectLifecycle.deleting;
+
+  bool get isDefaultProject => kind == ProjectKind.defaultProject;
 
   ProjectRecord copyWith({
     int? revision,
@@ -227,6 +262,7 @@ final class ProjectRecord {
       additionalGrantIds: additionalGrantIds ?? this.additionalGrantIds,
       createdAtMicros: createdAtMicros,
       updatedAtMicros: updatedAtMicros ?? this.updatedAtMicros,
+      kind: kind,
       lifecycle: lifecycle ?? this.lifecycle,
       deletionOperationId: identical(deletionOperationId, _keep)
           ? this.deletionOperationId
@@ -248,6 +284,7 @@ final class ProjectRecord {
             .toList(growable: false),
         'createdAtMicros': createdAtMicros,
         'updatedAtMicros': updatedAtMicros,
+        'kind': kind.name,
         'lifecycle': lifecycle.name,
         if (deletionOperationId != null)
           'deletionOperationId': deletionOperationId!.toJson(),
@@ -266,6 +303,7 @@ final class ProjectRecord {
           listEquals(other.additionalGrantIds, additionalGrantIds) &&
           other.createdAtMicros == createdAtMicros &&
           other.updatedAtMicros == updatedAtMicros &&
+          other.kind == kind &&
           other.lifecycle == lifecycle &&
           other.deletionOperationId == deletionOperationId;
 
@@ -278,6 +316,7 @@ final class ProjectRecord {
     Object.hashAll(additionalGrantIds),
     createdAtMicros,
     updatedAtMicros,
+    kind,
     lifecycle,
     deletionOperationId,
   );

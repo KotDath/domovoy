@@ -118,9 +118,103 @@ void main() {
     });
   });
 
-  group('deletion saga', () {
-    test('unassigns chats, tombstones, keeps files', () async {
+  group('default project bootstrap', () {
+    test(
+      'creates the protected default once and migrates null chats',
+      () async {
+        final env = _Env.linux();
+        await env.sessions.save(
+          _session(),
+          expectedRevision: 0,
+          cancellation: CancellationSource().token,
+        );
+
+        final first = await env.service.bootstrapDefaultProject(
+          cancellation: CancellationSource().token,
+        );
+        expect(first.isSuccess, isTrue);
+        final record = first.project!;
+        expect(record.id, defaultProjectId);
+        expect(record.kind, ProjectKind.defaultProject);
+        expect(record.root, AppSandboxRootReference(defaultProjectRootId));
+        expect(record.isActive, isTrue);
+        expect(env.sandbox.roots.containsKey(defaultProjectId.value), isTrue);
+        expect(env.provisioner.stageCount, 0);
+        expect(
+          (await env.sessions.load(AgentSessionId('chat-1')))!.projectId,
+          defaultProjectId,
+        );
+
+        final second = await env.service.bootstrapDefaultProject(
+          cancellation: CancellationSource().token,
+        );
+        expect(second.isSuccess, isTrue);
+        expect(second.project!.revision, record.revision);
+        final snapshot = await env.projects.list();
+        expect(snapshot.available, hasLength(1));
+        expect(snapshot.available.single.kind, ProjectKind.defaultProject);
+        expect(env.sandbox.writeCount, 1);
+      },
+    );
+
+    test('recovers a missing managed sandbox root', () async {
       final env = _Env.linux();
+      final first = await env.service.bootstrapDefaultProject(
+        cancellation: CancellationSource().token,
+      );
+      final record = first.project!;
+      env.sandbox.roots.remove(defaultProjectId.value);
+
+      final second = await env.service.bootstrapDefaultProject(
+        cancellation: CancellationSource().token,
+      );
+      expect(second.isSuccess, isTrue);
+      expect(env.sandbox.roots.containsKey(defaultProjectId.value), isTrue);
+      expect(second.project!.revision, record.revision + 1);
+      expect((await env.projects.list()).available, hasLength(1));
+    });
+
+    test('protects the default project from deletion', () async {
+      final env = _Env.linux();
+      final bootstrapped = await env.service.bootstrapDefaultProject(
+        cancellation: CancellationSource().token,
+      );
+      final record = bootstrapped.project!;
+      final result = await env.service.deleteProject(
+        id: defaultProjectId,
+        expectedRevision: record.revision,
+        cancellation: CancellationSource().token,
+      );
+      expect(result.isSuccess, isFalse);
+      expect(result.error!.kind, ProjectErrorKind.denied);
+      expect(await env.projects.load(defaultProjectId), isNotNull);
+    });
+
+    test('web bootstrap is unsupported and writes nothing', () async {
+      final projects = InMemoryProjectRepository();
+      final sessions = InMemoryAgentSessionRepository();
+      final provisioner = WebUnsupportedProjectRootProvisioner();
+      final service = ProjectApplicationService(
+        projects: projects,
+        projectCatalog: projects,
+        sessions: sessions,
+        sessionCatalog: sessions,
+        provisioner: provisioner,
+      );
+      final result = await service.bootstrapDefaultProject(
+        cancellation: CancellationSource().token,
+      );
+      expect(result.status, ProjectCommandStatus.unsupported);
+      expect((await projects.list()).available, isEmpty);
+    });
+  });
+
+  group('deletion saga', () {
+    test('reassigns chats to default, tombstones, keeps files', () async {
+      final env = _Env.linux();
+      await env.service.bootstrapDefaultProject(
+        cancellation: CancellationSource().token,
+      );
       env.fs.mount(components: ['home', 'work']);
       env.fs.bindHandle('h', ['home', 'work']);
       env.picker.enqueue(
@@ -145,7 +239,7 @@ void main() {
       );
       expect(deleted.isSuccess, isTrue);
       expect(await env.projects.load(project.id), isNull);
-      expect((await env.sessions.load(chat.id))!.projectId, isNull);
+      expect((await env.sessions.load(chat.id))!.projectId, defaultProjectId);
       expect(await env.fs.exists(env.fs.nodes.values.first.identity), isTrue);
     });
 
@@ -247,6 +341,7 @@ final class _Env {
     : fs = FakeDesktopFilesystem(platformKind: ProjectPlatformKind.linux),
       picker = ScriptedProjectDirectoryPicker(),
       grants = InMemoryProjectDirectoryGrantStore(),
+      sandbox = FakeMobileSandbox(platformKind: ProjectPlatformKind.linux),
       projects = InMemoryProjectRepository(),
       sessions = InMemoryAgentSessionRepository() {
     provisioner = DesktopProjectRootProvisioner(
@@ -254,6 +349,7 @@ final class _Env {
       filesystem: fs,
       picker: picker,
       grantStore: grants,
+      sandbox: sandbox,
     );
     service = rebuild();
   }
@@ -261,6 +357,7 @@ final class _Env {
   final FakeDesktopFilesystem fs;
   final ScriptedProjectDirectoryPicker picker;
   final InMemoryProjectDirectoryGrantStore grants;
+  final FakeMobileSandbox sandbox;
   final InMemoryProjectRepository projects;
   final InMemoryAgentSessionRepository sessions;
   late DesktopProjectRootProvisioner provisioner;

@@ -18,6 +18,7 @@ final class ProjectSummary {
     required this.createdAtMicros,
     required this.updatedAtMicros,
     required this.lifecycle,
+    this.kind = ProjectKind.user,
     this.deletionOperationId,
     this.chatCount = 0,
   });
@@ -30,8 +31,11 @@ final class ProjectSummary {
   final int createdAtMicros;
   final int updatedAtMicros;
   final ProjectLifecycle lifecycle;
+  final ProjectKind kind;
   final ProjectDeletionOperationId? deletionOperationId;
   final int chatCount;
+
+  bool get isDefaultProject => kind == ProjectKind.defaultProject;
 
   ProjectSummary withChatCount(int count) => ProjectSummary(
     id: id,
@@ -42,6 +46,7 @@ final class ProjectSummary {
     createdAtMicros: createdAtMicros,
     updatedAtMicros: updatedAtMicros,
     lifecycle: lifecycle,
+    kind: kind,
     deletionOperationId: deletionOperationId,
     chatCount: count,
   );
@@ -58,6 +63,7 @@ final class ProjectSummary {
           other.createdAtMicros == createdAtMicros &&
           other.updatedAtMicros == updatedAtMicros &&
           other.lifecycle == lifecycle &&
+          other.kind == kind &&
           other.deletionOperationId == deletionOperationId &&
           other.chatCount == chatCount;
 
@@ -71,6 +77,7 @@ final class ProjectSummary {
     createdAtMicros,
     updatedAtMicros,
     lifecycle,
+    kind,
     deletionOperationId,
     chatCount,
   );
@@ -125,6 +132,7 @@ ProjectSummary summarizeProject(ProjectRecord record, {int chatCount = 0}) {
     createdAtMicros: record.createdAtMicros,
     updatedAtMicros: record.updatedAtMicros,
     lifecycle: record.lifecycle,
+    kind: record.kind,
     deletionOperationId: record.deletionOperationId,
     chatCount: chatCount,
   );

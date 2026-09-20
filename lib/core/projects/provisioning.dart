@@ -10,6 +10,7 @@ final class ProjectPlatformCapabilities {
     required this.projectCreationSupported,
     required this.desktopExternalRoots,
     required this.mobileSandboxRoots,
+    required this.appManagedSandboxRoots,
     required this.additionalDirectories,
     required this.regrantSupported,
     required this.pickerSupported,
@@ -19,6 +20,10 @@ final class ProjectPlatformCapabilities {
   final bool projectCreationSupported;
   final bool desktopExternalRoots;
   final bool mobileSandboxRoots;
+
+  /// Whether the application can create its own support-directory sandbox root
+  /// for the protected default project without a user filesystem grant.
+  final bool appManagedSandboxRoots;
   final bool additionalDirectories;
   final bool regrantSupported;
   final bool pickerSupported;
@@ -28,6 +33,7 @@ final class ProjectPlatformCapabilities {
     projectCreationSupported: true,
     desktopExternalRoots: true,
     mobileSandboxRoots: false,
+    appManagedSandboxRoots: true,
     additionalDirectories: true,
     regrantSupported: true,
     pickerSupported: true,
@@ -38,6 +44,7 @@ final class ProjectPlatformCapabilities {
     projectCreationSupported: true,
     desktopExternalRoots: true,
     mobileSandboxRoots: false,
+    appManagedSandboxRoots: true,
     additionalDirectories: true,
     regrantSupported: true,
     pickerSupported: true,
@@ -48,6 +55,7 @@ final class ProjectPlatformCapabilities {
     projectCreationSupported: true,
     desktopExternalRoots: true,
     mobileSandboxRoots: false,
+    appManagedSandboxRoots: true,
     additionalDirectories: true,
     regrantSupported: true,
     pickerSupported: true,
@@ -58,6 +66,7 @@ final class ProjectPlatformCapabilities {
     projectCreationSupported: true,
     desktopExternalRoots: false,
     mobileSandboxRoots: true,
+    appManagedSandboxRoots: true,
     additionalDirectories: false,
     regrantSupported: false,
     pickerSupported: false,
@@ -68,6 +77,7 @@ final class ProjectPlatformCapabilities {
     projectCreationSupported: true,
     desktopExternalRoots: false,
     mobileSandboxRoots: true,
+    appManagedSandboxRoots: true,
     additionalDirectories: false,
     regrantSupported: false,
     pickerSupported: false,
@@ -78,6 +88,7 @@ final class ProjectPlatformCapabilities {
     projectCreationSupported: false,
     desktopExternalRoots: false,
     mobileSandboxRoots: false,
+    appManagedSandboxRoots: false,
     additionalDirectories: false,
     regrantSupported: false,
     pickerSupported: false,

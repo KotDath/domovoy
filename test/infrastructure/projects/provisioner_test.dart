@@ -46,6 +46,68 @@ void main() {
       );
     });
 
+    test('linux app sandbox provisions without a picker', () async {
+      final fs = FakeDesktopFilesystem(platformKind: ProjectPlatformKind.linux);
+      final sandbox = FakeMobileSandbox(
+        platformKind: ProjectPlatformKind.linux,
+      );
+      final provisioner = DesktopProjectRootProvisioner(
+        capabilities: ProjectPlatformCapabilities.linux,
+        filesystem: fs,
+        picker: ScriptedProjectDirectoryPicker(),
+        grantStore: InMemoryProjectDirectoryGrantStore(),
+        sandbox: sandbox,
+      );
+      final staged = await provisioner.stageRoot(
+        mobile: MobileSandboxProvisionRequest(
+          projectId: ProjectId('default'),
+          rootId: ProjectRootId('default'),
+        ),
+        cancellation: CancellationSource().token,
+      );
+      expect(staged, isA<MobileSandboxRootResult>());
+      await provisioner.acknowledgeRoot(staged);
+      expect(
+        await provisioner.revalidateRoot(
+          rootId: ProjectRootId('default'),
+          projectId: ProjectId('default'),
+        ),
+        ProjectAccessStatus.active,
+      );
+      expect(sandbox.pickerCalls, 0);
+      expect(
+        provisioner.identityForRoot(rootId: ProjectRootId('default')),
+        isNotNull,
+      );
+    });
+
+    test('desktop without an app sandbox reports unsupported', () async {
+      final provisioner = DesktopProjectRootProvisioner(
+        capabilities: ProjectPlatformCapabilities.linux,
+        filesystem: FakeDesktopFilesystem(
+          platformKind: ProjectPlatformKind.linux,
+        ),
+        picker: ScriptedProjectDirectoryPicker(),
+        grantStore: InMemoryProjectDirectoryGrantStore(),
+      );
+      await expectLater(
+        provisioner.stageRoot(
+          mobile: MobileSandboxProvisionRequest(
+            projectId: ProjectId('default'),
+            rootId: ProjectRootId('default'),
+          ),
+          cancellation: CancellationSource().token,
+        ),
+        throwsA(
+          isA<ProjectException>().having(
+            (error) => error.error.kind,
+            'kind',
+            ProjectErrorKind.unsupported,
+          ),
+        ),
+      );
+    });
+
     test('create collision does not adopt existing folder', () async {
       final fs = FakeDesktopFilesystem(platformKind: ProjectPlatformKind.linux);
       fs.mount(components: ['home', 'parent']);

@@ -6,6 +6,7 @@ import '../../../core/agents/errors.dart';
 import '../../../core/agents/repository.dart';
 import '../../../core/llm/cancellation.dart';
 import '../../../core/projects/catalog.dart';
+import '../../../core/projects/default_project.dart';
 import '../../../core/projects/enums.dart';
 import '../../../core/projects/errors.dart';
 import '../../../core/projects/grants.dart';
@@ -101,6 +102,133 @@ final class ProjectApplicationService {
         return denied(sanitizedProjectPersistenceError());
       }
     });
+  }
+
+  /// Creates the protected default project and adopts unassigned chats.
+  ///
+  /// The operation is idempotent: running it on every startup leaves an
+  /// existing healthy default project and its membership untouched.
+  Future<ProjectCommandResult> bootstrapDefaultProject({
+    required CancellationToken cancellation,
+  }) {
+    return _lock.run(() async {
+      try {
+        if (!capabilities.projectCreationSupported ||
+            !capabilities.appManagedSandboxRoots) {
+          return const ProjectCommandResult.unsupported();
+        }
+        _throwIfCancelled(cancellation);
+        final existing = await projects.load(defaultProjectId);
+        if (existing != null && existing.kind != ProjectKind.defaultProject) {
+          throwProject(
+            ProjectErrorKind.conflict,
+            'The reserved default project identity is unavailable.',
+          );
+        }
+        var current = existing;
+        if (current == null) {
+          final recovered = await provisioner.revalidateRoot(
+            rootId: defaultProjectRootId,
+            projectId: defaultProjectId,
+          );
+          switch (recovered) {
+            case ProjectAccessStatus.active:
+              break;
+            case ProjectAccessStatus.missing:
+              final staged = await _stageDefaultRoot(cancellation);
+              if (staged == null) {
+                return const ProjectCommandResult.unsupported();
+              }
+            case ProjectAccessStatus.unsupported:
+              return const ProjectCommandResult.unsupported();
+            case ProjectAccessStatus.corrupt:
+            case ProjectAccessStatus.unverifiable:
+            case ProjectAccessStatus.requiresRegrant:
+            case ProjectAccessStatus.revoked:
+              return ProjectCommandResult.failed(sanitizedProjectAccessError());
+          }
+          final now = _now();
+          current = ProjectRecord(
+            id: defaultProjectId,
+            revision: 0,
+            name: defaultProjectName,
+            root: AppSandboxRootReference(defaultProjectRootId),
+            kind: ProjectKind.defaultProject,
+            createdAtMicros: now,
+            updatedAtMicros: now,
+          );
+          await _runBoundary(ProjectMutationBoundary.beforeProjectCommit);
+          _throwIfCancelled(cancellation);
+          await projects.save(
+            current,
+            expectedRevision: 0,
+            cancellation: cancellation,
+          );
+          await _runBoundary(ProjectMutationBoundary.afterProjectCommit);
+        } else {
+          if (current.lifecycle != ProjectLifecycle.active) {
+            throwProject(
+              ProjectErrorKind.conflict,
+              'The default project is not active.',
+            );
+          }
+          final root = current.root;
+          if (root is! AppSandboxRootReference) {
+            throwProject(
+              ProjectErrorKind.configuration,
+              'The default project root is not an app sandbox.',
+            );
+          }
+          final status = await provisioner.revalidateRoot(
+            rootId: root.rootId,
+            projectId: current.id,
+          );
+          if (status == ProjectAccessStatus.missing) {
+            final staged = await _stageDefaultRoot(cancellation);
+            if (staged == null) {
+              return ProjectCommandResult.failed(sanitizedProjectAccessError());
+            }
+            final successor = current.copyWith(
+              revision: current.revision + 1,
+              updatedAtMicros: _now(),
+            );
+            await projects.save(
+              successor,
+              expectedRevision: current.revision,
+              cancellation: cancellation,
+            );
+            current = successor;
+          } else if (status != ProjectAccessStatus.active) {
+            await _migrateUnassignedSessions(cancellation);
+            return ProjectCommandResult.failed(sanitizedProjectAccessError());
+          }
+        }
+        await _migrateUnassignedSessions(cancellation);
+        return ProjectCommandResult.succeeded(project: current);
+      } on ProjectException catch (error) {
+        return _mapFailure(error);
+      } on Object {
+        return ProjectCommandResult.failed(sanitizedProjectPersistenceError());
+      }
+    });
+  }
+
+  Future<MobileSandboxRootResult?> _stageDefaultRoot(
+    CancellationToken cancellation,
+  ) async {
+    _throwIfCancelled(cancellation);
+    final staged = await provisioner.stageRoot(
+      mobile: MobileSandboxProvisionRequest(
+        projectId: defaultProjectId,
+        rootId: defaultProjectRootId,
+      ),
+      cancellation: cancellation,
+    );
+    if (staged is! MobileSandboxRootResult) {
+      return null;
+    }
+    await provisioner.acknowledgeRoot(staged);
+    return staged;
   }
 
   Future<ProjectCommandResult> createProject({
@@ -227,6 +355,9 @@ final class ProjectApplicationService {
             'Project ${id.value} was not found.',
           );
         }
+        if (existing.isDefaultProject || id.isDefault) {
+          throw ProjectException(sanitizedProjectProtectedError());
+        }
         if (existing.revision != expectedRevision &&
             existing.lifecycle != ProjectLifecycle.deleting) {
           throwProject(
@@ -251,7 +382,7 @@ final class ProjectApplicationService {
         }
         await _runBoundary(ProjectMutationBoundary.afterDeletingPublished);
         await stopSelectedMember?.call();
-        await _unassignMembers(id);
+        await _reassignMembers(id);
         await _runBoundary(ProjectMutationBoundary.afterMembersUnassigned);
         await _proveNoHealthyMembers(id);
         await _runBoundary(ProjectMutationBoundary.beforeTombstone);
@@ -291,7 +422,7 @@ final class ProjectApplicationService {
           continue;
         }
         await stopSelectedMember?.call(summary.id);
-        await _unassignMembers(summary.id);
+        await _reassignMembers(summary.id);
         try {
           await _proveNoHealthyMembers(summary.id);
         } on ProjectException {
@@ -500,27 +631,50 @@ final class ProjectApplicationService {
     }
   }
 
-  Future<void> _unassignMembers(ProjectId projectId) async {
+  Future<void> _migrateUnassignedSessions(
+    CancellationToken cancellation,
+  ) async {
+    await _reassignSessions(
+      from: null,
+      to: defaultProjectId,
+      cancellation: cancellation,
+    );
+  }
+
+  Future<void> _reassignMembers(ProjectId projectId) async {
+    final defaultExists = await projects.load(defaultProjectId) != null;
+    await _reassignSessions(
+      from: projectId,
+      to: defaultExists ? defaultProjectId : null,
+      cancellation: CancellationSource().token,
+    );
+  }
+
+  Future<void> _reassignSessions({
+    required ProjectId? from,
+    required ProjectId? to,
+    required CancellationToken cancellation,
+  }) async {
     for (var attempt = 0; attempt < maxMembershipRetries; attempt += 1) {
       final snapshot = await sessionCatalog.list();
       var changed = false;
       for (final summary in snapshot.available) {
-        if (summary.projectId != projectId) {
+        if (summary.projectId != from) {
           continue;
         }
         final record = await sessions.load(summary.id);
-        if (record == null || record.projectId != projectId) {
+        if (record == null || record.projectId != from) {
           continue;
         }
         try {
           await sessions.save(
             record.copyWith(
               revision: record.revision + 1,
-              projectId: null,
+              projectId: to,
               updatedAtMicros: _now(),
             ),
             expectedRevision: record.revision,
-            cancellation: CancellationSource().token,
+            cancellation: cancellation,
           );
           changed = true;
         } on AgentException catch (error) {

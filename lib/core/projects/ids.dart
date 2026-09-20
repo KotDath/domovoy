@@ -9,9 +9,18 @@ final class ProjectId {
     return ProjectId(requireString(map, 'value'));
   }
 
+  /// Reserved identity of the protected, application-managed default project.
+  static const defaultProjectValue = 'default';
+
+  /// The protected default project identity.
+  static final ProjectId defaultProject = ProjectId(defaultProjectValue);
+
   static const jsonType = 'project.id';
 
   final String value;
+
+  /// Whether this identity is the reserved, protected default project.
+  bool get isDefault => value == defaultProjectValue;
 
   Map<String, Object?> toJson() =>
       typedJson(type: jsonType, fields: <String, Object?>{'value': value});

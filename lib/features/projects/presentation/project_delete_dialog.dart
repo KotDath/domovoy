@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/projects/default_project.dart';
 import '../../../design_system/design_system.dart';
 import '../application/project_workspace_controller.dart';
-import '../application/project_workspace_state.dart';
 
 Future<void> showProjectDeleteDialog({
   required BuildContext context,
@@ -31,7 +31,7 @@ Future<void> showProjectDeleteDialog({
               ),
               const SizedBox(height: DomovoyDimensions.space3),
               const Text(
-                'Чаты перейдут в «$unassignedProjectLabel». '
+                'Чаты перейдут в защищённый проект «$defaultProjectName». '
                 'Доступ к каталогам будет отозван. Файлы пользователя не удаляются.',
               ),
               const SizedBox(height: DomovoyDimensions.space6),

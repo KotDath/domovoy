@@ -106,7 +106,7 @@ final class IoMobileProjectSandbox implements MobileProjectSandbox {
   IoMobileProjectSandbox({
     required this.platformKind,
     required this.applicationSupportDirectoryResolver,
-  }) : assert(platformKind.isMobileSandbox);
+  }) : assert(platformKind != ProjectPlatformKind.web);
 
   @override
   final ProjectPlatformKind platformKind;

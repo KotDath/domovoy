@@ -41,6 +41,42 @@ void main() {
       expect(await restarted.load(first.id), first);
     });
 
+    test('v1 records migrate to kind user and republish as v2', () async {
+      final storage = _FakeJsonlStorage();
+      final id = ProjectId('legacy');
+      final v1Record = Map<String, Object?>.from(_record('legacy').toJson())
+        ..['version'] = ProjectRecord.legacyJsonVersion
+        ..remove('kind');
+      final envelope = <String, Object?>{
+        'type': JsonlProjectEnvelope.type,
+        'version': JsonlProjectEnvelope.version,
+        'projectId': 'legacy',
+        'sequence': 0,
+        'operation': JsonlProjectOperation.upsert.name,
+        'expectedRevision': 0,
+        'recordRevision': 0,
+        'record': v1Record,
+      };
+      storage.replace(
+        const JsonlProjectKeyCodec().encode(id),
+        '${jsonEncode(envelope)}\n',
+      );
+      final store = JsonlProjectStore(storage: storage);
+      final loaded = await store.load(id);
+      expect(loaded, isNotNull);
+      expect(loaded!.kind, ProjectKind.user);
+      expect(loaded, _record('legacy'));
+
+      await store.save(
+        loaded.copyWith(revision: 1, updatedAtMicros: 3),
+        expectedRevision: 0,
+        cancellation: CancellationSource().token,
+      );
+      final reloaded = await JsonlProjectStore(storage: storage).load(id);
+      expect(reloaded!.revision, 1);
+      expect(reloaded.kind, ProjectKind.user);
+    });
+
     test('malformed complete line isolates the neighbor', () async {
       final storage = _FakeJsonlStorage();
       final store = JsonlProjectStore(storage: storage);
