@@ -35,6 +35,9 @@ void main() {
       final russian = parseMemoryRememberPhrases(
         'Запомни, что деплой делается только через kubernetes',
       );
+      final russianGlobal = parseMemoryRememberPhrases(
+        'запомни глобально, что меня зовут даниил',
+      );
       final english = parseMemoryRememberPhrases(
         'Remember globally that I prefer concise answers.',
       );
@@ -43,6 +46,10 @@ void main() {
       expect(russian.single.scope, MemoryScope.project);
       expect(russian.single.layer, MemoryLayer.working);
       expect(russian.single.content, 'деплой делается только через kubernetes');
+      expect(russianGlobal, hasLength(1));
+      expect(russianGlobal.single.scope, MemoryScope.global);
+      expect(russianGlobal.single.layer, MemoryLayer.longTerm);
+      expect(russianGlobal.single.content, 'меня зовут даниил');
       expect(english, hasLength(1));
       expect(english.single.scope, MemoryScope.global);
       expect(english.single.layer, MemoryLayer.longTerm);

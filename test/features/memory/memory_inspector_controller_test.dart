@@ -209,6 +209,67 @@ void main() {
       },
     );
 
+    test('a completed revision of the attached chat is recovered', () async {
+      final harness = _Harness();
+      final initial = AgentSessionSnapshot(
+        id: AgentSessionId('session-recovery'),
+        definition: testDefinition(),
+        lifecycle: AgentSessionLifecycle.idle,
+        transcript: AgentTranscript(messages: const <LlmMessage>[]),
+        usage: LlmUsage(),
+        modelTurns: 0,
+        toolAttempts: 0,
+        revision: 1,
+        compactionState: null,
+        projectId: projectId,
+      );
+      final completed = AgentSessionSnapshot(
+        id: initial.id,
+        definition: initial.definition,
+        lifecycle: AgentSessionLifecycle.idle,
+        transcript: AgentTranscript(
+          messages: <LlmMessage>[
+            LlmMessage(
+              role: LlmMessageRole.user,
+              parts: <LlmContentPart>[
+                LlmTextPart('запомни глобально, что меня зовут даниил'),
+              ],
+            ),
+            LlmMessage(
+              role: LlmMessageRole.assistant,
+              parts: <LlmContentPart>[LlmTextPart('Запомнил.')],
+            ),
+          ],
+          messageIds: <AgentTranscriptMessageId?>[
+            AgentTranscriptMessageId('recovery-user'),
+            AgentTranscriptMessageId('recovery-assistant'),
+          ],
+        ),
+        usage: LlmUsage(),
+        modelTurns: 1,
+        toolAttempts: 0,
+        revision: 2,
+        compactionState: null,
+        projectId: projectId,
+      );
+
+      await harness.controller.attachSession(
+        session: initial,
+        projectId: projectId,
+      );
+      await harness.controller.attachSession(
+        session: completed,
+        projectId: projectId,
+      );
+
+      final candidates = await harness.candidates.list(cancellation: open);
+      expect(candidates, hasLength(1));
+      expect(candidates.single.layer, MemoryLayer.longTerm);
+      expect(candidates.single.content, 'меня зовут даниил');
+      expect(harness.controller.state.candidates, hasLength(1));
+      harness.dispose();
+    });
+
     test(
       'confirmation creates an active entry and accepts the candidate',
       () async {

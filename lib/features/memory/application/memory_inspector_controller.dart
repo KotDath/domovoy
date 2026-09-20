@@ -61,8 +61,14 @@ final class MemoryInspectorController extends ChangeNotifier
     required AgentSessionSnapshot? session,
     required ProjectId? projectId,
   }) async {
+    final previousSession = _session;
     final sessionChanged =
-        _session?.id != session?.id || _projectId != projectId;
+        previousSession?.id != session?.id || _projectId != projectId;
+    final completedSnapshotChanged =
+        !sessionChanged &&
+        session != null &&
+        session.lifecycle == AgentSessionLifecycle.idle &&
+        previousSession?.revision != session.revision;
     _session = session;
     _projectId = projectId;
     _emit(
@@ -72,9 +78,9 @@ final class MemoryInspectorController extends ChangeNotifier
         sessionId: session?.id,
       ),
     );
-    if (sessionChanged) {
+    if (sessionChanged || completedSnapshotChanged) {
       if (session != null && projectId != null) {
-        unawaited(_resumeAttachedSession(session, projectId));
+        await _resumeAttachedSession(session, projectId);
       }
       await refresh();
     }
