@@ -36,6 +36,13 @@ edit affects the next message without recreating the chat. Profile data and
 memory remain separate. See [docs/personalization.md](docs/personalization.md)
 for the data model, request path, and demo script.
 
+## Controlled tasks
+
+Domovoy can run an approved task plan through planning, execution, validation,
+and done while preserving pause/resume checkpoints and enforcing project or task
+invariants. See [docs/day-13-15.md](docs/day-13-15.md) for the normative behavior
+and reproducible demonstration scripts.
+
 ## Linux development
 
 The application stores an optional DeepSeek API-key override with Secret
