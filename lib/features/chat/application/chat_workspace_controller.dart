@@ -24,7 +24,9 @@ final class ChatWorkspaceController {
     this.settingsLauncher,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
+    AgentClock? clock,
   }) : titlePolicy = titlePolicy ?? DeterministicAgentSessionTitlePolicy(),
+       clock = clock ?? SystemAgentClock(),
        _agent = runtime.agent(definition),
        _state = ChatWorkspaceState.initial(
          providerGroups: registry.providerGroups,
@@ -40,6 +42,7 @@ final class ChatWorkspaceController {
   final ChatSettingsLauncher? settingsLauncher;
   final ChatStreamPacingPolicy pacingPolicy;
   final ChatStreamScheduler scheduler;
+  final AgentClock clock;
   final Agent _agent;
 
   final StreamController<ChatWorkspaceState> _states =
@@ -349,6 +352,7 @@ final class ChatWorkspaceController {
             runId: run.id,
             sessionId: session.id,
             model: session.snapshot.selection.model,
+            startedElapsed: clock.elapsed,
           ),
           error: null,
         ),
@@ -366,7 +370,7 @@ final class ChatWorkspaceController {
           final live = _state.liveRun;
           final next = _state.copyWith(
             selectedSession: session.snapshot,
-            liveRun: live?.fold(event),
+            liveRun: live?.fold(event, elapsed: clock.elapsed),
           );
           if (event is AgentReasoningDelta || event is AgentAnswerDelta) {
             _reducePaced(next, generation, run);

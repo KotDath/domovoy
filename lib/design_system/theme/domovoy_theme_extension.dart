@@ -8,12 +8,14 @@ final class DomovoyThemeTokens extends ThemeExtension<DomovoyThemeTokens> {
     required this.surface,
     required this.elevatedSurface,
     required this.selectedSurface,
+    required this.hover,
     required this.border,
     required this.divider,
     required this.textPrimary,
     required this.textSecondary,
     required this.textMuted,
     required this.accent,
+    required this.accentMuted,
     required this.accentInk,
     required this.userMessage,
     required this.reasoning,
@@ -35,12 +37,14 @@ final class DomovoyThemeTokens extends ThemeExtension<DomovoyThemeTokens> {
   final Color surface;
   final Color elevatedSurface;
   final Color selectedSurface;
+  final Color hover;
   final Color border;
   final Color divider;
   final Color textPrimary;
   final Color textSecondary;
   final Color textMuted;
   final Color accent;
+  final Color accentMuted;
   final Color accentInk;
   final Color userMessage;
   final Color reasoning;
@@ -63,12 +67,14 @@ final class DomovoyThemeTokens extends ThemeExtension<DomovoyThemeTokens> {
     Color? surface,
     Color? elevatedSurface,
     Color? selectedSurface,
+    Color? hover,
     Color? border,
     Color? divider,
     Color? textPrimary,
     Color? textSecondary,
     Color? textMuted,
     Color? accent,
+    Color? accentMuted,
     Color? accentInk,
     Color? userMessage,
     Color? reasoning,
@@ -89,12 +95,14 @@ final class DomovoyThemeTokens extends ThemeExtension<DomovoyThemeTokens> {
     surface: surface ?? this.surface,
     elevatedSurface: elevatedSurface ?? this.elevatedSurface,
     selectedSurface: selectedSurface ?? this.selectedSurface,
+    hover: hover ?? this.hover,
     border: border ?? this.border,
     divider: divider ?? this.divider,
     textPrimary: textPrimary ?? this.textPrimary,
     textSecondary: textSecondary ?? this.textSecondary,
     textMuted: textMuted ?? this.textMuted,
     accent: accent ?? this.accent,
+    accentMuted: accentMuted ?? this.accentMuted,
     accentInk: accentInk ?? this.accentInk,
     userMessage: userMessage ?? this.userMessage,
     reasoning: reasoning ?? this.reasoning,
@@ -120,12 +128,14 @@ final class DomovoyThemeTokens extends ThemeExtension<DomovoyThemeTokens> {
       surface: Color.lerp(surface, other.surface, t)!,
       elevatedSurface: Color.lerp(elevatedSurface, other.elevatedSurface, t)!,
       selectedSurface: Color.lerp(selectedSurface, other.selectedSurface, t)!,
+      hover: Color.lerp(hover, other.hover, t)!,
       border: Color.lerp(border, other.border, t)!,
       divider: Color.lerp(divider, other.divider, t)!,
       textPrimary: Color.lerp(textPrimary, other.textPrimary, t)!,
       textSecondary: Color.lerp(textSecondary, other.textSecondary, t)!,
       textMuted: Color.lerp(textMuted, other.textMuted, t)!,
       accent: Color.lerp(accent, other.accent, t)!,
+      accentMuted: Color.lerp(accentMuted, other.accentMuted, t)!,
       accentInk: Color.lerp(accentInk, other.accentInk, t)!,
       userMessage: Color.lerp(userMessage, other.userMessage, t)!,
       reasoning: Color.lerp(reasoning, other.reasoning, t)!,

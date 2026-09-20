@@ -45,6 +45,7 @@ class _ProjectCreateFormState extends State<_ProjectCreateForm> {
   @override
   Widget build(BuildContext context) {
     final capabilities = widget.controller.capabilities;
+    final tokens = context.domovoyTheme;
     return Semantics(
       namesRoute: true,
       label: 'Создание проекта',
@@ -54,39 +55,81 @@ class _ProjectCreateFormState extends State<_ProjectCreateForm> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Новый проект', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: DomovoyDimensions.space4),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Новый проект',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                DomovoyQuietButton(
+                  minSize: const Size.square(DomovoyDimensions.minimumTarget),
+                  alignment: Alignment.center,
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('×'),
+                ),
+              ],
+            ),
+            const SizedBox(height: DomovoyDimensions.space3),
+            Text(
+              'Одна корневая папка, несколько чатов и общий контекст.',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: tokens.textMuted),
+            ),
+            const SizedBox(height: DomovoyDimensions.space5),
             TextField(
               key: const ValueKey('project-create-name'),
               controller: _name,
               autofocus: true,
-              decoration: const InputDecoration(labelText: 'Название'),
+              decoration: const InputDecoration(labelText: 'Название проекта'),
             ),
             if (capabilities.desktopExternalRoots) ...[
-              const SizedBox(height: DomovoyDimensions.space3),
-              ListTile(
+              const SizedBox(height: DomovoyDimensions.space5),
+              Text(
+                'Корневая папка',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+              const SizedBox(height: DomovoyDimensions.space2),
+              DomovoyQuietButton(
                 key: const ValueKey('project-root-attach'),
-                selected: _mode == ProjectDesktopRootMode.attachExisting,
-                title: const Text('Прикрепить существующую папку'),
-                subtitle: const Text('Чтение и запись корневого каталога'),
-                onTap: () => setState(
+                expand: true,
+                tone: _mode == ProjectDesktopRootMode.attachExisting
+                    ? DomovoyButtonTone.selected
+                    : DomovoyButtonTone.quiet,
+                onPressed: () => setState(
                   () => _mode = ProjectDesktopRootMode.attachExisting,
                 ),
-              ),
-              ListTile(
-                key: const ValueKey('project-root-create'),
-                selected: _mode == ProjectDesktopRootMode.createExclusive,
-                title: const Text('Создать новую папку проекта'),
-                onTap: () => setState(
-                  () => _mode = ProjectDesktopRootMode.createExclusive,
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Прикрепить существующую папку'),
+                    Text('Чтение и запись корневого каталога'),
+                  ],
                 ),
               ),
-              CheckboxListTile(
+              DomovoyQuietButton(
+                key: const ValueKey('project-root-create'),
+                expand: true,
+                tone: _mode == ProjectDesktopRootMode.createExclusive
+                    ? DomovoyButtonTone.selected
+                    : DomovoyButtonTone.quiet,
+                onPressed: () => setState(
+                  () => _mode = ProjectDesktopRootMode.createExclusive,
+                ),
+                child: const Text('Создать новую папку проекта'),
+              ),
+              const SizedBox(height: DomovoyDimensions.space3),
+              DomovoyQuietButton(
                 key: const ValueKey('project-add-additional'),
-                value: _additional,
-                onChanged: (value) =>
-                    setState(() => _additional = value ?? false),
-                title: const Text('Дополнительные каталоги только для чтения'),
+                expand: true,
+                onPressed: () => setState(() => _additional = !_additional),
+                child: Text(
+                  _additional
+                      ? 'Дополнительные каталоги: да, только чтение'
+                      : '＋ Добавить дополнительные папки',
+                ),
               ),
             ],
             if (capabilities.mobileSandboxRoots)
@@ -99,18 +142,25 @@ class _ProjectCreateFormState extends State<_ProjectCreateForm> {
                 ),
               ),
             const SizedBox(height: DomovoyDimensions.space6),
-            Align(
-              alignment: Alignment.centerRight,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(
-                  minHeight: DomovoyDimensions.minimumTarget,
+            Row(
+              children: [
+                DomovoyQuietButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Отмена'),
                 ),
-                child: FilledButton(
-                  key: const ValueKey('project-create-confirm'),
-                  onPressed: _submit,
-                  child: const Text('Создать'),
+                const Spacer(),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    minHeight: DomovoyDimensions.minimumTarget,
+                  ),
+                  child: DomovoyQuietButton(
+                    key: const ValueKey('project-create-confirm'),
+                    tone: DomovoyButtonTone.accent,
+                    onPressed: _submit,
+                    child: const Text('Создать'),
+                  ),
                 ),
-              ),
+              ],
             ),
           ],
         ),

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/agents/agents.dart';
 import '../../../core/projects/enums.dart';
 import '../../../design_system/design_system.dart';
 import '../application/project_workspace_controller.dart';
@@ -13,158 +14,240 @@ class ProjectSidebarSection extends StatelessWidget {
   const ProjectSidebarSection({
     required this.controller,
     required this.state,
+    this.selectedChatId,
+    this.onSelectChat,
+    this.onNewChat,
     super.key,
   });
 
   final ProjectWorkspaceController controller;
   final ProjectWorkspaceState state;
+  final AgentSessionId? selectedChatId;
+  final ValueChanged<AgentSessionId>? onSelectChat;
+  final VoidCallback? onNewChat;
 
   @override
   Widget build(BuildContext context) {
+    final projects = state.groups
+        .where((group) => group.kind == ProjectSelectionKind.project)
+        .toList(growable: false);
+    final unassigned = state.groups.cast<ProjectChatGroup?>().firstWhere(
+      (group) => group?.kind == ProjectSelectionKind.unassigned,
+      orElse: () => null,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SectionLabel(
+          label: 'Проекты',
+          actionKey: 'project-create',
+          onAction: !state.canCreateProject || state.busy
+              ? null
+              : () => unawaited(unawaitedCreate(context)),
+          actionLabel: 'Новый проект',
+        ),
+        if (!state.canCreateProject)
+          Semantics(
+            label: 'Создание проектов недоступно на этой платформе',
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: DomovoyDimensions.space2),
+              child: Text(
+                key: const ValueKey('project-unsupported'),
+                'Создание проектов в браузере недоступно. Чаты без проекта остаются доступны.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ),
+        for (final group in projects) _projectBlock(context, group),
+        _SectionLabel(
+          label: 'Чаты',
+          actionKey: 'section-new-chat',
+          onAction: onNewChat,
+          actionLabel: 'Новый чат в текущем проекте',
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            DomovoyDimensions.space3,
+            DomovoyDimensions.space1,
+            DomovoyDimensions.space3,
+            DomovoyDimensions.space2,
+          ),
+          child: Text(
+            unassignedProjectLabel,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+        ),
+        if (unassigned != null) _unassigned(context, unassigned),
+        if (state.mutationError != null)
+          Padding(
+            padding: const EdgeInsets.only(top: DomovoyDimensions.space2),
+            child: DomovoyStatusChip(
+              key: const ValueKey('project-error'),
+              label: state.mutationError!.message,
+              tone: DomovoyStatusTone.warning,
+            ),
+          ),
+        if (state.cleanupWarning)
+          const Padding(
+            padding: EdgeInsets.only(top: DomovoyDimensions.space2),
+            child: DomovoyStatusChip(
+              key: ValueKey('project-cleanup-warning'),
+              label: 'Каталог не был удалён при отмене',
+              tone: DomovoyStatusTone.warning,
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _projectBlock(BuildContext context, ProjectChatGroup group) {
+    final tokens = context.domovoyTheme;
+    final selected = state.selectedProjectId == group.projectId;
+    final accessLabel = _accessLabel(group);
     return Padding(
-      padding: DomovoyDimensions.listInsets,
+      padding: const EdgeInsets.only(bottom: DomovoyDimensions.space3),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('ПРОЕКТЫ', style: Theme.of(context).textTheme.labelSmall),
-          const SizedBox(height: DomovoyDimensions.space2),
-          if (!state.canCreateProject)
-            Semantics(
-              label: 'Создание проектов недоступно на этой платформе',
-              child: Padding(
-                padding: const EdgeInsets.only(
-                  bottom: DomovoyDimensions.space2,
-                ),
-                child: Text(
-                  key: const ValueKey('project-unsupported'),
-                  'Создание проектов в браузере недоступно. Чаты без проекта остаются доступны.',
-                  style: Theme.of(context).textTheme.bodySmall,
+          Row(
+            children: [
+              Expanded(
+                child: Semantics(
+                  selected: selected,
+                  button: true,
+                  label:
+                      '${group.title}${accessLabel == null ? '' : ', $accessLabel'}',
+                  child: DomovoyQuietButton(
+                    key: ValueKey('project-row:${group.projectId?.value}'),
+                    onPressed: () {
+                      if (group.projectId != null) {
+                        unawaited(controller.selectProject(group.projectId!));
+                      }
+                    },
+                    child: Row(
+                      children: [
+                        DomovoyIcon(
+                          DomovoyIconKind.folder,
+                          color: tokens.textSecondary,
+                        ),
+                        const SizedBox(width: DomovoyDimensions.space3),
+                        Expanded(
+                          child: Text(
+                            group.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-            )
-          else
-            ConstrainedBox(
-              constraints: const BoxConstraints(
-                minHeight: DomovoyDimensions.minimumTarget,
-              ),
-              child: OutlinedButton.icon(
-                key: const ValueKey('project-create'),
-                onPressed: state.busy
-                    ? null
-                    : () => unawaited(unawaitedCreate(context)),
-                icon: const Icon(Icons.create_new_folder_outlined),
-                label: const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Новый проект'),
+              if (selected && !group.deleting)
+                DomovoyQuietButton(
+                  key: const ValueKey('project-delete'),
+                  minSize: const Size.square(DomovoyDimensions.minimumTarget),
+                  alignment: Alignment.center,
+                  onPressed: () => unawaited(unawaitedDelete(context)),
+                  tooltip: 'Удалить проект',
+                  child: const Text('×'),
                 ),
-              ),
-            ),
-          const SizedBox(height: DomovoyDimensions.space2),
-          for (final group in state.groups) _groupTile(context, group),
-          if (state.mutationError != null)
+            ],
+          ),
+          if (accessLabel != null)
             Padding(
-              padding: const EdgeInsets.only(top: DomovoyDimensions.space2),
-              child: DomovoyStatusChip(
-                key: const ValueKey('project-error'),
-                label: state.mutationError!.message,
-                tone: DomovoyStatusTone.warning,
-                icon: Icons.warning_amber_rounded,
+              padding: const EdgeInsets.only(left: DomovoyDimensions.space8),
+              child: Text(
+                accessLabel,
+                key: const ValueKey('project-access-status'),
+                style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
-          if (state.cleanupWarning)
-            const Padding(
-              padding: EdgeInsets.only(top: DomovoyDimensions.space2),
-              child: DomovoyStatusChip(
-                key: ValueKey('project-cleanup-warning'),
-                label: 'Каталог не был удалён при отмене',
-                tone: DomovoyStatusTone.warning,
-                icon: Icons.folder_off_outlined,
+          if (group.unresolvedWarning)
+            Padding(
+              padding: const EdgeInsets.only(left: DomovoyDimensions.space8),
+              child: Text(
+                'Есть чаты с неразрешённым проектом',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
+          if (selected && state.showRegrant)
+            DomovoyQuietButton(
+              key: const ValueKey('project-regrant'),
+              onPressed: () => unawaited(controller.regrantSelected()),
+              child: const Text('Повторить доступ'),
+            ),
+          for (final chat in group.chats) _chatRow(context, chat, indent: true),
         ],
       ),
     );
   }
 
-  Widget _groupTile(BuildContext context, ProjectChatGroup group) {
-    final selected = group.kind == ProjectSelectionKind.unassigned
-        ? state.selectedKind == ProjectSelectionKind.unassigned
-        : state.selectedProjectId == group.projectId;
-    final accessLabel = _accessLabel(group);
+  Widget _unassigned(BuildContext context, ProjectChatGroup group) {
+    return Column(
+      key: const ValueKey('project-unassigned'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          key: const ValueKey('chat-list'),
+          height: group.chats.isEmpty ? DomovoyDimensions.zero : null,
+          child: Column(
+            children: [
+              for (final chat in group.chats)
+                _chatRow(context, chat, showIcon: true),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _chatRow(
+    BuildContext context,
+    AgentSessionSummary chat, {
+    bool indent = false,
+    bool showIcon = false,
+  }) {
+    final selected = chat.id == selectedChatId;
+    final tokens = context.domovoyTheme;
     return Padding(
-      padding: const EdgeInsets.only(bottom: DomovoyDimensions.space2),
+      padding: EdgeInsets.only(
+        left: indent ? DomovoyDimensions.space8 : DomovoyDimensions.zero,
+        bottom: DomovoyDimensions.space1,
+      ),
       child: Semantics(
         selected: selected,
         button: true,
-        label: '${group.title}${accessLabel == null ? '' : ', $accessLabel'}',
-        child: Material(
-          color: selected
-              ? context.domovoyTheme.selectedSurface
-              : context.domovoyTheme.sidebar,
-          borderRadius: BorderRadius.circular(DomovoyDimensions.radiusMedium),
-          child: InkWell(
-            key: ValueKey(
-              group.kind == ProjectSelectionKind.unassigned
-                  ? 'project-unassigned'
-                  : 'project-row:${group.projectId?.value}',
-            ),
-            onTap: () {
-              if (group.kind == ProjectSelectionKind.unassigned) {
-                controller.selectUnassigned();
-              } else if (group.projectId != null) {
-                controller.selectProject(group.projectId!);
-              }
-            },
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(
-                minHeight: DomovoyDimensions.minimumTarget,
-              ),
-              child: Padding(
-                padding: DomovoyDimensions.controlInsets,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      group.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    if (accessLabel != null)
-                      Text(
-                        accessLabel,
-                        key: const ValueKey('project-access-status'),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    if (group.unresolvedWarning)
-                      Text(
-                        'Есть чаты с неразрешённым проектом',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    if (selected &&
-                        group.kind == ProjectSelectionKind.project &&
-                        !group.deleting)
-                      Wrap(
-                        spacing: DomovoyDimensions.space2,
-                        children: [
-                          if (state.showRegrant)
-                            TextButton(
-                              key: const ValueKey('project-regrant'),
-                              onPressed: () =>
-                                  unawaited(controller.regrantSelected()),
-                              child: const Text('Повторить доступ'),
-                            ),
-                          TextButton(
-                            key: const ValueKey('project-delete'),
-                            onPressed: () =>
-                                unawaited(unawaitedDelete(context)),
-                            child: const Text('Удалить проект'),
-                          ),
-                        ],
-                      ),
-                  ],
+        label: chat.title ?? 'Новый чат',
+        child: DomovoyQuietButton(
+          key: ValueKey('chat-row:${chat.id.value}'),
+          expand: true,
+          tone: selected ? DomovoyButtonTone.selected : DomovoyButtonTone.quiet,
+          onPressed: onSelectChat == null ? null : () => onSelectChat!(chat.id),
+          padding: indent
+              ? DomovoyDimensions.chatRowInsets
+              : DomovoyDimensions.controlInsets,
+          child: Row(
+            children: [
+              if (showIcon) ...[
+                DomovoyIcon(
+                  DomovoyIconKind.chat,
+                  color: selected ? tokens.textPrimary : tokens.textMuted,
+                ),
+                const SizedBox(width: DomovoyDimensions.space3),
+              ],
+              Expanded(
+                child: Text(
+                  chat.title ?? 'Новый чат',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontSize: DomovoyDimensions.chatRowSize,
+                    color: selected ? tokens.textPrimary : tokens.textSecondary,
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
         ),
       ),
@@ -176,7 +259,7 @@ class ProjectSidebarSection extends StatelessWidget {
       return 'Удаление…';
     }
     return switch (group.access) {
-      ProjectAccessStatus.active => 'Доступ активен',
+      ProjectAccessStatus.active => null,
       ProjectAccessStatus.requiresRegrant => 'Нужно повторить доступ',
       ProjectAccessStatus.revoked => 'Доступ отозван',
       ProjectAccessStatus.missing => 'Каталог недоступен',
@@ -193,5 +276,46 @@ class ProjectSidebarSection extends StatelessWidget {
 
   Future<void> unawaitedDelete(BuildContext context) {
     return showProjectDeleteDialog(context: context, controller: controller);
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel({
+    required this.label,
+    required this.actionKey,
+    required this.actionLabel,
+    this.onAction,
+  });
+
+  final String label;
+  final String actionKey;
+  final String actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        DomovoyDimensions.space3,
+        DomovoyDimensions.space4,
+        DomovoyDimensions.space2,
+        DomovoyDimensions.space2,
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label, style: Theme.of(context).textTheme.labelSmall),
+          ),
+          DomovoyQuietButton(
+            key: ValueKey(actionKey),
+            minSize: const Size.square(DomovoyDimensions.minimumTarget),
+            alignment: Alignment.center,
+            onPressed: onAction,
+            tooltip: actionLabel,
+            child: const Text('＋'),
+          ),
+        ],
+      ),
+    );
   }
 }

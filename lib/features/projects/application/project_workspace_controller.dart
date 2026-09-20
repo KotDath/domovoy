@@ -223,14 +223,22 @@ final class ProjectWorkspaceController {
   }
 
   Future<ChatCommandResult> selectChat(AgentSessionId id) async {
-    final group = _state.selectedGroup;
-    if (group == null || !group.chats.any((summary) => summary.id == id)) {
+    final group = _state.groups.cast<ProjectChatGroup?>().firstWhere(
+      (candidate) => candidate!.chats.any((summary) => summary.id == id),
+      orElse: () => null,
+    );
+    if (group == null) {
       return ChatCommandResult.failed(
         ChatWorkspaceError(
           kind: AgentErrorKind.configuration,
           message: 'Чат не принадлежит выбранному проекту.',
         ),
       );
+    }
+    if (group.kind == ProjectSelectionKind.unassigned) {
+      await selectUnassigned();
+    } else if (group.projectId != null) {
+      await selectProject(group.projectId!);
     }
     return chat.selectChat(id);
   }

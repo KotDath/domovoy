@@ -312,6 +312,7 @@ class _DomovoyAppState extends State<DomovoyApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
   late final ChatWorkspaceController _chatController;
   ProjectWorkspaceController? _projectController;
+  var _themeMode = ThemeMode.system;
 
   @override
   void initState() {
@@ -375,10 +376,35 @@ class _DomovoyAppState extends State<DomovoyApp> {
       debugShowCheckedModeBanner: false,
       theme: DomovoyTheme.light(),
       darkTheme: DomovoyTheme.dark(),
-      themeMode: ThemeMode.dark,
+      themeMode: _themeMode,
       home: _projectController == null
-          ? ChatWorkspacePage(controller: _chatController)
-          : ProjectWorkspacePage(controller: _projectController!),
+          ? ChatWorkspacePage(
+              controller: _chatController,
+              themeMode: _themeMode,
+              onThemeModeChanged: _setThemeMode,
+              providersView: _providersView(),
+            )
+          : ProjectWorkspacePage(
+              controller: _projectController!,
+              themeMode: _themeMode,
+              onThemeModeChanged: _setThemeMode,
+              providersView: _providersView(),
+            ),
+    );
+  }
+
+  void _setThemeMode(ThemeMode mode) => setState(() => _themeMode = mode);
+
+  Widget? _providersView() {
+    final dependencies = widget.dependencies;
+    final store = dependencies.providerCredentialStore;
+    final environment = dependencies.environmentReader;
+    if (store == null || environment == null) return null;
+    return ProviderApiKeysDialog(
+      store: store,
+      environment: environment,
+      catalog: dependencies.providerModelCatalog,
+      embedded: true,
     );
   }
 }

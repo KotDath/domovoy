@@ -1,9 +1,13 @@
+export 'components/anchored_popover.dart';
 export 'components/app_surface.dart';
 export 'components/focus_ring.dart';
 export 'components/icon_action.dart';
+export 'components/icons.dart';
 export 'components/menu_surface.dart';
+export 'components/quiet_button.dart';
 export 'components/status_chip.dart';
 export 'foundations/dimensions.dart';
+export 'foundations/primitive_tokens.dart';
 export 'foundations/responsive_policy.dart';
 export 'theme/domovoy_theme.dart';
 export 'theme/domovoy_theme_extension.dart';

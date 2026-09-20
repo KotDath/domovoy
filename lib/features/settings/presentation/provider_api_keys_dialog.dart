@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/llm/credentials.dart';
 import '../../../core/llm/identifiers.dart';
+import '../../../design_system/design_system.dart';
 import '../../../infrastructure/llm/discovery/provider_manifest.dart';
 import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 
@@ -25,12 +26,14 @@ class ProviderApiKeysDialog extends StatefulWidget {
     required this.store,
     required this.environment,
     this.catalog,
+    this.embedded = false,
     super.key,
   });
 
   final ProviderCredentialStore store;
   final EnvironmentVariableReader environment;
   final ProviderModelCatalog? catalog;
+  final bool embedded;
 
   @override
   State<ProviderApiKeysDialog> createState() => _ProviderApiKeysDialogState();
@@ -124,99 +127,172 @@ class _ProviderApiKeysDialogState extends State<ProviderApiKeysDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => PopScope(
-    canPop: !_busy,
-    child: AlertDialog(
-      title: const Text('Провайдеры и API-ключи'),
-      content: SizedBox(
-        width: 430,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              DropdownButtonFormField<ApiKeyProviderSpec>(
-                key: const ValueKey('provider-settings-picker'),
-                initialValue: _provider,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Провайдер'),
-                items: [
-                  for (final entry in ApiKeyProviderManifest.entries)
-                    DropdownMenuItem(value: entry, child: Text(entry.name)),
-                ],
-                onChanged: _busy
-                    ? null
-                    : (provider) {
-                        if (provider == null) return;
-                        setState(() {
-                          _provider = provider;
-                          _message = null;
-                          _source = 'Проверка источника…';
-                          _key.clear();
-                        });
-                        _load();
-                      },
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Источник: $_source',
-                key: const ValueKey('provider-key-source'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                key: const ValueKey('provider-key-input'),
-                controller: _key,
-                enabled: !_busy,
-                obscureText: true,
-                autocorrect: false,
-                enableSuggestions: false,
-                decoration: const InputDecoration(
-                  labelText: 'Новый API-ключ',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              if (_hasOverride)
-                TextButton.icon(
-                  key: const ValueKey('provider-remove-key'),
-                  onPressed: _busy ? null : _remove,
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('Удалить ключ приложения'),
-                ),
-              if (kIsWeb)
-                const Padding(
-                  padding: EdgeInsets.only(top: 12),
-                  child: Text(
-                    'В браузере API-ключ виден выполняющемуся коду. Для production нужен серверный прокси.',
+  Widget build(BuildContext context) {
+    if (widget.embedded) return _embedded(context);
+    return PopScope(
+      canPop: !_busy,
+      child: AlertDialog(
+        title: const Text('Провайдеры и API-ключи'),
+        content: SizedBox(width: 430, child: _form(context)),
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : () => Navigator.pop(context),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _embedded(BuildContext context) {
+    final tokens = context.domovoyTheme;
+    return Padding(
+      key: const ValueKey('providers-view'),
+      padding: DomovoyDimensions.pageInsets,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Провайдеры', style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: DomovoyDimensions.space3),
+          Text(
+            'Провайдеры и доступные модели в одном месте.',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: tokens.textSecondary),
+          ),
+          const SizedBox(height: DomovoyDimensions.space6),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  width: 220,
+                  child: ListView(
+                    children: [
+                      for (final entry in ApiKeyProviderManifest.entries)
+                        DomovoyQuietButton(
+                          key: ValueKey('provider-row:${entry.id}'),
+                          expand: true,
+                          tone: entry.id == _provider.id
+                              ? DomovoyButtonTone.accent
+                              : DomovoyButtonTone.quiet,
+                          onPressed: _busy
+                              ? null
+                              : () {
+                                  setState(() {
+                                    _provider = entry;
+                                    _message = null;
+                                    _source = 'Проверка источника…';
+                                    _key.clear();
+                                  });
+                                  _load();
+                                },
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(entry.name),
+                              Text(
+                                entry.id == _provider.id ? _source : entry.name,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-              if (widget.catalog != null)
-                TextButton.icon(
-                  key: const ValueKey('provider-refresh-models'),
-                  onPressed: _busy ? null : _refresh,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Обновить модели'),
+                VerticalDivider(
+                  width: DomovoyDimensions.hairline,
+                  color: tokens.border,
                 ),
-              if (_message != null)
-                Text(
-                  _message!,
-                  key: const ValueKey('provider-settings-message'),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: DomovoyDimensions.panelInsets,
+                    child: _form(context, includePicker: false),
+                  ),
                 ),
-              if (_busy) const LinearProgressIndicator(),
-            ],
+              ],
+            ),
           ),
-        ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.pop(context),
-          child: const Text('Закрыть'),
+    );
+  }
+
+  Widget _form(BuildContext context, {bool includePicker = true}) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (includePicker)
+          DropdownButtonFormField<ApiKeyProviderSpec>(
+            key: const ValueKey('provider-settings-picker'),
+            initialValue: _provider,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Провайдер'),
+            items: [
+              for (final entry in ApiKeyProviderManifest.entries)
+                DropdownMenuItem(value: entry, child: Text(entry.name)),
+            ],
+            onChanged: _busy
+                ? null
+                : (provider) {
+                    if (provider == null) return;
+                    setState(() {
+                      _provider = provider;
+                      _message = null;
+                      _source = 'Проверка источника…';
+                      _key.clear();
+                    });
+                    _load();
+                  },
+          ),
+        if (includePicker) const SizedBox(height: DomovoyDimensions.space5),
+        Text('Источник: $_source', key: const ValueKey('provider-key-source')),
+        const SizedBox(height: DomovoyDimensions.space4),
+        TextField(
+          key: const ValueKey('provider-key-input'),
+          controller: _key,
+          enabled: !_busy,
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(labelText: 'Новый API-ключ'),
         ),
-        FilledButton(
-          key: const ValueKey('provider-save-key'),
-          onPressed: _busy ? null : _save,
-          child: const Text('Сохранить'),
+        const SizedBox(height: DomovoyDimensions.space4),
+        Row(
+          children: [
+            DomovoyQuietButton(
+              key: const ValueKey('provider-save-key'),
+              tone: DomovoyButtonTone.accent,
+              onPressed: _busy ? null : _save,
+              child: const Text('Сохранить'),
+            ),
+            if (_hasOverride)
+              DomovoyQuietButton(
+                key: const ValueKey('provider-remove-key'),
+                onPressed: _busy ? null : _remove,
+                child: const Text('Удалить ключ приложения'),
+              ),
+          ],
         ),
+        if (kIsWeb)
+          const Padding(
+            padding: EdgeInsets.only(top: DomovoyDimensions.space4),
+            child: Text(
+              'В браузере API-ключ виден выполняющемуся коду. Для production нужен серверный прокси.',
+            ),
+          ),
+        if (widget.catalog != null)
+          DomovoyQuietButton(
+            key: const ValueKey('provider-refresh-models'),
+            onPressed: _busy ? null : _refresh,
+            child: const Text('Обновить модели'),
+          ),
+        if (_message != null)
+          Text(_message!, key: const ValueKey('provider-settings-message')),
+        if (_busy) const LinearProgressIndicator(),
       ],
-    ),
-  );
+    );
+  }
 }

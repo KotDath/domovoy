@@ -86,5 +86,6 @@ class WorkspacePreviewComposer extends StatelessWidget {
     running: false,
     enabled: true,
     initialDraft: 'Prepare the verified release evidence.',
+    tokenProjection: workspacePreviewTokenProjection(),
   );
 }

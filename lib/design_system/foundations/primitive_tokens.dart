@@ -1,47 +1,49 @@
 import 'package:flutter/material.dart';
 
-/// Raw visual values. Feature code must consume semantic theme roles instead.
+/// Raw visual values copied from `design/redesign-preview` (`final-01`).
+/// Feature code must consume semantic theme roles instead.
 abstract final class DomovoyPrimitiveTokens {
-  static const darkCanvas = Color(0xFF101215);
-  static const darkSidebar = Color(0xFF17191D);
-  static const darkSurface = Color(0xFF1D2025);
-  static const darkElevated = Color(0xFF23262C);
-  static const darkSelected = Color(0xFF292D34);
-  static const darkBorder = Color(0xFF343943);
-  static const darkDivider = Color(0xFF2A2E35);
-  static const darkText = Color(0xFFF2F4F8);
-  static const darkTextSecondary = Color(0xFFABB2BF);
-  static const darkTextMuted = Color(0xFF8C94A3);
-  static const darkAccent = Color(0xFFAEBCEB);
-  static const darkAccentInk = Color(0xFF222733);
-  static const darkUserMessage = Color(0xFF29303B);
-  static const darkReasoning = Color(0xFF191C21);
-  static const darkTool = Color(0xFF1B1E23);
-  static const darkSuccess = Color(0xFF79C69B);
+  static const darkCanvas = Color(0xFF202225);
+  static const darkSidebar = Color(0xFF191B1E);
+  static const darkSurface = Color(0xFF282B30);
+  static const darkElevated = Color(0xFF282B30);
+  static const darkHover = Color(0xFF30343B);
+  static const darkBorder = Color(0xFF363940);
+  static const darkText = Color(0xFFE3E4E8);
+  static const darkTextSecondary = Color(0xFFA0A4AF);
+  static const darkTextMuted = Color(0xFF818794);
+  static const darkAccent = Color(0xFFAABAFB);
+  static const darkAccentMuted = Color(0xFF303A55);
+  static const darkAccentInk = Color(0xFF202225);
+  static const darkUserMessage = Color(0xFF282B30);
+  static const darkReasoning = Color(0xFF191B1E);
+  static const darkTool = Color(0xFF191B1E);
+  static const darkSuccess = Color(0xFF91B6A1);
   static const darkDanger = Color(0xFFFF8F98);
   static const darkDangerSurface = Color(0xFF3C2025);
   static const darkWarning = Color(0xFFFFC66D);
+  static const darkShadow = Color(0x66000000);
 
-  static const lightCanvas = Color(0xFFF7F7F5);
-  static const lightSidebar = Color(0xFFEFEFEC);
-  static const lightSurface = Color(0xFFFFFFFF);
-  static const lightElevated = Color(0xFFF5F5F2);
-  static const lightSelected = Color(0xFFE2E5ED);
-  static const lightBorder = Color(0xFFCBD0D9);
-  static const lightDivider = Color(0xFFD8DBE1);
-  static const lightText = Color(0xFF17191D);
-  static const lightTextSecondary = Color(0xFF454B57);
-  static const lightTextMuted = Color(0xFF626A78);
-  static const lightAccent = Color(0xFF4F609C);
-  static const lightAccentInk = Color(0xFFFFFFFF);
-  static const lightUserMessage = Color(0xFFDDE4F7);
-  static const lightReasoning = Color(0xFFECEEF2);
-  static const lightTool = Color(0xFFF0F1F3);
-  static const lightSuccess = Color(0xFF176B45);
+  static const lightCanvas = Color(0xFFF8F7F4);
+  static const lightSidebar = Color(0xFFEFEEEA);
+  static const lightSurface = Color(0xFFFFFEFA);
+  static const lightElevated = Color(0xFFFFFEFA);
+  static const lightHover = Color(0xFFE8E7E3);
+  static const lightBorder = Color(0xFFDDDDD7);
+  static const lightText = Color(0xFF292D35);
+  static const lightTextSecondary = Color(0xFF646975);
+  static const lightTextMuted = Color(0xFF737A85);
+  static const lightAccent = Color(0xFF4D61A7);
+  static const lightAccentMuted = Color(0xFFE5EAF8);
+  static const lightAccentInk = Color(0xFFFFFEFA);
+  static const lightUserMessage = Color(0xFFFFFEFA);
+  static const lightReasoning = Color(0xFFEFEEEA);
+  static const lightTool = Color(0xFFEFEEEA);
+  static const lightSuccess = Color(0xFF52795F);
   static const lightDanger = Color(0xFFAA2433);
   static const lightDangerSurface = Color(0xFFFFE1E4);
   static const lightWarning = Color(0xFF825400);
+  static const lightShadow = Color(0x20303745);
 
   static const transparent = Color(0x00000000);
-  static const shadow = Color(0x66000000);
 }

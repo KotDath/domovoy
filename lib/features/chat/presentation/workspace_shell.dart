@@ -5,7 +5,6 @@ import '../../../core/agents/agents.dart';
 import '../../../design_system/design_system.dart';
 import '../application/chat_token_presenter.dart';
 import 'chat_sidebar.dart';
-import 'token_details.dart';
 
 class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell({
@@ -27,6 +26,14 @@ class WorkspaceShell extends StatefulWidget {
     this.deleteFocusNode,
     this.newChatFocusNode,
     this.aboveChats,
+    this.onOpenUsage,
+    this.themeMode,
+    this.onThemeModeChanged,
+    this.usageSelected = false,
+    this.providersSelected = false,
+    this.projectName,
+    this.projectRoot,
+    this.showComposer = true,
     super.key,
   });
 
@@ -48,6 +55,14 @@ class WorkspaceShell extends StatefulWidget {
   final FocusNode? deleteFocusNode;
   final FocusNode? newChatFocusNode;
   final Widget? aboveChats;
+  final VoidCallback? onOpenUsage;
+  final ThemeMode? themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final bool usageSelected;
+  final bool providersSelected;
+  final String? projectName;
+  final String? projectRoot;
+  final bool showComposer;
 
   @override
   State<WorkspaceShell> createState() => _WorkspaceShellState();
@@ -86,6 +101,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       issueCount: widget.issueCount,
       newChatFocusNode: widget.newChatFocusNode,
       aboveChats: widget.aboveChats,
+      onOpenUsage: widget.onOpenUsage,
+      themeMode: widget.themeMode,
+      onThemeModeChanged: widget.onThemeModeChanged,
+      usageSelected: widget.usageSelected,
+      providersSelected: widget.providersSelected,
     );
     return CallbackShortcuts(
       bindings: shortcuts,
@@ -103,9 +123,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                     key: const ValueKey('workspace-wide'),
                     children: [
                       SizedBox(width: layout.sidebarWidth, child: sidebar),
-                      const VerticalDivider(
+                      VerticalDivider(
                         width: DomovoyDimensions.hairline,
                         thickness: DomovoyDimensions.hairline,
+                        color: context.domovoyTheme.border,
                       ),
                       Expanded(child: _content(context, layout)),
                     ],
@@ -122,104 +143,94 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
   Widget _content(BuildContext context, WorkspaceLayoutSpec layout) {
     final tokens = context.domovoyTheme;
-    final media = MediaQuery.of(context);
-    final compactHeader = media.size.width < DomovoyDimensions.compactWidth;
-    final highTextScale =
-        media.textScaler.scale(1) >= DomovoyDimensions.highTextScale;
     return SafeArea(
       child: Column(
         children: [
           ConstrainedBox(
-            constraints: const BoxConstraints(
-              minHeight: DomovoyDimensions.headerHeight,
+            constraints: BoxConstraints(
+              minHeight: layout.isDesktop
+                  ? DomovoyDimensions.headerHeight
+                  : DomovoyDimensions.narrowHeaderHeight,
             ),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: tokens.canvas,
-                border: Border(
-                  bottom: BorderSide(
-                    color: tokens.divider,
-                    width: DomovoyDimensions.hairline,
-                  ),
-                ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: DomovoyDimensions.space4,
               ),
-              child: Padding(
-                padding: DomovoyDimensions.listInsets,
-                child: Row(
-                  children: [
-                    if (!layout.isDesktop) ...[
-                      DomovoyIconAction(
-                        key: const ValueKey('chat-list-open'),
-                        icon: Icons.menu_rounded,
-                        label: 'Открыть список чатов',
-                        onPressed: () =>
-                            _scaffoldKey.currentState?.openDrawer(),
+              child: Row(
+                children: [
+                  if (!layout.isDesktop) ...[
+                    DomovoyQuietButton(
+                      key: const ValueKey('chat-list-open'),
+                      minSize: const Size.square(
+                        DomovoyDimensions.minimumTarget,
                       ),
-                      const SizedBox(width: DomovoyDimensions.space2),
-                    ],
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          if (widget.selectedId != null && !highTextScale)
-                            Text(
-                              widget.modelLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                        ],
-                      ),
-                    ),
-                    Flexible(
-                      child: ChatTokenSummary(
-                        projection: widget.tokenProjection,
-                        onPressed: widget.onOpenTokens,
-                        compact: compactHeader,
-                      ),
+                      alignment: Alignment.center,
+                      onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                      child: const Text('☰'),
                     ),
                     const SizedBox(width: DomovoyDimensions.space2),
-                    DomovoyIconAction(
-                      key: const ValueKey('chat-delete'),
-                      icon: Icons.more_horiz_rounded,
-                      label: 'Удалить выбранный чат',
-                      focusNode: widget.deleteFocusNode,
-                      onPressed: widget.selectedId == null
-                          ? null
-                          : widget.onDeleteChat,
-                    ),
                   ],
-                ),
+                  Builder(
+                    builder: (buttonContext) => DomovoyQuietButton(
+                      key: const ValueKey('folder-button'),
+                      minSize: const Size.square(
+                        DomovoyDimensions.minimumTarget,
+                      ),
+                      alignment: Alignment.center,
+                      onPressed: () => _openFolder(buttonContext),
+                      tooltip: 'Папка текущего проекта',
+                      child: DomovoyIcon(
+                        DomovoyIconKind.folder,
+                        size: DomovoyDimensions.iconMedium,
+                        color: tokens.textSecondary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: DomovoyDimensions.space3),
+                  Expanded(
+                    child: Text(
+                      widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                  const SizedBox.shrink(key: ValueKey('chat-delete')),
+                ],
               ),
             ),
           ),
           Expanded(
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: layout.timelineMaxWidth),
-                child: widget.body,
-              ),
-            ),
-          ),
-          Padding(
-            padding: EdgeInsets.fromLTRB(
-              layout.contentInsets.left,
-              DomovoyDimensions.space3,
-              layout.contentInsets.right,
-              DomovoyDimensions.space5 +
-                  MediaQuery.viewInsetsOf(context).bottom,
-            ),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: layout.composerMaxWidth),
-              child: widget.composer,
+            child: Stack(
+              children: [
+                Positioned.fill(child: widget.body),
+                if (widget.showComposer)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: ColoredBox(
+                      color: tokens.canvas,
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          layout.contentInsets.left,
+                          DomovoyDimensions.space4,
+                          layout.contentInsets.right,
+                          DomovoyDimensions.space5 +
+                              MediaQuery.viewInsetsOf(context).bottom,
+                        ),
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: layout.composerMaxWidth,
+                            ),
+                            child: widget.composer,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],
@@ -232,6 +243,47 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   void _openSettings() => widget.onOpenSettings?.call();
+
+  void _openFolder(BuildContext buttonContext) {
+    final name = widget.projectName ?? 'Без проекта';
+    final root = widget.projectRoot ?? '—';
+    unawaitedFolder(buttonContext, name, root);
+  }
+
+  void unawaitedFolder(BuildContext buttonContext, String name, String root) {
+    showDomovoyAnchoredPopover<void>(
+      context: buttonContext,
+      width: DomovoyDimensions.folderPopoverWidth,
+      builder: (popoverContext) {
+        final tokens = popoverContext.domovoyTheme;
+        return DomovoyPopoverCard(
+          padding: DomovoyDimensions.panelInsets,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(name, style: Theme.of(popoverContext).textTheme.titleSmall),
+              const SizedBox(height: DomovoyDimensions.space2),
+              Text(
+                root,
+                style: Theme.of(popoverContext).textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  color: tokens.textSecondary,
+                ),
+              ),
+              const SizedBox(height: DomovoyDimensions.space3),
+              Text(
+                'Доступ к файлам определяется разрешениями проекта.',
+                style: Theme.of(
+                  popoverContext,
+                ).textTheme.labelSmall?.copyWith(color: tokens.textMuted),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   void _dismissTopmost() {
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {

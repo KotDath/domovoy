@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../foundations/dimensions.dart';
+import '../foundations/primitive_tokens.dart';
 import '../theme/domovoy_theme_extension.dart';
 
 class DomovoyFocusRing extends StatefulWidget {
@@ -31,9 +32,15 @@ class _DomovoyFocusRingState extends State<DomovoyFocusRing> {
         duration: context.domovoyMotion(tokens.fastMotion),
         decoration: BoxDecoration(
           borderRadius: widget.borderRadius,
-          border: _focused
+          border:
+              _focused &&
+                  FocusManager.instance.highlightMode ==
+                      FocusHighlightMode.traditional
               ? Border.all(color: tokens.accent, width: tokens.focusStrokeWidth)
-              : null,
+              : Border.all(
+                  color: DomovoyPrimitiveTokens.transparent,
+                  width: tokens.focusStrokeWidth,
+                ),
         ),
         child: widget.child,
       ),

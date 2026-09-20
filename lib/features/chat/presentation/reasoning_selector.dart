@@ -11,11 +11,13 @@ final class ChatReasoningChoice {
     required this.mode,
     required this.effort,
     required this.label,
+    this.detail,
   });
 
   final ReasoningMode mode;
   final ReasoningEffort effort;
   final String label;
+  final String? detail;
 
   @override
   bool operator ==(Object other) =>
@@ -39,6 +41,7 @@ List<ChatReasoningChoice> reasoningChoicesFor(LlmModel model) {
         label: capabilities.supportsReasoning
             ? 'Без рассуждений'
             : 'По умолчанию',
+        detail: 'Быстрый ответ',
       ),
     );
   }
@@ -48,6 +51,7 @@ List<ChatReasoningChoice> reasoningChoicesFor(LlmModel model) {
         mode: ReasoningMode.enabled,
         effort: ReasoningEffort.modelDefault,
         label: 'Авто',
+        detail: 'Решение модели',
       ),
     );
     for (final effort in capabilities.selectableEfforts) {
@@ -56,6 +60,7 @@ List<ChatReasoningChoice> reasoningChoicesFor(LlmModel model) {
           mode: ReasoningMode.enabled,
           effort: effort,
           label: _effortLabel(effort),
+          detail: _effortDetail(effort),
         ),
       );
     }
@@ -82,7 +87,6 @@ class ChatReasoningSelector extends StatefulWidget {
 }
 
 class _ChatReasoningSelectorState extends State<ChatReasoningSelector> {
-  final _menuController = MenuController();
   final _focusNode = FocusNode(debugLabel: 'reasoning-selector');
 
   List<ChatReasoningChoice> get _choices => reasoningChoicesFor(widget.model);
@@ -95,6 +99,7 @@ class _ChatReasoningSelectorState extends State<ChatReasoningSelector> {
 
   @override
   Widget build(BuildContext context) {
+    if (_choices.isEmpty) return const SizedBox.shrink();
     final selected = _choices.firstWhere(
       (choice) =>
           choice.mode == widget.selection.reasoningMode &&
@@ -106,54 +111,78 @@ class _ChatReasoningSelectorState extends State<ChatReasoningSelector> {
       media.size,
       media.textScaler.scale(1),
     );
-    final trigger = _trigger(
-      selected.label,
-      layout.isDesktop ? _toggleMenu : _openSheet,
-    );
-    if (!layout.isDesktop) return trigger;
-    return MenuAnchor(
-      controller: _menuController,
-      menuChildren: [for (final choice in _choices) _desktopRow(choice)],
-      builder: (context, controller, child) => trigger,
+    return DomovoyQuietButton(
+      key: const ValueKey('reasoning-selector'),
+      focusNode: _focusNode,
+      minSize: const Size(0, DomovoyDimensions.minimumTarget),
+      onPressed: widget.enabled && _choices.length > 1
+          ? () => layout.isDesktop ? _openPopover() : unawaited(_openSheet())
+          : null,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(selected.label),
+          const SizedBox(width: DomovoyDimensions.space2),
+          const DomovoyIcon(DomovoyIconKind.chevron, size: 12),
+        ],
+      ),
     );
   }
 
-  Widget _trigger(String label, VoidCallback activate) => ConstrainedBox(
-    constraints: const BoxConstraints(
-      minHeight: DomovoyDimensions.minimumTarget,
-    ),
-    child: OutlinedButton.icon(
-      key: const ValueKey('reasoning-selector'),
-      focusNode: _focusNode,
-      onPressed: widget.enabled && _choices.length > 1 ? activate : null,
-      icon: const Icon(Icons.psychology_outlined),
-      label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-    ),
-  );
-
-  Widget _desktopRow(ChatReasoningChoice choice) => MenuItemButton(
-    key: ValueKey('reasoning-option:${choice.mode.name}:${choice.effort.name}'),
-    leadingIcon: Icon(
-      _isSelected(choice)
-          ? Icons.radio_button_checked_rounded
-          : Icons.radio_button_unchecked_rounded,
-    ),
-    onPressed: () => _select(choice),
-    child: Text(choice.label),
-  );
-
-  void _toggleMenu() {
-    if (_menuController.isOpen) {
-      _menuController.close();
-    } else {
-      _menuController.open();
-    }
+  Future<void> _openPopover() async {
+    await showDomovoyAnchoredPopover<void>(
+      context: context,
+      width: DomovoyDimensions.reasoningPopoverWidth,
+      builder: (popoverContext) {
+        return DomovoyPopoverCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: DomovoyDimensions.controlInsets,
+                child: Text(
+                  'Рассуждение',
+                  style: Theme.of(popoverContext).textTheme.labelSmall,
+                ),
+              ),
+              for (final choice in _choices)
+                DomovoyQuietButton(
+                  key: ValueKey(
+                    'reasoning-option:${choice.mode.name}:${choice.effort.name}',
+                  ),
+                  expand: true,
+                  tone: _isSelected(choice)
+                      ? DomovoyButtonTone.accent
+                      : DomovoyButtonTone.quiet,
+                  onPressed: () {
+                    Navigator.maybePop(popoverContext);
+                    _select(choice);
+                  },
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(choice.label),
+                      if (choice.detail != null)
+                        Text(
+                          choice.detail!,
+                          style: Theme.of(popoverContext).textTheme.bodySmall,
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    if (mounted) _focusNode.requestFocus();
   }
 
   Future<void> _openSheet() async {
     await showModalBottomSheet<void>(
       context: context,
-      showDragHandle: true,
+      backgroundColor: context.domovoyTheme.elevatedSurface,
       builder: (sheetContext) => SafeArea(
         child: ListView(
           key: const ValueKey('reasoning-selector-sheet'),
@@ -161,20 +190,19 @@ class _ChatReasoningSelectorState extends State<ChatReasoningSelector> {
           padding: DomovoyDimensions.compactPageInsets,
           children: [
             for (final choice in _choices)
-              ListTile(
+              DomovoyQuietButton(
                 key: ValueKey(
                   'reasoning-option:${choice.mode.name}:${choice.effort.name}',
                 ),
-                leading: Icon(
-                  _isSelected(choice)
-                      ? Icons.radio_button_checked_rounded
-                      : Icons.radio_button_unchecked_rounded,
-                ),
-                title: Text(choice.label),
-                onTap: () {
+                expand: true,
+                tone: _isSelected(choice)
+                    ? DomovoyButtonTone.accent
+                    : DomovoyButtonTone.quiet,
+                onPressed: () {
                   Navigator.pop(sheetContext);
                   _select(choice);
                 },
+                child: Text(choice.label),
               ),
           ],
         ),
@@ -188,7 +216,6 @@ class _ChatReasoningSelectorState extends State<ChatReasoningSelector> {
       choice.effort == widget.selection.reasoningEffort;
 
   void _select(ChatReasoningChoice choice) {
-    _menuController.close();
     widget.onSelected(choice);
     scheduleMicrotask(_focusNode.requestFocus);
   }
@@ -200,4 +227,12 @@ String _effortLabel(ReasoningEffort effort) => switch (effort) {
   ReasoningEffort.medium => 'Среднее',
   ReasoningEffort.high => 'Высокое',
   ReasoningEffort.max => 'Максимальное',
+};
+
+String _effortDetail(ReasoningEffort effort) => switch (effort) {
+  ReasoningEffort.modelDefault => 'Решение модели',
+  ReasoningEffort.low => 'Быстрый разбор',
+  ReasoningEffort.medium => 'Баланс глубины и скорости',
+  ReasoningEffort.high => 'Больше времени на задачу',
+  ReasoningEffort.max => 'Максимальная глубина',
 };
