@@ -1,4 +1,5 @@
 import 'ids.dart';
+import 'invariants.dart';
 
 enum TaskPhase { planning, execution, validation, done }
 
@@ -226,8 +227,13 @@ final class TaskSnapshot {
     this.failureCode,
     this.failureMessage,
     List<String> appliedInvariantIds = const <String>[],
+    List<TaskInvariantPolicyStamp> appliedPolicyStamps =
+        const <TaskInvariantPolicyStamp>[],
   }) : nodes = List<TaskNodeState>.unmodifiable(nodes),
-       appliedInvariantIds = List<String>.unmodifiable(appliedInvariantIds);
+       appliedInvariantIds = List<String>.unmodifiable(appliedInvariantIds),
+       appliedPolicyStamps = List<TaskInvariantPolicyStamp>.unmodifiable(
+         appliedPolicyStamps,
+       );
 
   factory TaskSnapshot.initial({
     required TaskId id,
@@ -265,6 +271,7 @@ final class TaskSnapshot {
   final String? failureCode;
   final String? failureMessage;
   final List<String> appliedInvariantIds;
+  final List<TaskInvariantPolicyStamp> appliedPolicyStamps;
 
   int get completedNodeCount =>
       nodes.where((node) => node.status == TaskNodeStatus.succeeded).length;
@@ -319,6 +326,7 @@ final class TaskSnapshot {
     Object? failureCode = _keep,
     Object? failureMessage = _keep,
     List<String>? appliedInvariantIds,
+    List<TaskInvariantPolicyStamp>? appliedPolicyStamps,
   }) => TaskSnapshot(
     id: id,
     sessionId: sessionId,
@@ -351,6 +359,7 @@ final class TaskSnapshot {
         ? this.failureMessage
         : failureMessage as String?,
     appliedInvariantIds: appliedInvariantIds ?? this.appliedInvariantIds,
+    appliedPolicyStamps: appliedPolicyStamps ?? this.appliedPolicyStamps,
   );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -376,6 +385,9 @@ final class TaskSnapshot {
     'failureCode': failureCode,
     'failureMessage': failureMessage,
     'appliedInvariantIds': appliedInvariantIds,
+    'appliedPolicyStamps': appliedPolicyStamps
+        .map((stamp) => stamp.toJson())
+        .toList(),
   };
 
   factory TaskSnapshot.fromJson(Map<String, Object?> json) {
@@ -419,6 +431,14 @@ final class TaskSnapshot {
         failureMessage: json['failureMessage'] as String?,
         appliedInvariantIds: (json['appliedInvariantIds']! as List<Object?>)
             .cast<String>(),
+        appliedPolicyStamps:
+            (json['appliedPolicyStamps'] as List<Object?>? ?? <Object?>[])
+                .map(
+                  (value) => TaskInvariantPolicyStamp.fromJson(
+                    (value! as Map<Object?, Object?>).cast<String, Object?>(),
+                  ),
+                )
+                .toList(),
       );
       snapshot.validate();
       return snapshot;
@@ -455,6 +475,12 @@ final class TaskSnapshot {
       if (currentNodeId != null && !stateIds.contains(currentNodeId)) {
         throw const FormatException('Current task node is unknown.');
       }
+    }
+    final policyKeys = appliedPolicyStamps
+        .map((stamp) => '${stamp.scope.name}:${stamp.ownerId}')
+        .toSet();
+    if (policyKeys.length != appliedPolicyStamps.length) {
+      throw const FormatException('Duplicate applied invariant policy stamp.');
     }
     final active = nodes.where((node) {
       return node.status == TaskNodeStatus.running ||

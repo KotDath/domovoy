@@ -15,6 +15,42 @@ enum TaskInvariantChecker {
   semantic,
 }
 
+final class TaskInvariantPolicyStamp {
+  const TaskInvariantPolicyStamp({
+    required this.scope,
+    required this.ownerId,
+    required this.revision,
+  });
+
+  final TaskInvariantScope scope;
+  final String ownerId;
+  final int revision;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'scope': scope.name,
+    'ownerId': ownerId,
+    'revision': revision,
+  };
+
+  factory TaskInvariantPolicyStamp.fromJson(Map<String, Object?> json) {
+    try {
+      final stamp = TaskInvariantPolicyStamp(
+        scope: TaskInvariantScope.values.byName(json['scope']! as String),
+        ownerId: json['ownerId']! as String,
+        revision: json['revision']! as int,
+      );
+      if (stamp.ownerId.trim().isEmpty || stamp.revision < 0) {
+        throw const FormatException('Invalid invariant policy stamp.');
+      }
+      return stamp;
+    } on FormatException {
+      rethrow;
+    } on Object catch (error) {
+      throw FormatException('Invalid invariant policy stamp.', error);
+    }
+  }
+}
+
 final class TaskInvariantPolicy {
   TaskInvariantPolicy({
     required this.scope,

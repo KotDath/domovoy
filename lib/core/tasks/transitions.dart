@@ -1,4 +1,5 @@
 import 'ids.dart';
+import 'invariants.dart';
 import 'model.dart';
 
 enum TaskTransitionKind {
@@ -57,6 +58,7 @@ final class TaskTransition {
     this.plan,
     this.evidence,
     this.invariantIds = const <String>[],
+    this.policyStamps = const <TaskInvariantPolicyStamp>[],
   });
 
   final TaskTransitionKind kind;
@@ -67,6 +69,7 @@ final class TaskTransition {
   final TaskPlan? plan;
   final String? evidence;
   final List<String> invariantIds;
+  final List<TaskInvariantPolicyStamp> policyStamps;
 }
 
 final class TaskTransitionResult {
@@ -185,6 +188,7 @@ final class TaskReducer {
         failureCode: null,
         failureMessage: null,
         appliedInvariantIds: transition.invariantIds,
+        appliedPolicyStamps: transition.policyStamps,
       ),
     );
   }
@@ -505,6 +509,8 @@ final class TaskReducer {
         finalRepairCount: 0,
         failureCode: null,
         failureMessage: null,
+        appliedInvariantIds: const <String>[],
+        appliedPolicyStamps: const <TaskInvariantPolicyStamp>[],
       ),
     );
   }
