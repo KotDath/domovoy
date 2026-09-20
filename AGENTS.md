@@ -1,82 +1,90 @@
-# Правила репозитория
+# AGENTS.md — инструкции для ИИ-ассистентов
 
-## Проект
+Контракт для любого ИИ-ассистента, работающего с этим репозиторием.
+Прочитайте перед любыми изменениями.
 
-Domovoy — персональный ИИ-ассистент в виде Flutter-приложения. Имя Dart-пакета
-— `domovoy`, префикс нативного идентификатора приложения — `ru.kotdath`.
+## Цель проекта
 
-## Работа с OpenSpec
+Domovoy — персональный ИИ-ассистент в виде Flutter-приложения: рабочее
+пространство чата с LLM (провайдеры DeepSeek/OpenRouter), стриминг ответа и
+reasoning, проекты и настройки API-ключа.
 
-- Используйте OpenSpec-скиллы из `.opencode/skills/` для нетривиальных функций
-  и изменений поведения.
-- Начинайте новую запланированную работу с `$openspec-propose`, реализуйте её с
-  `$openspec-apply-change`, а перед архивацией проверяйте результат с
-  `$openspec-verify-change`.
-- Ограничивайте каждое предложение и набор задач одним независимо проверяемым
-  изменением.
-- Изменения только в инструментах, агентах и конфигурации репозитория не требуют
-  OpenSpec change, если пользователь явно не попросил обратного.
+## Инварианты
 
-## Командный процесс
+1. **Один Flutter-пакет `domovoy`.** Никаких вложенных `pubspec.yaml`,
+   подпакетов или внешних менеджеров воркспейса. Все зависимости — в корневом
+   `pubspec.yaml`.
+2. **Идентификатор приложения — `ru.kotdath.domovoy`** на всех платформах:
+   `namespace`/`applicationId` в Android, `PRODUCT_BUNDLE_IDENTIFIER` в
+   iOS/macOS, `APPLICATION_ID` в Linux, company/namespace в Windows. Не
+   переименовывать.
+3. **Слои и направление зависимостей:** `presentation → application → domain`,
+   `infrastructure` реализует контракты из `core`. Обратные зависимости
+   запрещены.
+4. **Состояние — `ChangeNotifier` и явная композиция в `lib/app.dart`.**
+   Внешних state-management/DI-пакетов нет; не добавлять.
+5. **Домен — в `lib/core/`** (`llm/`, `agents/`, `projects/`, `environment/`),
+   платформенные адаптеры — в `lib/infrastructure/`, UI — в
+   `lib/features/<feature>/{domain,application,presentation}/`, тема и
+   компоненты — в `lib/design_system/`.
+6. **Платформенный код — через conditional imports** (`*_io.dart`, `*_web.dart`,
+   `*_stub.dart`). `dart:io` в кросс-платформенных файлах не использовать.
+7. **Секреты — только через `flutter_secure_storage`** (override из настроек)
+   или переменную окружения `DEEPSEEK_API_KEY`. Ключи в коде и в репозитории
+   запрещены; `.env` в `.gitignore`.
+8. **Персистентность — JSONL** (сессии агентов и проекты). Формат менять
+   только вместе с миграцией/реплеем.
+9. **Линты — `package:flutter_lints/flutter.yaml`.** Не ослаблять правила в
+   `analysis_options.yaml` без причины.
+10. **Тесты — в `test/`** зеркально структуре `lib/`; общие фейки и харнессы —
+    в `test/support/`.
+11. **Сообщения коммитов — Conventional Commits** (`feat(chat): ...`).
+12. **Секреты, платформенные манифесты и `build/` не коммитить.**
 
-- Единственная primary-роль — orchestrator; специалисты вызываются через task.
-- Для реализации используйте `/feature` и `.opencode/policies/feature.md`.
-  Риск, evidence и пределы ревью определены в `.opencode/policies/routing.md`;
-  транспорт и handoff — в скилле team-orchestration.
-- Координатор выбирает ближайший проверяемый результат и нужные роли. Готовые
-  исследования, планы и проверки переиспользуются. Architect привлекается при
-  недостающем решении, explore — при конкретной неизвестности.
-- Сохраняйте один OpenSpec change, но реализуйте его назначенными участками.
-  Риск участка определяется изменяемым поведением, не общим tier change.
-- На планировании/согласовании спеки предлагается и выбирается light/heavy.
-  Light: coder DeepSeek реализует; reviewer Sol и verifier DeepSeek параллельно
-  проверяют код и соответствие AC/формальным критериям соответственно. Heavy:
-  oneshotter Sol реализует; verifier DeepSeek проверяет AC и формальные критерии,
-  без обязательного code review. Verifier всегда имеет отдельный контекст.
-  Актуальные запуски тестов переиспользуются. Tier риска не выбирает схему сам.
-- Один writer за раз. Не меняйте контракт параллельно с зависимой реализацией.
-  Сохраняйте чужие изменения. Read-only исследования могут идти независимо.
-- Явное утверждение дизайна пользователем соблюдается. Готовые макеты показывайте
-  сразу; технические вопросы будущей реализации не блокируют их обсуждение.
-- Review ограничен дефектами участка и вызванными им регрессиями. Notes вне scope
-  не блокируют. Максимум два fix-цикла на участок, включая contract fixes;
-  новый контекст/revision не сбрасывает лимит. После него — конкретный BLOCKED,
-  а не очередной общий review. Не принимайте незакрытые существенные дефекты.
-- Различайте implemented, CHECKS_PASS и accepted. Не заявляйте о проверках без
-  доказательств. Process metadata и shadow-log не требуют отдельных назначений.
-- Новые требования и решения записываются architect в OpenSpec. Coder может
-  обновлять назначенные tasks; состояние этапа сохраняется writer в
-  `.opencode/workflow/feature-state/<change>.md` в конце полезного назначения.
+## Структура
 
-## Разрешения команд
+- `lib/core/` — домен.
+- `lib/infrastructure/` — LLM-провайдеры, JSONL-хранилища, credential-store,
+  файловые системы, provisioners.
+- `lib/features/` — фичи: `chat`, `projects`, `prompt`, `settings`.
+- `lib/design_system/` — тема, токены, компоненты.
+- `test/`, `test/support/` — тесты и фейки.
+- `assets/models_fallback.json` — фолбэк-каталог моделей.
+- `design/` — макеты (read-only референс).
 
-- Частые repo-local команды writer-ролей (`openspec`, чтение файлов, Python 3,
-  Flutter/Dart и runner) должны выполняться без повторных approval prompts.
-  Для обычного локального Git используйте `.opencode/bin/repo-git`: он
-  разрешает inspect-команды, `add`, обычный `commit` и другие явно
-  allowlisted локальные операции. Опции не сокращаются, а пути передаются
-  только после `--`, например `repo-git add -- AGENTS.md`. Wrapper
-  запрещает lazy fetch и не принимает внешние config/file inputs. Прямой `git` остаётся
-  `ask`, чтобы network, lossy,
-  external-scope, config/alias и неподдержанные команды требовали отдельного
-  решения.
-- Встроенные bash-patterns не гарантируют cwd-scope. Поэтому прямой `rm` не
-  разрешайте безусловно: для удаления явных путей внутри текущего Git worktree
-  используйте `.opencode/bin/repo-rm`; он запрещён read-only ролям.
-- Внешние сетевые Git-операции, потенциально теряющие изменения команды и
-  системные команды остаются `ask`/`deny`. Доступ за пределы worktree остаётся
-  `ask`.
-- `explore` и `reviewer` читают через встроенные
-  `read`/`glob`/`grep` и не получают произвольный Python, файловый shell или
-  Flutter/test execution. Для Git используйте
-  `.opencode/bin/repo-git --read-only`, для OpenSpec —
-  `.opencode/bin/repo-openspec`, для JSON, YAML frontmatter, JSON Schema и
-  Python syntax — `.opencode/bin/read-check`.
-  Flutter/test checks для review выполняет назначенный `coder` или `verifier`.
+## Стек
 
-## Проверки Flutter
+- Flutter / Dart, SDK `^3.10.0`.
+- Зависимости: `flutter_secure_storage`, `file_selector`, `http`, `path`,
+  `path_provider`, `shared_preferences`.
+- LLM: OpenAI-совместимый `/chat/completions` (DeepSeek, OpenRouter).
+- Linux-десктопу нужен `libsecret` (см. `README.md`).
 
-- Форматируйте Dart-код командой `dart format .`.
-- Перед завершением реализации запускайте `flutter analyze` и `flutter test`.
-- Сохраняйте соответствие платформенного кода идентификатору приложения
-  `ru.kotdath.domovoy`.
+## Форматирование, анализ, тесты
+
+Запускать из корня репозитория:
+
+```sh
+flutter pub get
+dart format .
+flutter analyze
+flutter test
+```
+
+Перед завершением задачи код обязан быть отформатирован, а `flutter analyze`
+и `flutter test` — проходить без ошибок.
+
+## Запуск
+
+```sh
+flutter run -d linux
+```
+
+## Типичный цикл изменения
+
+1. Понять требуемое поведение и границы слоя.
+2. Внести изменение в `core`/`infrastructure`/`features`, не нарушая
+   инварианты выше.
+3. `dart format .`
+4. `flutter analyze && flutter test`
+5. Коммит в стиле Conventional Commits.
