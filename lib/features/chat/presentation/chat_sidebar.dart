@@ -16,9 +16,11 @@ class ChatSidebar extends StatelessWidget {
     this.newChatFocusNode,
     this.aboveChats,
     this.onOpenUsage,
+    this.onOpenProfiles,
     this.themeMode,
     this.onThemeModeChanged,
     this.usageSelected = false,
+    this.profilesSelected = false,
     this.providersSelected = false,
     super.key,
   });
@@ -34,9 +36,11 @@ class ChatSidebar extends StatelessWidget {
   final FocusNode? newChatFocusNode;
   final Widget? aboveChats;
   final VoidCallback? onOpenUsage;
+  final VoidCallback? onOpenProfiles;
   final ThemeMode? themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final bool usageSelected;
+  final bool profilesSelected;
   final bool providersSelected;
 
   @override
@@ -157,6 +161,31 @@ class ChatSidebar extends StatelessWidget {
                   ),
                 ),
               const SizedBox(height: DomovoyDimensions.space6),
+              if (onOpenProfiles != null)
+                FocusTraversalOrder(
+                  order: const NumericFocusOrder(97),
+                  child: DomovoyQuietButton(
+                    key: const ValueKey('open-profiles'),
+                    tone: profilesSelected
+                        ? DomovoyButtonTone.selected
+                        : DomovoyButtonTone.quiet,
+                    onPressed: onOpenProfiles,
+                    expand: true,
+                    child: const Row(
+                      children: [
+                        Icon(Icons.person_outline_rounded),
+                        SizedBox(width: DomovoyDimensions.space3),
+                        Expanded(
+                          child: Text(
+                            'Персонализация',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               FocusTraversalOrder(
                 order: const NumericFocusOrder(98),
                 child: DomovoyQuietButton(

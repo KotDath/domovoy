@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
+import '../../../core/personalization/personalization.dart';
 import '../../../design_system/design_system.dart';
 import '../../projects/application/project_workspace_controller.dart';
 import '../../projects/application/project_workspace_state.dart';
@@ -11,6 +12,9 @@ import '../../projects/presentation/project_sidebar_section.dart';
 import '../../memory/application/memory_inspector_controller.dart';
 import '../../memory/presentation/memory_inspector_panel.dart';
 import '../../memory/presentation/memory_inspector_sheet.dart';
+import '../../profile/application/profile_controller.dart';
+import '../../profile/application/profile_interview.dart';
+import '../../profile/presentation/profile_view.dart';
 import '../application/chat_workspace_controller.dart';
 import '../application/chat_workspace_state.dart';
 import '../application/chat_timeline_projector.dart';
@@ -23,13 +27,15 @@ import 'token_details.dart';
 import 'usage_view.dart';
 import 'workspace_shell.dart';
 
-enum WorkspacePane { chat, providers, usage }
+enum WorkspacePane { chat, profiles, providers, usage }
 
 class ChatWorkspacePage extends StatefulWidget {
   const ChatWorkspacePage({
     required this.controller,
     this.projects,
     this.memory,
+    this.profiles,
+    this.profileInterviewLlm,
     this.themeMode,
     this.onThemeModeChanged,
     this.providersView,
@@ -39,6 +45,8 @@ class ChatWorkspacePage extends StatefulWidget {
   final ChatWorkspaceController controller;
   final ProjectWorkspaceController? projects;
   final MemoryInspectorController? memory;
+  final ProfileController? profiles;
+  final ProfileInterviewLlm? profileInterviewLlm;
   final ThemeMode? themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final Widget? providersView;
@@ -142,6 +150,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       chats: visibleChats,
       selectedId: _state.selectedId,
       title: switch (_pane) {
+        WorkspacePane.profiles => 'Персонализация',
         WorkspacePane.providers => 'Провайдеры',
         WorkspacePane.usage => 'Использование',
         WorkspacePane.chat => selected?.title ?? 'Новый чат',
@@ -151,6 +160,14 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
           : _modelLabel(selected.selection.model),
       modelLabelFor: (summary) => _modelLabel(summary.selection.model),
       body: switch (_pane) {
+        WorkspacePane.profiles =>
+          widget.profiles == null
+              ? _body(context)
+              : ProfileView(
+                  controller: widget.profiles!,
+                  interviewLlm: widget.profileInterviewLlm,
+                  lastTrace: _lastProfileTrace(),
+                ),
         WorkspacePane.providers => widget.providersView ?? _body(context),
         WorkspacePane.usage => UsageView(projection: _tokenProjection()),
         WorkspacePane.chat => _body(context),
@@ -166,6 +183,9 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
           : null,
       onOpenSettings: _openSettings,
       onOpenUsage: () => setState(() => _pane = WorkspacePane.usage),
+      onOpenProfiles: widget.profiles == null
+          ? null
+          : () => setState(() => _pane = WorkspacePane.profiles),
       enabled: enabled,
       issueCount: _state.catalogIssues.length,
       tokenProjection: _tokenProjection(),
@@ -179,6 +199,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       themeMode: widget.themeMode,
       onThemeModeChanged: widget.onThemeModeChanged,
       usageSelected: _pane == WorkspacePane.usage,
+      profilesSelected: _pane == WorkspacePane.profiles,
       providersSelected: _pane == WorkspacePane.providers,
       projectName: group?.kind == ProjectSelectionKind.unassigned
           ? unassignedProjectLabel
@@ -255,6 +276,21 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       onOpenSettings: _openSettings,
       durationLabel: _durationLabel(),
     );
+  }
+
+  ProfileContextTrace? _lastProfileTrace() {
+    final events = _state.liveRun?.events;
+    if (events == null) return null;
+    for (final entry in events.reversed) {
+      final event = entry.event;
+      if (event is! AgentDynamicContextEvent) continue;
+      final audit = event.audit;
+      if (audit is ProfileContextTrace) return audit;
+      if (audit is CompositeAgentDynamicContextAudit) {
+        return audit.firstOfType<ProfileContextTrace>();
+      }
+    }
+    return null;
   }
 
   Widget _composer() {

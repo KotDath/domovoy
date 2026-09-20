@@ -22,6 +22,20 @@ analysis; and inspect the exact context trace.
 See [docs/memory.md](docs/memory.md) for reproducible demo steps, the extraction
 policy, security behavior, mobile constraints, and smoke results.
 
+## Personalization
+
+Domovoy keeps one active assistant profile and can store multiple alternatives.
+Each profile has a `SOUL.md` persona and a structured `USER.md` with style,
+format, constraints, and user context. Open **Персонализация** in the sidebar to
+create, clone, edit, import/export, activate, or delete profiles. An optional
+five-step LLM interview prepares a preview of `USER.md`; nothing is written
+until you confirm it.
+
+The active profile is resolved for every provider request, so activation or an
+edit affects the next message without recreating the chat. Profile data and
+memory remain separate. See [docs/personalization.md](docs/personalization.md)
+for the data model, request path, and demo script.
+
 ## Linux development
 
 The application stores an optional DeepSeek API-key override with Secret

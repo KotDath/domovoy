@@ -10,6 +10,7 @@ import 'core/agents/agents.dart';
 import 'core/environment/platform_environment_reader.dart';
 import 'core/llm/llm.dart';
 import 'core/memory/memory.dart';
+import 'core/personalization/personalization.dart';
 import 'design_system/design_system.dart';
 import 'features/chat/application/chat_workspace_controller.dart';
 import 'features/chat/presentation/chat_workspace_page.dart';
@@ -18,6 +19,8 @@ import 'features/memory/application/memory_inspector_state.dart';
 import 'features/projects/application/project_application_service.dart';
 import 'features/projects/application/project_workspace_controller.dart';
 import 'features/projects/presentation/project_workspace_page.dart';
+import 'features/profile/application/profile_controller.dart';
+import 'features/profile/application/profile_interview.dart';
 import 'features/prompt/domain/prompt_workspace.dart';
 import 'features/settings/data/secure_api_key_override_store.dart';
 import 'features/settings/data/secure_model_settings_store.dart';
@@ -28,6 +31,7 @@ import 'features/settings/presentation/provider_api_keys_dialog.dart';
 import 'infrastructure/credentials/credentials.dart';
 import 'infrastructure/agents/jsonl/jsonl.dart';
 import 'infrastructure/memory/memory.dart';
+import 'infrastructure/personalization/personalization.dart';
 import 'infrastructure/projects/platform_projects.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
@@ -229,6 +233,8 @@ final class DomovoyDependencies {
     required this.apiKeyResolver,
     this.projectStack,
     this.memoryInspector,
+    this.profileController,
+    this.profileInterviewLlm,
     DeepSeekModelSettingsStore? modelSettingsStore,
     http.Client? httpClient,
     this.disposeCallback,
@@ -268,12 +274,37 @@ final class DomovoyDependencies {
     final memoryRetrieval = LayeredMemoryRetrievalService(
       repositories: memoryRepositories,
     );
+    final profileRepository = JsonlProfileRepository(
+      storage: createPlatformProfileJsonlStreamStorage(),
+    );
+    final profileCatalog = ProfileCatalogService(
+      profiles: profileRepository,
+      activeProfile: profileRepository,
+      nowMicros: () => DateTime.now().microsecondsSinceEpoch,
+    );
     final stack = buildProductionAgentStack(
       httpClient: client,
       credentials: credentials,
-      dynamicContextProvider: MemoryDynamicContextProvider(
-        retrieval: memoryRetrieval,
-        toggles: memoryToggles,
+      dynamicContextProvider:
+          CompositeAgentDynamicContextProvider(<AgentDynamicContextProvider>[
+            PersonalizationDynamicContextProvider(catalog: profileCatalog),
+            MemoryDynamicContextProvider(
+              retrieval: memoryRetrieval,
+              toggles: memoryToggles,
+            ),
+          ]),
+    );
+    final profileController = ProfileController(
+      profiles: profileRepository,
+      activeProfile: profileRepository,
+      catalog: profileCatalog,
+      nowMicros: () => DateTime.now().microsecondsSinceEpoch,
+      preferences: SharedPreferencesProfilePreferenceRepository(),
+    );
+    final profileInterviewLlm = AgentProfileInterviewLlm(
+      runtime: stack.runtime,
+      definition: AgentProfileInterviewLlm.definitionFrom(
+        stack.promptDefinition,
       ),
     );
     final memoryExtractionLlm = RegistryMemoryExtractionLlmInvocation(
@@ -314,6 +345,8 @@ final class DomovoyDependencies {
       httpClient: client,
       projectStack: createPlatformProjectStack(),
       memoryInspector: memoryInspector,
+      profileController: profileController,
+      profileInterviewLlm: profileInterviewLlm,
     );
   }
 
@@ -330,6 +363,8 @@ final class DomovoyDependencies {
   final DeepSeekModelSettingsStore modelSettingsStore;
   final ProjectPlatformStack? projectStack;
   final MemoryInspectorController? memoryInspector;
+  final ProfileController? profileController;
+  final ProfileInterviewLlm? profileInterviewLlm;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -340,6 +375,7 @@ final class DomovoyDependencies {
     AgentError? firstError;
     try {
       memoryInspector?.dispose();
+      profileController?.dispose();
     } on Object catch (error) {
       firstError = sanitizeCloseFailure(error);
     }
@@ -397,6 +433,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     final dependencies = widget.dependencies;
+    unawaited(dependencies.profileController?.initialize());
     _chatController = ChatWorkspaceController(
       runtime: dependencies.runtime,
       definition: dependencies.promptDefinition,
@@ -483,6 +520,8 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
           ? ChatWorkspacePage(
               controller: _chatController,
               memory: widget.dependencies.memoryInspector,
+              profiles: widget.dependencies.profileController,
+              profileInterviewLlm: widget.dependencies.profileInterviewLlm,
               themeMode: _themeMode,
               onThemeModeChanged: _setThemeMode,
               providersView: _providersView(),
@@ -490,6 +529,8 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
           : ProjectWorkspacePage(
               controller: _projectController!,
               memory: widget.dependencies.memoryInspector,
+              profiles: widget.dependencies.profileController,
+              profileInterviewLlm: widget.dependencies.profileInterviewLlm,
               themeMode: _themeMode,
               onThemeModeChanged: _setThemeMode,
               providersView: _providersView(),

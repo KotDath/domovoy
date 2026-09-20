@@ -27,9 +27,11 @@ class WorkspaceShell extends StatefulWidget {
     this.newChatFocusNode,
     this.aboveChats,
     this.onOpenUsage,
+    this.onOpenProfiles,
     this.themeMode,
     this.onThemeModeChanged,
     this.usageSelected = false,
+    this.profilesSelected = false,
     this.providersSelected = false,
     this.projectName,
     this.projectRoot,
@@ -59,9 +61,11 @@ class WorkspaceShell extends StatefulWidget {
   final FocusNode? newChatFocusNode;
   final Widget? aboveChats;
   final VoidCallback? onOpenUsage;
+  final VoidCallback? onOpenProfiles;
   final ThemeMode? themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final bool usageSelected;
+  final bool profilesSelected;
   final bool providersSelected;
   final String? projectName;
   final String? projectRoot;
@@ -109,9 +113,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       newChatFocusNode: widget.newChatFocusNode,
       aboveChats: widget.aboveChats,
       onOpenUsage: widget.onOpenUsage,
+      onOpenProfiles: widget.onOpenProfiles,
       themeMode: widget.themeMode,
       onThemeModeChanged: widget.onThemeModeChanged,
       usageSelected: widget.usageSelected,
+      profilesSelected: widget.profilesSelected,
       providersSelected: widget.providersSelected,
     );
     return CallbackShortcuts(

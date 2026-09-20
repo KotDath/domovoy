@@ -34,3 +34,49 @@ final class AgentDynamicContextRequest {
 abstract interface class AgentDynamicContextProvider {
   Future<AgentDynamicContext?> provide(AgentDynamicContextRequest request);
 }
+
+/// Audit wrapper for independently resolved dynamic-context contributions.
+final class CompositeAgentDynamicContextAudit {
+  CompositeAgentDynamicContextAudit(Iterable<Object> contributions)
+    : contributions = List<Object>.unmodifiable(contributions);
+
+  final List<Object> contributions;
+
+  T? firstOfType<T>() {
+    for (final contribution in contributions) {
+      if (contribution is T) return contribution as T;
+    }
+    return null;
+  }
+}
+
+/// Resolves multiple context sources in a stable order and joins their prompt
+/// blocks without exposing one source to another.
+final class CompositeAgentDynamicContextProvider
+    implements AgentDynamicContextProvider {
+  CompositeAgentDynamicContextProvider(
+    Iterable<AgentDynamicContextProvider> providers,
+  ) : providers = List<AgentDynamicContextProvider>.unmodifiable(providers);
+
+  final List<AgentDynamicContextProvider> providers;
+
+  @override
+  Future<AgentDynamicContext?> provide(
+    AgentDynamicContextRequest request,
+  ) async {
+    final promptParts = <String>[];
+    final audits = <Object>[];
+    for (final provider in providers) {
+      final contribution = await provider.provide(request);
+      if (contribution == null || contribution.isEmpty) continue;
+      promptParts.add(contribution.systemPromptText);
+      final audit = contribution.audit;
+      if (audit != null) audits.add(audit);
+    }
+    if (promptParts.isEmpty) return null;
+    return AgentDynamicContext(
+      systemPromptText: promptParts.join('\n\n'),
+      audit: audits.isEmpty ? null : CompositeAgentDynamicContextAudit(audits),
+    );
+  }
+}
