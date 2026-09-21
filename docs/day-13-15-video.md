@@ -31,6 +31,19 @@ adb shell monkey -p ru.kotdath.domovoy \
 The debug build intentionally preserves secure storage across `adb install -r`.
 For a clean scenario, create a new chat instead of clearing application data.
 
+For automated QA through `claude-in-mobile`, use the ASCII equivalents below
+when Android's `input text` bridge rejects Cyrillic:
+
+- Day 13: `Write a short memo with exactly three sections: preparation,
+  verification, and publication. Put exactly two bullets in each section. Do
+  not create files or run commands.`
+- Day 14 allowed: `Write a brief technical proposal for a Flutter landing
+  page. Do not create files or run commands.`
+- Day 14 conflict: `Write a brief technical proposal for a React landing page.
+  Do not create files or run commands.`
+- Day 15: `Write and verify a short release-notes preparation memo. Do not
+  create files or run commands.`
+
 Record one scenario at a time. Android's built-in recorder can be used as
 follows; stop it with `Ctrl+C`, then pull the file:
 
