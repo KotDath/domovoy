@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -16,7 +17,12 @@ final class TaskWorkflowController extends ChangeNotifier {
     AgentClock? clock,
     AgentIdFactory? ids,
   }) : clock = clock ?? SystemAgentClock(),
-       ids = ids ?? AgentIdFactory(prefix: 'task');
+       ids =
+           ids ??
+           AgentIdFactory(
+             prefix: 'task',
+             namespace: _newTaskControllerNamespace(),
+           );
 
   final TaskRepository repository;
   final TaskInvariantRepository invariantRepository;
@@ -70,7 +76,11 @@ final class TaskWorkflowController extends ChangeNotifier {
       }
       return const TaskCommandResult.accepted();
     } on Object {
-      return _fail('STORAGE_FAILURE', 'Не удалось восстановить задачу.');
+      return _fail(
+        'STORAGE_FAILURE',
+        'Не удалось восстановить задачу.',
+        clearSnapshot: true,
+      );
     }
   }
 
@@ -178,15 +188,15 @@ final class TaskWorkflowController extends ChangeNotifier {
         'Сначала создайте задачу.',
       );
     }
-    final current = await invariantRepository.forTask(snapshot.id);
-    final policy = TaskInvariantPolicy(
-      scope: TaskInvariantScope.task,
-      ownerId: snapshot.id.value,
-      revision: current == null ? 0 : current.revision + 1,
-      updatedAtMicros: clock.nowMicros(),
-      rules: rules,
-    );
     try {
+      final current = await invariantRepository.forTask(snapshot.id);
+      final policy = TaskInvariantPolicy(
+        scope: TaskInvariantScope.task,
+        ownerId: snapshot.id.value,
+        revision: current == null ? 0 : current.revision + 1,
+        updatedAtMicros: clock.nowMicros(),
+        rules: rules,
+      );
       await invariantRepository.saveTaskPolicy(
         policy,
         expectedRevision: current?.revision ?? 0,
@@ -195,6 +205,11 @@ final class TaskWorkflowController extends ChangeNotifier {
       return const TaskCommandResult.accepted();
     } on TaskRepositoryException catch (error) {
       return _repositoryFailure(error);
+    } on ArgumentError catch (error) {
+      return _fail(
+        TaskTransitionFailureCode.invalidTransition.wireName,
+        error.message?.toString() ?? 'Некорректные инварианты.',
+      );
     }
   }
 
@@ -209,15 +224,15 @@ final class TaskWorkflowController extends ChangeNotifier {
     String projectId,
     List<TaskInvariantRule> rules,
   ) async {
-    final current = await invariantRepository.forProject(projectId);
-    final policy = TaskInvariantPolicy(
-      scope: TaskInvariantScope.project,
-      ownerId: projectId,
-      revision: current == null ? 0 : current.revision + 1,
-      updatedAtMicros: clock.nowMicros(),
-      rules: rules,
-    );
     try {
+      final current = await invariantRepository.forProject(projectId);
+      final policy = TaskInvariantPolicy(
+        scope: TaskInvariantScope.project,
+        ownerId: projectId,
+        revision: current == null ? 0 : current.revision + 1,
+        updatedAtMicros: clock.nowMicros(),
+        rules: rules,
+      );
       await invariantRepository.saveProjectPolicy(
         policy,
         expectedRevision: current?.revision ?? 0,
@@ -226,6 +241,11 @@ final class TaskWorkflowController extends ChangeNotifier {
       return const TaskCommandResult.accepted();
     } on TaskRepositoryException catch (error) {
       return _repositoryFailure(error);
+    } on ArgumentError catch (error) {
+      return _fail(
+        TaskTransitionFailureCode.invalidTransition.wireName,
+        error.message?.toString() ?? 'Некорректные инварианты.',
+      );
     }
   }
 
@@ -654,9 +674,17 @@ final class TaskWorkflowController extends ChangeNotifier {
         TaskRepositoryErrorKind.unavailable => 'STORAGE_FAILURE',
       }, error.message);
 
-  TaskCommandResult _fail(String code, String message) {
+  TaskCommandResult _fail(
+    String code,
+    String message, {
+    bool clearSnapshot = false,
+  }) {
     final failure = TaskWorkflowFailure(code: code, message: message);
-    _emit(_state.copyWith(failure: failure));
+    _emit(
+      clearSnapshot
+          ? TaskWorkflowState(failure: failure)
+          : _state.copyWith(failure: failure),
+    );
     return TaskCommandResult.rejected(failure);
   }
 
@@ -679,12 +707,21 @@ final class TaskWorkflowController extends ChangeNotifier {
   }
 
   Future<void> _pauseAfterAgentFailure() async {
-    final snapshot = _state.snapshot;
-    if (snapshot != null &&
-        !snapshot.paused &&
-        !snapshot.cancelled &&
-        snapshot.phase != TaskPhase.done) {
-      await _transition(TaskTransitionKind.paused);
+    try {
+      final snapshot = _state.snapshot;
+      if (snapshot != null &&
+          !snapshot.paused &&
+          !snapshot.cancelled &&
+          snapshot.phase != TaskPhase.done) {
+        final paused = await _transition(TaskTransitionKind.paused);
+        if (!paused.isAccepted) return;
+      }
+    } on Object {
+      _fail(
+        'STORAGE_FAILURE',
+        'Не удалось сохранить безопасную паузу после сбоя агента.',
+      );
+      return;
     }
     _fail(
       'AGENT_FAILURE',
@@ -715,6 +752,15 @@ final class TaskWorkflowController extends ChangeNotifier {
     unawaited(gateway.cancelActive().catchError((Object _) {}));
     super.dispose();
   }
+}
+
+String _newTaskControllerNamespace() {
+  final random = Random.secure();
+  final nonce = List<String>.generate(
+    3,
+    (_) => random.nextInt(1 << 30).toRadixString(36),
+  ).join('-');
+  return 'workflow-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-$nonce';
 }
 
 final class _ResolvedPolicies {

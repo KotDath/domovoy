@@ -533,7 +533,10 @@ void main() {
 
         final reconstructed = MobileSandboxProjectRootProvisioner(
           capabilities: ProjectPlatformCapabilities.android,
-          sandbox: sandbox,
+          sandbox: IoMobileProjectSandbox(
+            platformKind: ProjectPlatformKind.android,
+            applicationSupportDirectoryResolver: () async => support,
+          ),
         );
         expect(
           await reconstructed.revalidateRoot(
@@ -541,6 +544,90 @@ void main() {
             projectId: projectId,
           ),
           ProjectAccessStatus.active,
+        );
+      },
+    );
+
+    test('mobile sandbox rejects a project root symlinked outside', () async {
+      if (Platform.isWindows) return;
+      final temporary = await Directory.systemTemp.createTemp(
+        'domovoy-mobile-root-outside-',
+      );
+      addTearDown(() => temporary.delete(recursive: true));
+      final support = Directory('${temporary.path}/support')..createSync();
+      final outside = Directory('${temporary.path}/outside')..createSync();
+      final projectId = ProjectId('project-a');
+      final sandbox = IoMobileProjectSandbox(
+        platformKind: ProjectPlatformKind.android,
+        applicationSupportDirectoryResolver: () async => support,
+      );
+      final provisioner = MobileSandboxProjectRootProvisioner(
+        capabilities: ProjectPlatformCapabilities.android,
+        sandbox: sandbox,
+      );
+      await provisioner.stageRoot(
+        mobile: MobileSandboxProvisionRequest(
+          projectId: projectId,
+          rootId: ProjectRootId(projectId.value),
+        ),
+        cancellation: CancellationSource().token,
+      );
+      final root = Directory(
+        '${support.path}/project-sandbox-roots-v1/${projectId.value}',
+      );
+      root.deleteSync();
+      Link(root.path).createSync(outside.path);
+
+      expect(
+        await provisioner.revalidateRoot(
+          rootId: ProjectRootId(projectId.value),
+          projectId: projectId,
+        ),
+        ProjectAccessStatus.missing,
+      );
+    });
+
+    test(
+      'mobile sandbox rejects a project root symlinked to a sibling',
+      () async {
+        if (Platform.isWindows) return;
+        final temporary = await Directory.systemTemp.createTemp(
+          'domovoy-mobile-root-sibling-',
+        );
+        addTearDown(() => temporary.delete(recursive: true));
+        final projectA = ProjectId('project-a');
+        final projectB = ProjectId('project-b');
+        final sandbox = IoMobileProjectSandbox(
+          platformKind: ProjectPlatformKind.android,
+          applicationSupportDirectoryResolver: () async => temporary,
+        );
+        final provisioner = MobileSandboxProjectRootProvisioner(
+          capabilities: ProjectPlatformCapabilities.android,
+          sandbox: sandbox,
+        );
+        for (final projectId in <ProjectId>[projectA, projectB]) {
+          await provisioner.stageRoot(
+            mobile: MobileSandboxProvisionRequest(
+              projectId: projectId,
+              rootId: ProjectRootId(projectId.value),
+            ),
+            cancellation: CancellationSource().token,
+          );
+        }
+        final container = Directory(
+          '${temporary.path}/project-sandbox-roots-v1',
+        );
+        final rootA = Directory('${container.path}/${projectA.value}');
+        final rootB = Directory('${container.path}/${projectB.value}');
+        rootA.deleteSync();
+        Link(rootA.path).createSync(rootB.path);
+
+        expect(
+          await provisioner.revalidateRoot(
+            rootId: ProjectRootId(projectA.value),
+            projectId: projectA,
+          ),
+          ProjectAccessStatus.missing,
         );
       },
     );

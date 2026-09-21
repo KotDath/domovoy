@@ -454,8 +454,8 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
           ChatCommandStatus.disposed => 'Рабочее пространство уже закрыто.',
           ChatCommandStatus.conflict ||
           ChatCommandStatus.failed => 'Не удалось создать чат.',
-          ChatCommandStatus.succeeded ||
-          ChatCommandStatus.unchanged => 'Не удалось создать чат.',
+          ChatCommandStatus.succeeded || ChatCommandStatus.unchanged =>
+            throw StateError('Successful chat creation reached failure UI.'),
         };
     ScaffoldMessenger.of(
       context,

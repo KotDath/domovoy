@@ -336,6 +336,61 @@ void main() {
       },
     );
 
+    test('default task ids stay unique across controller restarts', () async {
+      final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+      final first = TaskWorkflowController(
+        repository: store,
+        invariantRepository: store,
+        gateway: _FakeTaskGateway(),
+      );
+      addTearDown(first.dispose);
+      expect(
+        (await first.start(
+          sessionId: 'session-1',
+          goal: 'First task',
+        )).isAccepted,
+        isTrue,
+      );
+      final firstId = first.state.snapshot!.id;
+      await first.cancel();
+
+      final restarted = TaskWorkflowController(
+        repository: store,
+        invariantRepository: store,
+        gateway: _FakeTaskGateway(),
+      );
+      addTearDown(restarted.dispose);
+      final second = await restarted.start(
+        sessionId: 'session-2',
+        goal: 'Second task',
+      );
+
+      expect(second.isAccepted, isTrue);
+      expect(restarted.state.snapshot!.id, isNot(firstId));
+    });
+
+    test('recovery failure clears the previous chat snapshot', () async {
+      final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+      final repository = _FailingRecoveryTaskRepository(
+        store,
+        failedSessionId: 'session-2',
+      );
+      final controller = TaskWorkflowController(
+        repository: repository,
+        invariantRepository: store,
+        gateway: _FakeTaskGateway(),
+        ids: AgentIdFactory(prefix: 'test-task'),
+      );
+      addTearDown(controller.dispose);
+      await controller.start(sessionId: 'session-1', goal: 'Private task');
+
+      final result = await controller.initialize('session-2');
+
+      expect(result.isAccepted, isFalse);
+      expect(result.failure?.code, 'STORAGE_FAILURE');
+      expect(controller.state.snapshot, isNull);
+    });
+
     test(
       'switching chats pauses the old task and restores its checkpoint',
       () async {
@@ -386,6 +441,41 @@ void main() {
       expect(gateway.calls.where((call) => call == 'verify-final').length, 2);
     });
   });
+}
+
+final class _FailingRecoveryTaskRepository implements TaskRepository {
+  _FailingRecoveryTaskRepository(
+    this.delegate, {
+    required this.failedSessionId,
+  });
+
+  final TaskRepository delegate;
+  final String failedSessionId;
+
+  @override
+  Future<TaskSnapshot?> activeForSession(String sessionId) =>
+      delegate.activeForSession(sessionId);
+
+  @override
+  Future<TaskSnapshot?> load(TaskId id) => delegate.load(id);
+
+  @override
+  Future<TaskSnapshot?> recoverActiveForSession(
+    String sessionId, {
+    required int occurredAtMicros,
+  }) {
+    if (sessionId == failedSessionId) {
+      throw StateError('simulated recovery failure');
+    }
+    return delegate.recoverActiveForSession(
+      sessionId,
+      occurredAtMicros: occurredAtMicros,
+    );
+  }
+
+  @override
+  Future<void> save(TaskSnapshot snapshot, {required int expectedRevision}) =>
+      delegate.save(snapshot, expectedRevision: expectedRevision);
 }
 
 final class _Harness {

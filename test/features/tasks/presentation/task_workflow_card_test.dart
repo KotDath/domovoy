@@ -113,4 +113,31 @@ void main() {
     expect(controller.state.snapshot?.goal, 'Уточнённая цель без React');
     expect(controller.state.snapshot?.planApproved, isFalse);
   });
+
+  testWidgets('shows the verified final result when the task is done', (
+    tester,
+  ) async {
+    final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+    final controller = TaskWorkflowController(
+      repository: store,
+      invariantRepository: store,
+      gateway: FakeTaskAgentGateway(),
+      ids: AgentIdFactory(prefix: 'card-task'),
+    );
+    addTearDown(controller.dispose);
+    await controller.start(sessionId: 'chat-1', goal: 'Собрать ответ');
+    await controller.approvePlan();
+    await controller.whenIdle;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: TaskWorkflowCard(controller: controller)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Задача · готово'), findsOneWidget);
+    expect(find.byKey(const ValueKey('task-final-output')), findsOneWidget);
+    expect(find.text('Готовый ответ'), findsOneWidget);
+  });
 }

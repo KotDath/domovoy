@@ -152,6 +152,20 @@ class _TaskDetails extends StatelessWidget {
                 ),
             ],
           ),
+        if (snapshot.phase == TaskPhase.done &&
+            snapshot.finalOutput?.trim().isNotEmpty == true)
+          ExpansionTile(
+            key: const ValueKey('task-final-output'),
+            initiallyExpanded: true,
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Результат'),
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SelectableText(snapshot.finalOutput!),
+              ),
+            ],
+          ),
         if (failure != null || snapshot.failureCode != null) ...[
           const SizedBox(height: 8),
           Text(
@@ -234,18 +248,38 @@ class _TaskDetails extends StatelessWidget {
   }
 
   Future<void> _openInvariantEditor(BuildContext context) async {
+    late final List<TaskInvariantRule> initial;
     try {
-      final initial = await controller.loadTaskRules();
-      if (!context.mounted) return;
-      final rules = await showDialog<List<TaskInvariantRule>>(
-        context: context,
-        builder: (context) => _TaskInvariantEditor(initial: initial),
-      );
-      if (rules != null) await controller.saveTaskRules(rules);
+      initial = await controller.loadTaskRules();
     } on Object {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Не удалось загрузить инварианты.')),
+      );
+      return;
+    }
+    if (!context.mounted) return;
+    final rules = await showDialog<List<TaskInvariantRule>>(
+      context: context,
+      builder: (context) => _TaskInvariantEditor(initial: initial),
+    );
+    if (rules == null || !context.mounted) return;
+    try {
+      final result = await controller.saveTaskRules(rules);
+      if (!context.mounted || result.isAccepted) return;
+      final failure = result.failure!;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Не удалось сохранить инварианты: '
+            '[${failure.code}] ${failure.message}',
+          ),
+        ),
+      );
+    } on Object {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось сохранить инварианты.')),
       );
     }
   }
