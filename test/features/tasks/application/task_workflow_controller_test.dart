@@ -146,6 +146,47 @@ void main() {
       expect(harness.controller.state.snapshot?.plan, isNull);
     });
 
+    test('content-only invariants do not reject the goal', () async {
+      final harness = _Harness();
+      await harness.store.saveProjectPolicy(
+        TaskInvariantPolicy(
+          scope: TaskInvariantScope.project,
+          ownerId: 'project-1',
+          revision: 0,
+          updatedAtMicros: 1,
+          rules: <TaskInvariantRule>[
+            TaskInvariantRule(
+              id: 'short-answer',
+              scope: TaskInvariantScope.project,
+              category: TaskInvariantCategory.businessRule,
+              description: 'The answer must be shorter than 10 characters.',
+              checker: TaskInvariantChecker.maximumCharacters,
+              maximumCharacters: 10,
+            ),
+            TaskInvariantRule(
+              id: 'required-answer-term',
+              scope: TaskInvariantScope.project,
+              category: TaskInvariantCategory.businessRule,
+              description: 'The answer must contain zebra.',
+              checker: TaskInvariantChecker.requiredTerms,
+              terms: const <String>['zebra'],
+            ),
+          ],
+        ),
+        expectedRevision: 0,
+      );
+
+      final result = await harness.controller.start(
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        goal: 'Write a concise release note without constraining the prompt.',
+      );
+
+      expect(result.isAccepted, isTrue);
+      expect(harness.gateway.calls, <String>['plan']);
+      expect(harness.controller.state.snapshot?.plan, isNotNull);
+    });
+
     test(
       'pause cancels an invocation and resume continues from checkpoint',
       () async {
@@ -524,6 +565,32 @@ void main() {
       expect(snapshot.failureCode, 'REPAIR_EXHAUSTED');
       expect(gateway.calls.where((call) => call == 'compose').length, 2);
       expect(gateway.calls.where((call) => call == 'verify-final').length, 2);
+    });
+
+    test('persisted repair failure replaces an in-phase diagnostic', () async {
+      final gateway = _FakeTaskGateway(
+        nodeVerifications: const <TaskVerification>[
+          TaskVerification(accepted: false, evidence: 'bad node'),
+          TaskVerification(accepted: false, evidence: 'still bad'),
+        ],
+      )..blockNextExecution = true;
+      final harness = _Harness(gateway: gateway);
+      await harness.controller.start(
+        sessionId: 'session-1',
+        goal: 'Expose the blocking failure',
+      );
+      await harness.controller.approvePlan();
+      await gateway.executionStarted.future;
+      harness.controller.diagnose(TaskTransitionKind.finalValidated);
+
+      gateway.releaseBlockedExecution();
+      await harness.controller.whenIdle;
+
+      expect(
+        harness.controller.state.snapshot?.failureCode,
+        'REPAIR_EXHAUSTED',
+      );
+      expect(harness.controller.state.failure, isNull);
     });
   });
 }

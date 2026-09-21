@@ -272,7 +272,12 @@ final class TaskWorkflowController extends ChangeNotifier {
     try {
       final policies = await _resolvePolicies(current);
       final rules = policies.rules;
-      final goalCheck = await _checkCandidate(current.goal!, rules, generation);
+      final planningRules = _planningRules(rules);
+      final goalCheck = await _checkCandidate(
+        current.goal!,
+        planningRules,
+        generation,
+      );
       if (goalCheck != null) return goalCheck;
       _setInvoking(true);
       final plan = await gateway.preparePlan(goal: current.goal!, rules: rules);
@@ -286,13 +291,7 @@ final class TaskWorkflowController extends ChangeNotifier {
       }
       final planCheck = await _checkCandidate(
         jsonEncode(plan.toJson()),
-        rules
-            .where(
-              (rule) =>
-                  rule.checker != TaskInvariantChecker.maximumCharacters &&
-                  rule.checker != TaskInvariantChecker.requiredTerms,
-            )
-            .toList(),
+        planningRules,
         generation,
       );
       if (planCheck != null) return planCheck;
@@ -667,7 +666,9 @@ final class TaskWorkflowController extends ChangeNotifier {
         expectedRevision: current.revision,
       );
       final nextPhase = result.snapshot!.phase;
-      final visibleFailure = _diagnosticFailurePhase == nextPhase
+      final hasPersistedFailure = result.snapshot!.failureCode != null;
+      final visibleFailure =
+          !hasPersistedFailure && _diagnosticFailurePhase == nextPhase
           ? _state.failure
           : null;
       if (visibleFailure == null) _diagnosticFailurePhase = null;
@@ -684,6 +685,14 @@ final class TaskWorkflowController extends ChangeNotifier {
     result.failureCode?.wireName ?? 'INVALID_TRANSITION',
     result.message ?? 'Переход отклонён.',
   );
+
+  List<TaskInvariantRule> _planningRules(List<TaskInvariantRule> rules) => rules
+      .where(
+        (rule) =>
+            rule.checker != TaskInvariantChecker.maximumCharacters &&
+            rule.checker != TaskInvariantChecker.requiredTerms,
+      )
+      .toList();
 
   TaskCommandResult _repositoryFailure(TaskRepositoryException error) =>
       _fail(switch (error.kind) {

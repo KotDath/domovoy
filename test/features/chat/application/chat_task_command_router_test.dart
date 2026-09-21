@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:domovoy/core/agents/agents.dart';
+import 'package:domovoy/core/tasks/tasks.dart';
 import 'package:domovoy/features/chat/application/chat_task_command_router.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_state.dart';
 import 'package:domovoy/features/tasks/application/tasks.dart';
@@ -126,6 +129,62 @@ void main() {
 
     await tasks.approvePlan();
 
+    expect(router.notice, isNull);
+  });
+
+  test('clears plan-ready feedback when planning is paused', () async {
+    final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+    final tasks = TaskWorkflowController(
+      repository: store,
+      invariantRepository: store,
+      gateway: FakeTaskAgentGateway(),
+    );
+    final router = ChatTaskCommandRouter(
+      tasks: tasks,
+      fallback: (_) async => const ChatCommandResult.succeeded(),
+    );
+    addTearDown(router.dispose);
+    await router.attach(sessionId: 'chat-1');
+    await router.send('/plan');
+    await router.send('Собрать ответ');
+
+    await tasks.pause();
+
+    expect(router.notice, isNull);
+  });
+
+  test('clears replan and resume feedback when it becomes stale', () async {
+    final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+    final gateway = FakeTaskAgentGateway();
+    final tasks = TaskWorkflowController(
+      repository: store,
+      invariantRepository: store,
+      gateway: gateway,
+    );
+    final router = ChatTaskCommandRouter(
+      tasks: tasks,
+      fallback: (_) async => const ChatCommandResult.succeeded(),
+    );
+    addTearDown(router.dispose);
+    await router.attach(sessionId: 'chat-1');
+    await router.send('/plan');
+    await router.send('Собрать ответ');
+    await router.send('/task replan');
+    expect(router.notice, 'Подготовлен новый план.');
+
+    await tasks.approvePlan();
+    expect(router.notice, isNull);
+    await tasks.whenIdle;
+
+    await router.send('/plan');
+    await router.send('Вторая задача');
+    gateway.executionGate = Completer<void>();
+    await tasks.approvePlan();
+    await tasks.pause();
+    await router.send('/task resume');
+    await tasks.whenIdle;
+
+    expect(tasks.state.snapshot?.phase, TaskPhase.done);
     expect(router.notice, isNull);
   });
 }

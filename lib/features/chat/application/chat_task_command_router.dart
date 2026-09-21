@@ -14,6 +14,9 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
   }
 
   static const _planPreparedNotice = 'План подготовлен для утверждения.';
+  static const _replanPreparedNotice = 'Подготовлен новый план.';
+  static const _pausedNotice = 'Задача приостановлена.';
+  static const _resumedNotice = 'Задача продолжена.';
 
   final TaskWorkflowController tasks;
   final ChatFallbackSender fallback;
@@ -104,16 +107,13 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
         _notify();
         return const ChatCommandResult.succeeded();
       case '/task pause':
-        return _map(
-          await tasks.pause(),
-          acceptedNotice: 'Задача приостановлена.',
-        );
+        return _map(await tasks.pause(), acceptedNotice: _pausedNotice);
       case '/task resume':
-        return _map(await tasks.resume(), acceptedNotice: 'Задача продолжена.');
+        return _map(await tasks.resume(), acceptedNotice: _resumedNotice);
       case '/task replan':
         return _map(
           await tasks.replan(),
-          acceptedNotice: 'Подготовлен новый план.',
+          acceptedNotice: _replanPreparedNotice,
         );
       case '/task cancel':
         return _map(await tasks.cancel(), acceptedNotice: 'Задача отменена.');
@@ -156,13 +156,26 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
   }
 
   void _handleTaskStateChanged() {
-    if (_notice != _planPreparedNotice) return;
     final snapshot = tasks.state.snapshot;
-    if (snapshot != null &&
-        snapshot.phase == TaskPhase.planning &&
-        !snapshot.planApproved) {
-      return;
-    }
+    final planNotice =
+        _notice == _planPreparedNotice || _notice == _replanPreparedNotice;
+    final stalePlanNotice =
+        planNotice &&
+        (snapshot == null ||
+            snapshot.phase != TaskPhase.planning ||
+            snapshot.planApproved ||
+            snapshot.paused ||
+            snapshot.cancelled);
+    final stalePausedNotice =
+        _notice == _pausedNotice &&
+        (snapshot == null || !snapshot.paused || snapshot.cancelled);
+    final staleResumedNotice =
+        _notice == _resumedNotice &&
+        (snapshot == null ||
+            snapshot.paused ||
+            snapshot.cancelled ||
+            snapshot.phase == TaskPhase.done);
+    if (!stalePlanNotice && !stalePausedNotice && !staleResumedNotice) return;
     _notice = null;
     _notify();
   }
