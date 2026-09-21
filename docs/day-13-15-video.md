@@ -116,6 +116,9 @@ Use a new chat.
    `[PLAN_APPROVAL_REQUIRED]`: execution was not entered.
 3. Tap `Утвердить план`. During execution, tap `Проверить done`. Show
    `[VALIDATION_REQUIRED]`: the task did not jump to done.
+   Keep recording through at least one later revision or node-progress update:
+   the diagnostic remains visible while routing advances inside `execution` and
+   clears when the workflow enters validation.
 4. If needed, use `Пауза` and `Продолжить`; do not provide per-node approval.
 5. Show automatic transition through `выполнение` and `валидация` to `готово`.
 6. At `готово`, show full progress and `Ожидается: нет`.
@@ -142,3 +145,7 @@ For every scenario retain:
 
 The coordinator records concrete QA artifact paths in `docs/day-13-15.md` after
 the independent Android run has completed.
+
+The ignored `artifacts/day-13-15-qa/` directory contains pre-recording Android
+PNG evidence. It is not a substitute for the assignment MP4; it is the reference
+set for matching the intended states while recording.

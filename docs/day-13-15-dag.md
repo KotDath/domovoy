@@ -10,7 +10,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | G3 | Scheduler and isolated agents | G2 | done | `af65e8d..3097149` | paired review settled; 13 scheduler/gateway tests; full suite: 773 passed, 1 skipped |
 | G4 | Chat routing and task UI | G3 | done | `cefe9c5..bd646bc` | paired review settled; command-router, session-switch, and task-card widget tests; full suite: 781 passed, 1 skipped |
 | G5 | Integration, Android, video scripts | G4 | done | `b52fcf4..d126e90` | paired review settled; analyze clean; 790 passed, 1 skipped; Days 13–15 pass on API 35 with reproducible evidence |
-| G6 | Final certification | G5 | in review | — | fresh two-agent final review running; Android regression passed |
+| G6 | Final certification | G5 | in review | `d126e90..21eb0b9` | first certification findings settled; 793 passed, 1 skipped; final-head Android regression passes; fresh closing pair pending |
 
 ## Gate for every code group
 
@@ -90,4 +90,23 @@ automatic-loop persistence errors. Independent Android QA found a restart-only
 task-ID collision that static review missed; task controllers now use a
 process-unique namespace, with a regression test that creates a second task
 against the same persisted store after controller restart. Targeted tests,
-`flutter analyze`, and the full 789-pass/1-skip suite are green.
+`flutter analyze`, and the full 790-pass/1-skip suite are green.
+
+## G6 certification progress
+
+The first fresh pair agreed that the Android evidence/runbook needed a single
+traceable scenario. A verified unique finding also showed that fragment-only
+task corruption could bypass active-task lookup; session discovery and the
+one-active-task guard now fail closed when no trustworthy owner hint exists.
+The same settlement hides replan while paused and stops legal diagnostic probes
+from reporting `INVALID_TRANSITION`.
+
+Independent final-head Android QA then exposed a video-specific race: the
+`VALIDATION_REQUIRED` reaction was correct but was cleared by the next automatic
+revision before a stable frame could be recorded. Diagnostic failures now remain
+observable across automatic revisions in their phase, stale plan notices are
+hidden after planning, and a regression test covers the behavior. On API 35 the
+exact Day 15 prompt retained `VALIDATION_REQUIRED` through `r14` and `r15` at
+3/5 nodes, then automatically reached `done` at `r24`, 5/5, with the verified
+result expanded. `flutter analyze` is clean and the full suite is 793 passed,
+1 skipped. A fresh closing review pair must still certify this settlement.
