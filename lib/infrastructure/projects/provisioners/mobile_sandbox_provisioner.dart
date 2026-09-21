@@ -159,11 +159,13 @@ final class IoMobileProjectSandbox implements MobileProjectSandbox {
       return null;
     }
     final resolved = await root.resolveSymbolicLinks();
-    final expected = p.normalize(p.absolute(root.path));
-    if (p.normalize(resolved) != expected) return null;
     final container = await _container();
     final resolvedContainer = await container.resolveSymbolicLinks();
-    if (!p.isWithin(resolvedContainer, resolved)) return null;
+    final expected = p.normalize(p.join(resolvedContainer, projectId.value));
+    if (p.normalize(resolved) != expected ||
+        !p.isWithin(resolvedContainer, resolved)) {
+      return null;
+    }
     return _identity(resolved);
   }
 

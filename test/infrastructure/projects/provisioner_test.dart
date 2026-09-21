@@ -501,6 +501,50 @@ void main() {
       );
     });
 
+    test(
+      'mobile sandbox accepts a canonicalized support-directory alias',
+      () async {
+        if (Platform.isWindows) return;
+        final temporary = await Directory.systemTemp.createTemp(
+          'domovoy-mobile-root-alias-',
+        );
+        addTearDown(() => temporary.delete(recursive: true));
+        final support = Directory('${temporary.path}/support')
+          ..createSync(recursive: true);
+        final alias = Link('${temporary.path}/support-alias')
+          ..createSync(support.path);
+        final projectId = ProjectId('mobile-project');
+        final sandbox = IoMobileProjectSandbox(
+          platformKind: ProjectPlatformKind.android,
+          applicationSupportDirectoryResolver: () async =>
+              Directory(alias.path),
+        );
+        final first = MobileSandboxProjectRootProvisioner(
+          capabilities: ProjectPlatformCapabilities.android,
+          sandbox: sandbox,
+        );
+        await first.stageRoot(
+          mobile: MobileSandboxProvisionRequest(
+            projectId: projectId,
+            rootId: ProjectRootId(projectId.value),
+          ),
+          cancellation: CancellationSource().token,
+        );
+
+        final reconstructed = MobileSandboxProjectRootProvisioner(
+          capabilities: ProjectPlatformCapabilities.android,
+          sandbox: sandbox,
+        );
+        expect(
+          await reconstructed.revalidateRoot(
+            rootId: ProjectRootId(projectId.value),
+            projectId: projectId,
+          ),
+          ProjectAccessStatus.active,
+        );
+      },
+    );
+
     test('web adapter writes nothing', () async {
       final provisioner = WebUnsupportedProjectRootProvisioner();
       final staged = await provisioner.stageRoot(

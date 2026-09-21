@@ -436,12 +436,30 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   }
 
   void _createChat() {
+    if (!_switchPane(WorkspacePane.chat)) return;
+    unawaited(_createChatAndReportFailure());
+  }
+
+  Future<void> _createChatAndReportFailure() async {
     final projects = widget.projects;
-    if (projects != null) {
-      unawaited(projects.createChat());
-      return;
-    }
-    unawaited(widget.controller.createChat());
+    final result = projects == null
+        ? await widget.controller.createChat()
+        : await projects.createChat();
+    if (!mounted || result.isSuccess) return;
+    final message =
+        result.error?.message ??
+        switch (result.status) {
+          ChatCommandStatus.busy => 'Дождитесь завершения текущей операции.',
+          ChatCommandStatus.cancelled => 'Создание чата отменено.',
+          ChatCommandStatus.disposed => 'Рабочее пространство уже закрыто.',
+          ChatCommandStatus.conflict ||
+          ChatCommandStatus.failed => 'Не удалось создать чат.',
+          ChatCommandStatus.succeeded ||
+          ChatCommandStatus.unchanged => 'Не удалось создать чат.',
+        };
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _selectChat(AgentSessionId id) {
