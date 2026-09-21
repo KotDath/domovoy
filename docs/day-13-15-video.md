@@ -13,6 +13,9 @@ repeatable Android recording procedure and the evidence expected in each video.
   `/home/kotdath/.npm-packages/bin/claude-in-mobile`, version 4.4.1;
   `claude-in-mobile doctor` reports the Android section as ready.
 - Provider/model: DeepSeek / `deepseek-flash`, with reasoning enabled.
+- Certified debug APK: behavior commit `db73237`, SHA-256
+  `e6fe00e15243c3765664a56dd0ca79c43deac19265c338e933d2a18943757452`,
+  version 1.0.0, target SDK 36.
 - The DeepSeek key is entered before recording through the Providers screen and
   stored by `flutter_secure_storage`. Never show or paste the key in a video,
   shell transcript, screenshot, or committed file.
@@ -149,3 +152,7 @@ the independent Android run has completed.
 The ignored `artifacts/day-13-15-qa/` directory contains pre-recording Android
 PNG evidence. It is not a substitute for the assignment MP4; it is the reference
 set for matching the intended states while recording.
+
+The final-device smoke is under
+`artifacts/day-13-15-qa/final-db73237-smoke/`; it contains the completed card,
+visible status and unknown-command notices, and the concise device report.

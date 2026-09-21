@@ -10,7 +10,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | G3 | Scheduler and isolated agents | G2 | done | `af65e8d..3097149` | paired review settled; 13 scheduler/gateway tests; full suite: 773 passed, 1 skipped |
 | G4 | Chat routing and task UI | G3 | done | `cefe9c5..bd646bc` | paired review settled; command-router, session-switch, and task-card widget tests; full suite: 781 passed, 1 skipped |
 | G5 | Integration, Android, video scripts | G4 | done | `b52fcf4..d126e90` | paired review settled; analyze clean; 790 passed, 1 skipped; Days 13–15 pass on API 35 with reproducible evidence |
-| G6 | Final certification | G5 | in review | `d126e90..21eb0b9` | first certification findings settled; 793 passed, 1 skipped; final-head Android regression passes; fresh closing pair pending |
+| G6 | Final certification | G5 | done | `d126e90..db73237` | both closing reviewers found no P0–P2; all confirmed P3 findings settled; analyze clean; 798 passed, 1 skipped; final APK smoke passes on API 35 |
 
 ## Gate for every code group
 
@@ -108,5 +108,20 @@ observable across automatic revisions in their phase, stale plan notices are
 hidden after planning, and a regression test covers the behavior. On API 35 the
 exact Day 15 prompt retained `VALIDATION_REQUIRED` through `r14` and `r15` at
 3/5 nodes, then automatically reached `done` at `r24`, 5/5, with the verified
-result expanded. `flutter analyze` is clean and the full suite is 793 passed,
-1 skipped. A fresh closing review pair must still certify this settlement.
+result expanded.
+
+The closing Muse and DeepSeek pair found no P0–P2 issue. Their shared finding
+was stale notice/certification data; verified unique P3 findings covered
+content-only invariant scope and persisted failure priority. The settlement
+clears plan/replan/pause/resume notices at their lifecycle boundaries, keeps
+invalid-command diagnostics visible at terminal state, applies required-term
+and maximum-character rules only to produced content, and lets a persisted
+`REPAIR_EXHAUSTED` failure supersede a retained diagnostic. Four regression
+tests cover these cases.
+
+The final debug APK was built from `db73237`, has SHA-256
+`e6fe00e15243c3765664a56dd0ca79c43deac19265c338e933d2a18943757452`,
+and passed a fresh DeepSeek Flash run through `claude-in-mobile` on Android 15 /
+API 35: automatic completion reached 4/4, status and unknown-command notices
+remained observable at `done`, and stale plan/replan notices were absent.
+`flutter analyze` is clean and the full suite is 798 passed, 1 skipped.
