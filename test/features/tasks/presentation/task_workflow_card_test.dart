@@ -129,7 +129,12 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: TaskWorkflowCard(controller: controller)),
+        home: Scaffold(
+          body: TaskWorkflowCard(
+            controller: controller,
+            notice: 'План подготовлен для утверждения.',
+          ),
+        ),
       ),
     );
 
@@ -162,5 +167,6 @@ void main() {
     expect(find.text('Задача · готово'), findsOneWidget);
     expect(find.byKey(const ValueKey('task-final-output')), findsOneWidget);
     expect(find.text('Готовый ответ'), findsOneWidget);
+    expect(find.byKey(const ValueKey('task-notice')), findsNothing);
   });
 }

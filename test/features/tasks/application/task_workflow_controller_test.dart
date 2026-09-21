@@ -64,6 +64,34 @@ void main() {
     );
 
     test(
+      'diagnostic failure survives automatic transitions in its phase',
+      () async {
+        final gateway = _FakeTaskGateway(planNodeCount: 2)
+          ..blockNextExecution = true;
+        final harness = _Harness(gateway: gateway);
+        await harness.controller.start(
+          sessionId: 'session-1',
+          goal: 'Keep the guard visible',
+        );
+        await harness.controller.approvePlan();
+        await gateway.executionStarted.future;
+
+        final diagnostic = harness.controller.diagnose(
+          TaskTransitionKind.finalValidated,
+        );
+        expect(diagnostic.failure?.code, 'VALIDATION_REQUIRED');
+
+        gateway.releaseBlockedExecution(blockNext: true);
+        await gateway.secondExecutionStarted.future;
+
+        expect(harness.controller.state.snapshot?.phase, TaskPhase.execution);
+        expect(harness.controller.state.failure?.code, 'VALIDATION_REQUIRED');
+
+        await harness.controller.cancel();
+      },
+    );
+
+    test(
       'diagnostic probe of a legal transition does not report an error',
       () async {
         final harness = _Harness();
@@ -560,19 +588,33 @@ final class _FakeTaskGateway implements TaskAgentGateway {
   _FakeTaskGateway({
     List<TaskVerification> nodeVerifications = const <TaskVerification>[],
     List<TaskVerification> finalVerifications = const <TaskVerification>[],
+    this.planNodeCount = 1,
   }) : nodeVerifications = List<TaskVerification>.from(nodeVerifications),
        finalVerifications = List<TaskVerification>.from(finalVerifications);
 
   final List<String> calls = <String>[];
   final List<TaskVerification> nodeVerifications;
   final List<TaskVerification> finalVerifications;
+  final int planNodeCount;
   final Completer<void> executionStarted = Completer<void>();
+  final Completer<void> secondExecutionStarted = Completer<void>();
   Completer<String>? _blockedExecution;
   var blockNextExecution = false;
   var throwOnCancel = false;
   var hangOnCancel = false;
   var executionFailuresRemaining = 0;
   var cancelCount = 0;
+  var _executionCount = 0;
+
+  void releaseBlockedExecution({bool blockNext = false}) {
+    final blocked = _blockedExecution;
+    if (blocked == null || blocked.isCompleted) {
+      throw StateError('No blocked execution to release.');
+    }
+    _blockedExecution = null;
+    blockNextExecution = blockNext;
+    blocked.complete('node output released');
+  }
 
   @override
   Future<void> cancelActive() async {
@@ -610,7 +652,13 @@ final class _FakeTaskGateway implements TaskAgentGateway {
     String? rejectionEvidence,
   }) {
     calls.add('execute:${node.id.value}');
-    if (!executionStarted.isCompleted) executionStarted.complete();
+    _executionCount += 1;
+    if (_executionCount == 1 && !executionStarted.isCompleted) {
+      executionStarted.complete();
+    }
+    if (_executionCount == 2 && !secondExecutionStarted.isCompleted) {
+      secondExecutionStarted.complete();
+    }
     if (executionFailuresRemaining > 0) {
       executionFailuresRemaining -= 1;
       return Future<String>.error(StateError('provider failed'));
@@ -628,14 +676,20 @@ final class _FakeTaskGateway implements TaskAgentGateway {
     required List<TaskInvariantRule> rules,
   }) async {
     calls.add('plan');
-    return TaskPlan(<TaskPlanNode>[
-      TaskPlanNode(
-        id: const TaskNodeId('work'),
-        title: 'Work',
-        instructions: 'Complete the work.',
-        acceptanceCriteria: 'The work is complete.',
+    return TaskPlan(
+      List<TaskPlanNode>.generate(
+        planNodeCount,
+        (index) => TaskPlanNode(
+          id: TaskNodeId(planNodeCount == 1 ? 'work' : 'work-${index + 1}'),
+          title: 'Work ${index + 1}',
+          instructions: 'Complete work ${index + 1}.',
+          acceptanceCriteria: 'Work ${index + 1} is complete.',
+          dependencies: index == 0
+              ? const <TaskNodeId>[]
+              : <TaskNodeId>[TaskNodeId('work-$index')],
+        ),
       ),
-    ]);
+    );
   }
 
   @override

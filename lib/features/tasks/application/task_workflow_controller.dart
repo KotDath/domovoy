@@ -39,11 +39,13 @@ final class TaskWorkflowController extends ChangeNotifier {
   var _generation = 0;
   var _disposed = false;
   String? _attachedSessionId;
+  TaskPhase? _diagnosticFailurePhase;
 
   TaskWorkflowState get state => _state;
   Future<void> get whenIdle => _automatic ?? Future<void>.value();
 
   Future<TaskCommandResult> initialize(String sessionId) async {
+    _clearDiagnosticFailure();
     if (_attachedSessionId == sessionId) {
       return const TaskCommandResult.accepted();
     }
@@ -89,6 +91,7 @@ final class TaskWorkflowController extends ChangeNotifier {
     String? projectId,
     required String goal,
   }) async {
+    _clearDiagnosticFailure();
     _attachedSessionId = sessionId;
     if (_state.snapshot != null && _isActive(_state.snapshot!)) {
       return _fail(
@@ -119,6 +122,7 @@ final class TaskWorkflowController extends ChangeNotifier {
   }
 
   Future<TaskCommandResult> approvePlan() async {
+    _clearDiagnosticFailure();
     final result = await _transition(TaskTransitionKind.planApproved);
     if (!result.isAccepted) return result;
     _launchAutomatic(++_generation);
@@ -126,12 +130,14 @@ final class TaskWorkflowController extends ChangeNotifier {
   }
 
   Future<TaskCommandResult> pause() async {
+    _clearDiagnosticFailure();
     _generation += 1;
     await _cancelActiveBestEffort();
     return _transition(TaskTransitionKind.paused);
   }
 
   Future<TaskCommandResult> resume() async {
+    _clearDiagnosticFailure();
     final result = await _transition(TaskTransitionKind.resumed);
     if (!result.isAccepted) return result;
     final snapshot = _state.snapshot!;
@@ -144,6 +150,7 @@ final class TaskWorkflowController extends ChangeNotifier {
   }
 
   Future<TaskCommandResult> replan({String? goal}) async {
+    _clearDiagnosticFailure();
     _generation += 1;
     await _cancelActiveBestEffort();
     final result = await _transition(TaskTransitionKind.replanned, text: goal);
@@ -152,6 +159,7 @@ final class TaskWorkflowController extends ChangeNotifier {
   }
 
   Future<TaskCommandResult> cancel() async {
+    _clearDiagnosticFailure();
     _generation += 1;
     await _cancelActiveBestEffort();
     return _transition(TaskTransitionKind.cancelled);
@@ -173,12 +181,17 @@ final class TaskWorkflowController extends ChangeNotifier {
         occurredAtMicros: clock.nowMicros(),
       ),
     );
-    if (!result.isAccepted) return _reject(result);
+    if (!result.isAccepted) {
+      _diagnosticFailurePhase = current.phase;
+      return _reject(result);
+    }
+    _clearDiagnosticFailure();
     _emit(_state.copyWith(failure: null));
     return const TaskCommandResult.accepted();
   }
 
   Future<TaskCommandResult> saveTaskRules(List<TaskInvariantRule> rules) async {
+    _clearDiagnosticFailure();
     final snapshot = _state.snapshot;
     if (snapshot == null) {
       return _fail(
@@ -222,6 +235,7 @@ final class TaskWorkflowController extends ChangeNotifier {
     String projectId,
     List<TaskInvariantRule> rules,
   ) async {
+    _clearDiagnosticFailure();
     try {
       final current = await invariantRepository.forProject(projectId);
       final policy = TaskInvariantPolicy(
@@ -652,7 +666,14 @@ final class TaskWorkflowController extends ChangeNotifier {
         result.snapshot!,
         expectedRevision: current.revision,
       );
-      _emit(_state.copyWith(snapshot: result.snapshot, failure: null));
+      final nextPhase = result.snapshot!.phase;
+      final visibleFailure = _diagnosticFailurePhase == nextPhase
+          ? _state.failure
+          : null;
+      if (visibleFailure == null) _diagnosticFailurePhase = null;
+      _emit(
+        _state.copyWith(snapshot: result.snapshot, failure: visibleFailure),
+      );
       return const TaskCommandResult.accepted();
     } on TaskRepositoryException catch (error) {
       return _repositoryFailure(error);
@@ -692,6 +713,10 @@ final class TaskWorkflowController extends ChangeNotifier {
           .join('\n');
 
   bool _isCurrent(int generation) => !_disposed && generation == _generation;
+
+  void _clearDiagnosticFailure() {
+    _diagnosticFailurePhase = null;
+  }
 
   Future<void> _cancelActiveBestEffort() async {
     try {
