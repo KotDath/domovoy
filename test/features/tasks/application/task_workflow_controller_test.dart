@@ -276,6 +276,42 @@ void main() {
       expect(harness.gateway.calls, <String>['plan']);
     });
 
+    test('removing a task invariant allows a same-task replan', () async {
+      final harness = _Harness();
+      await harness.controller.start(
+        sessionId: 'session-1',
+        goal: 'Build with Flutter',
+      );
+      final rule = TaskInvariantRule(
+        id: 'no-react',
+        scope: TaskInvariantScope.task,
+        category: TaskInvariantCategory.stack,
+        description: 'Flutter only.',
+        checker: TaskInvariantChecker.forbiddenTerms,
+        terms: const <String>['React'],
+      );
+      expect(
+        (await harness.controller.saveTaskRules(<TaskInvariantRule>[
+          rule,
+        ])).isAccepted,
+        isTrue,
+      );
+      final refused = await harness.controller.replan(goal: 'Build with React');
+      expect(refused.failure?.code, 'INVARIANT_VIOLATION');
+
+      expect(
+        (await harness.controller.saveTaskRules(
+          const <TaskInvariantRule>[],
+        )).isAccepted,
+        isTrue,
+      );
+      final allowed = await harness.controller.replan(goal: 'Build with React');
+
+      expect(allowed.isAccepted, isTrue);
+      expect(harness.controller.state.snapshot?.plan, isNotNull);
+      expect(harness.controller.state.failure, isNull);
+    });
+
     test('repairs a rejected node exactly once before continuing', () async {
       final gateway = _FakeTaskGateway(
         nodeVerifications: <TaskVerification>[
