@@ -282,6 +282,21 @@ void main() {
         repository.load(fragmentId),
         _repositoryError(TaskRepositoryErrorKind.corrupt),
       );
+      await expectLater(
+        repository.activeForSession('session-1'),
+        _repositoryError(TaskRepositoryErrorKind.corrupt),
+      );
+      await expectLater(
+        repository.recoverActiveForSession('session-1', occurredAtMicros: 2),
+        _repositoryError(TaskRepositoryErrorKind.corrupt),
+      );
+      await expectLater(
+        repository.save(
+          _initial(id: const TaskId('replacement')),
+          expectedRevision: 0,
+        ),
+        _repositoryError(TaskRepositoryErrorKind.corrupt),
+      );
 
       final policy = TaskInvariantPolicy(
         scope: TaskInvariantScope.task,

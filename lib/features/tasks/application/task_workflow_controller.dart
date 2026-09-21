@@ -174,10 +174,8 @@ final class TaskWorkflowController extends ChangeNotifier {
       ),
     );
     if (!result.isAccepted) return _reject(result);
-    return _fail(
-      TaskTransitionFailureCode.invalidTransition.wireName,
-      'Диагностический переход уже допустим и не был применён.',
-    );
+    _emit(_state.copyWith(failure: null));
+    return const TaskCommandResult.accepted();
   }
 
   Future<TaskCommandResult> saveTaskRules(List<TaskInvariantRule> rules) async {

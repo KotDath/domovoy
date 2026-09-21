@@ -63,6 +63,27 @@ void main() {
       },
     );
 
+    test(
+      'diagnostic probe of a legal transition does not report an error',
+      () async {
+        final harness = _Harness();
+        await harness.controller.start(
+          sessionId: 'session-1',
+          goal: 'Keep the diagnostic read-only',
+        );
+        final before = harness.controller.state.snapshot!;
+
+        final result = harness.controller.diagnose(
+          TaskTransitionKind.cancelled,
+        );
+
+        expect(result.isAccepted, isTrue);
+        expect(harness.controller.state.failure, isNull);
+        expect(harness.controller.state.snapshot, same(before));
+        expect(harness.controller.state.snapshot?.cancelled, isFalse);
+      },
+    );
+
     test('deterministic invariant rejects goal before any LLM call', () async {
       final harness = _Harness();
       await harness.store.saveProjectPolicy(

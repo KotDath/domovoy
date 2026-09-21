@@ -114,6 +114,29 @@ void main() {
     expect(controller.state.snapshot?.planApproved, isFalse);
   });
 
+  testWidgets('does not offer replanning while the task is paused', (
+    tester,
+  ) async {
+    final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+    final controller = TaskWorkflowController(
+      repository: store,
+      invariantRepository: store,
+      gateway: FakeTaskAgentGateway(),
+    );
+    addTearDown(controller.dispose);
+    await controller.start(sessionId: 'chat-1', goal: 'Поставить на паузу');
+    await controller.pause();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: TaskWorkflowCard(controller: controller)),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('task-resume')), findsOneWidget);
+    expect(find.byKey(const ValueKey('task-replan')), findsNothing);
+  });
+
   testWidgets('shows the verified final result when the task is done', (
     tester,
   ) async {

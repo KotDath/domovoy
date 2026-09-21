@@ -83,13 +83,8 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
     for (final key in await _safeListKeys()) {
       final id = keys.tryTask(key);
       if (id == null) continue;
-      final hint = await _taskSessionHint(id);
-      if (hint != sessionId) continue;
-      final snapshot = (await _readTask(id)).snapshot;
-      if (snapshot != null &&
-          snapshot.sessionId == sessionId &&
-          !snapshot.cancelled &&
-          snapshot.phase != TaskPhase.done) {
+      final snapshot = await _taskForSession(id, sessionId);
+      if (snapshot != null && _isActive(snapshot)) {
         candidates.add(snapshot);
       }
     }
@@ -241,14 +236,25 @@ final class JsonlTaskStore implements TaskRepository, TaskInvariantRepository {
     for (final key in await _safeListKeys()) {
       final id = keys.tryTask(key);
       if (id == null || id == excluded) continue;
-      final hint = await _taskSessionHint(id);
-      if (hint != sessionId) continue;
-      final candidate = (await _readTask(id)).snapshot;
+      final candidate = await _taskForSession(id, sessionId);
       if (candidate != null && _isActive(candidate)) {
         return candidate;
       }
     }
     return null;
+  }
+
+  Future<TaskSnapshot?> _taskForSession(TaskId id, String sessionId) async {
+    final hint = await _taskSessionHint(id);
+    if (hint != null && hint != sessionId) return null;
+
+    // A missing hint is not evidence that the stream belongs to another chat:
+    // its first record may be corrupt or torn. Replay it so corruption fails
+    // closed instead of silently bypassing recovery and the one-active-task
+    // guard. Empty/disappeared streams remain harmless.
+    final snapshot = (await _readTask(id)).snapshot;
+    if (snapshot == null || snapshot.sessionId != sessionId) return null;
+    return snapshot;
   }
 
   Future<_TaskReplay> _readTask(TaskId id) async {

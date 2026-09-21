@@ -208,7 +208,7 @@ class _TaskDetails extends StatelessWidget {
           onPressed: () => unawaited(controller.resume()),
           child: const Text('Продолжить'),
         ),
-      if (!terminal)
+      if (!terminal && !snapshot.paused)
         OutlinedButton(
           key: const ValueKey('task-replan'),
           onPressed: invoking
