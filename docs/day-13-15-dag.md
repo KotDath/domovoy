@@ -9,7 +9,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | G2 | JSONL persistence and recovery | G1 | done | `94b6657..72b2765` | 11 repository/replay tests; paired review settled; full suite: 760 passed, 1 skipped |
 | G3 | Scheduler and isolated agents | G2 | done | `af65e8d..3097149` | paired review settled; 13 scheduler/gateway tests; full suite: 773 passed, 1 skipped |
 | G4 | Chat routing and task UI | G3 | done | `cefe9c5..bd646bc` | paired review settled; command-router, session-switch, and task-card widget tests; full suite: 781 passed, 1 skipped |
-| G5 | Integration, Android, video scripts | G4 | pending | — | full suite and QA evidence |
+| G5 | Integration, Android, video scripts | G4 | in review | `b52fcf4..4a90d9c` | analyze clean; 783 passed, 1 skipped; API 35 smoke creates a durable chat; independent task QA running |
 | G6 | Final certification | G5 | pending | — | two-agent review and Android regression |
 
 ## Gate for every code group
