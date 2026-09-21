@@ -9,7 +9,7 @@ This file is the execution ledger. `docs/day-13-15.md` defines behavior.
 | G2 | JSONL persistence and recovery | G1 | done | `94b6657..72b2765` | 11 repository/replay tests; paired review settled; full suite: 760 passed, 1 skipped |
 | G3 | Scheduler and isolated agents | G2 | done | `af65e8d..3097149` | paired review settled; 13 scheduler/gateway tests; full suite: 773 passed, 1 skipped |
 | G4 | Chat routing and task UI | G3 | done | `cefe9c5..bd646bc` | paired review settled; command-router, session-switch, and task-card widget tests; full suite: 781 passed, 1 skipped |
-| G5 | Integration, Android, video scripts | G4 | in review | `b52fcf4..4a90d9c` | analyze clean; 783 passed, 1 skipped; API 35 smoke creates a durable chat; independent task QA running |
+| G5 | Integration, Android, video scripts | G4 | in review | `b52fcf4..228d757` | paired review settled; analyze clean; 789 passed, 1 skipped; API 35 smoke and restart recovery verified; independent task QA running |
 | G6 | Final certification | G5 | pending | — | two-agent review and Android regression |
 
 ## Gate for every code group
@@ -77,3 +77,17 @@ replanning accept an edited goal for the Day 14 conflict scenario, surfaces
 invariant-loading failure, and bounds provider cancellation so pause/replan/
 cancel cannot wait forever. Targeted tests, `flutter analyze`, and the full
 781-pass/1-skip suite are green.
+
+## G5 review settlement
+
+Both reviewers identified the missing chat-creation failure test and runbook
+reproducibility gaps. The settlement covers failure reporting, sandbox escape
+and sibling-symlink rejection, exact UI labels, local artifact hygiene, the
+pinned provider/model, and a bounded-repair fallback. Verified unique findings
+also clear a stale cross-chat snapshot after recovery failure, expose the
+verified final result, distinguish invariant load/save failures, and contain
+automatic-loop persistence errors. Independent Android QA found a restart-only
+task-ID collision that static review missed; task controllers now use a
+process-unique namespace, with a regression test that creates a second task
+against the same persisted store after controller restart. Targeted tests,
+`flutter analyze`, and the full 789-pass/1-skip suite are green.
