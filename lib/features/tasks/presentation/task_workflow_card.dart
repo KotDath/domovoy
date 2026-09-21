@@ -175,9 +175,7 @@ class _TaskDetails extends StatelessWidget {
             key: const ValueKey('task-failure'),
             style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
-        ] else if (notice != null &&
-            snapshot.phase == TaskPhase.planning &&
-            !snapshot.planApproved) ...[
+        ] else if (notice != null) ...[
           const SizedBox(height: 8),
           Text(notice!, key: const ValueKey('task-notice')),
         ],

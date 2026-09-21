@@ -159,7 +159,12 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: TaskWorkflowCard(controller: controller)),
+        home: Scaffold(
+          body: TaskWorkflowCard(
+            controller: controller,
+            notice: '[INVALID_TRANSITION] Задача уже завершена.',
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -167,6 +172,7 @@ void main() {
     expect(find.text('Задача · готово'), findsOneWidget);
     expect(find.byKey(const ValueKey('task-final-output')), findsOneWidget);
     expect(find.text('Готовый ответ'), findsOneWidget);
-    expect(find.byKey(const ValueKey('task-notice')), findsNothing);
+    expect(find.byKey(const ValueKey('task-notice')), findsOneWidget);
+    expect(find.textContaining('INVALID_TRANSITION'), findsOneWidget);
   });
 }

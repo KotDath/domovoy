@@ -9,7 +9,11 @@ typedef ChatFallbackSender = Future<ChatCommandResult> Function(String input);
 
 /// Routes explicit task commands without adding them to the chat transcript.
 final class ChatTaskCommandRouter extends ChangeNotifier {
-  ChatTaskCommandRouter({required this.tasks, required this.fallback});
+  ChatTaskCommandRouter({required this.tasks, required this.fallback}) {
+    tasks.addListener(_handleTaskStateChanged);
+  }
+
+  static const _planPreparedNotice = 'План подготовлен для утверждения.';
 
   final TaskWorkflowController tasks;
   final ChatFallbackSender fallback;
@@ -84,7 +88,7 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
         projectId: _projectId,
         goal: value,
       );
-      return _map(result, acceptedNotice: 'План подготовлен для утверждения.');
+      return _map(result, acceptedNotice: _planPreparedNotice);
     }
     return fallback(input);
   }
@@ -149,6 +153,24 @@ final class ChatTaskCommandRouter extends ChangeNotifier {
     return failure == null
         ? 'Команда задачи отклонена.'
         : '[${failure.code}] ${failure.message}';
+  }
+
+  void _handleTaskStateChanged() {
+    if (_notice != _planPreparedNotice) return;
+    final snapshot = tasks.state.snapshot;
+    if (snapshot != null &&
+        snapshot.phase == TaskPhase.planning &&
+        !snapshot.planApproved) {
+      return;
+    }
+    _notice = null;
+    _notify();
+  }
+
+  @override
+  void dispose() {
+    tasks.removeListener(_handleTaskStateChanged);
+    super.dispose();
   }
 
   void _notify() {

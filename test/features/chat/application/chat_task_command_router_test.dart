@@ -28,6 +28,7 @@ void main() {
           return const ChatCommandResult.succeeded();
         },
       );
+      addTearDown(router.dispose);
       await router.attach(sessionId: 'chat-1', projectId: 'project-1');
 
       expect((await router.send('/plan')).isSuccess, isTrue);
@@ -63,6 +64,7 @@ void main() {
       tasks: tasks,
       fallback: (_) async => const ChatCommandResult.succeeded(),
     );
+    addTearDown(router.dispose);
     await router.attach(sessionId: 'chat-1');
 
     final result = await router.send('/task pause');
@@ -89,6 +91,7 @@ void main() {
           return const ChatCommandResult.succeeded();
         },
       );
+      addTearDown(router.dispose);
       await router.attach(sessionId: 'chat-1');
       await router.send('/plan');
       await router.send('Первая цель');
@@ -97,8 +100,32 @@ void main() {
 
       expect(result.status, ChatCommandStatus.failed);
       expect(result.error?.message, contains('INVALID_TRANSITION'));
+      expect(router.notice, contains('INVALID_TRANSITION'));
       expect(router.awaitingGoal, isFalse);
       expect(fallbackInputs, isEmpty);
     },
   );
+
+  test('clears only the stale plan-ready notice after approval', () async {
+    final store = JsonlTaskStore(storage: FakeMemoryJsonlStorage());
+    final tasks = TaskWorkflowController(
+      repository: store,
+      invariantRepository: store,
+      gateway: FakeTaskAgentGateway(),
+    );
+    final router = ChatTaskCommandRouter(
+      tasks: tasks,
+      fallback: (_) async => const ChatCommandResult.succeeded(),
+    );
+    addTearDown(router.dispose);
+    await router.attach(sessionId: 'chat-1');
+    await router.send('/plan');
+    await router.send('Собрать ответ');
+
+    expect(router.notice, 'План подготовлен для утверждения.');
+
+    await tasks.approvePlan();
+
+    expect(router.notice, isNull);
+  });
 }
