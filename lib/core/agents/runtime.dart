@@ -28,6 +28,7 @@ import 'repository.dart';
 import 'schema.dart';
 import 'selection.dart';
 import 'tools.dart';
+import 'tool_schema.dart';
 import 'token_accounting.dart';
 import 'title.dart';
 import 'transcript.dart';
@@ -925,11 +926,33 @@ final class _LiveSession implements AgentSession {
     context: LlmContext(
       systemPrompt: definition.systemPrompt,
       messages: transcript.messages,
-      tools: runtime.tools.descriptorsFor(definition.enabledTools),
+      tools: _toolViewFor(selection).descriptors,
       continuationEntries: continuationEntries,
     ),
     generation: _active?.snapshotGeneration ?? _generationFor(selection),
   ).snapshot();
+
+  /// Tool view for this session's enabled tools under one model's provider.
+  AgentToolView _toolViewFor(AgentSessionSelection selected) =>
+      runtime.tools.view(
+        definition.enabledTools,
+        profile: toolSchemaProfileFor(selected.model),
+      );
+
+  /// Provider tool-schema profile for [model].
+  ///
+  /// Falls back to the portable profile when the model is not (yet) in the
+  /// registry: the request itself fails later with a clear provider error, and
+  /// the portable profile never widens what the local validator enforces.
+  ToolSchemaProfile toolSchemaProfileFor(ModelRef model) {
+    try {
+      return ToolSchemaProfile.forWireFamily(
+        runtime.registry.resolve(model).model.wireFamily,
+      );
+    } on Object {
+      return ToolSchemaProfile.portable;
+    }
+  }
 
   LlmGenerationConfig _generationFor(AgentSessionSelection selected) {
     return LlmGenerationConfig(
@@ -2557,9 +2580,7 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
       context: LlmContext(
         systemPrompt: session.definition.systemPrompt,
         messages: session.transcript.messages,
-        tools: session.runtime.tools.descriptorsFor(
-          session.definition.enabledTools,
-        ),
+        tools: session._toolViewFor(requested).descriptors,
         // Continuation is model/wire-origin bound. It remains live and durable
         // until a cross-model commit succeeds, but never enters target planning.
         continuationEntries: const <LlmContinuationEntry>[],
@@ -2798,9 +2819,7 @@ final class _LiveCompaction implements AgentCompactionOperation {
         context: LlmContext(
           systemPrompt: session.definition.systemPrompt,
           messages: session.transcript.messages,
-          tools: session.runtime.tools.descriptorsFor(
-            session.definition.enabledTools,
-          ),
+          tools: session._toolViewFor(session.selection).descriptors,
           continuationEntries: session.continuationEntries,
         ),
         generation: session._generationFor(session.selection),
@@ -3057,6 +3076,8 @@ final class _LiveRun implements AgentRun {
   var _closeAfter = false;
   late final ResolvedRunGuards guards;
   late final LlmGenerationConfig _generation;
+  late final AgentToolView _toolView;
+  late final Map<String, AgentTool> _toolSnapshot;
   LlmGenerationConfig? _snapshotGeneration;
   AgentDynamicContext? _dynamicContext;
   var _runModelTurns = 0;
@@ -3186,6 +3207,7 @@ final class _LiveRun implements AgentRun {
       guards = _resolveGuards();
       _generation = _resolveGeneration();
       _snapshotGeneration = _generation;
+      _resolveTools();
       _usageBaseline = session.usage;
       _runStartedAt = session.runtime.clock.elapsed;
       _armWatchdogs();
@@ -3249,14 +3271,37 @@ final class _LiveRun implements AgentRun {
   LlmRequest _providerRequest() =>
       _requestWithSystemPrompt(_composedSystemPrompt());
 
+  /// Freezes the tool view for this run and reports what cannot be offered.
+  ///
+  /// The snapshot is taken once, before the first model turn: a catalog
+  /// refresh that happens while the run is active replaces the registry view
+  /// but cannot change what this run advertises or which identities it may
+  /// execute. Every call is still re-checked against the live registry and the
+  /// current policy immediately before execution.
+  void _resolveTools() {
+    _toolView = session.runtime.tools.view(
+      session.definition.enabledTools,
+      profile: session.toolSchemaProfileFor(selection.model),
+    );
+    final snapshot = <String, AgentTool>{};
+    for (final id in session.definition.enabledTools) {
+      final tool = session.runtime.tools.lookup(id.value);
+      if (tool != null) {
+        snapshot[id.value] = tool;
+      }
+    }
+    _toolSnapshot = Map<String, AgentTool>.unmodifiable(snapshot);
+    for (final notice in _toolView.unavailable) {
+      _emit(AgentToolUnavailable(toolId: notice.id, reason: notice.reason));
+    }
+  }
+
   LlmRequest _requestWithSystemPrompt(String? systemPrompt) => LlmRequest(
     model: selection.model,
     context: LlmContext(
       systemPrompt: systemPrompt,
       messages: session.transcript.messages,
-      tools: session.runtime.tools.descriptorsFor(
-        session.definition.enabledTools,
-      ),
+      tools: _toolView.descriptors,
       continuationEntries: session.continuationEntries,
     ),
     generation: _generation,
@@ -3581,8 +3626,22 @@ final class _LiveRun implements AgentRun {
         }),
       );
     }
+    // Only tools advertised when the run started may execute. A catalog
+    // refresh that added or republished a tool cannot extend this run.
+    final advertised = _toolSnapshot[call.name];
+    if (advertised == null) {
+      return _denyTool(
+        call.callId,
+        'Tool was not available when this run started, so it is not '
+        'advertised and cannot be called.',
+      );
+    }
+    final unavailableReason = tool.unavailableReason;
+    if (unavailableReason != null) {
+      return _denyTool(call.callId, 'Tool is unavailable: $unavailableReason');
+    }
     try {
-      validateArguments(tool.descriptor.parameters, arguments);
+      tool.validateArguments(arguments);
     } on AgentException catch (error) {
       return _toolResult(
         callId: call.callId,
@@ -3604,49 +3663,76 @@ final class _LiveRun implements AgentRun {
       throw AgentException(sanitizedRuntimeError());
     }
     _emit(AgentPermissionDecision(callId: call.callId, permission: permission));
-    var allowed = permission == ToolPermission.allow;
-    if (permission == ToolPermission.ask) {
-      final handler = session.runtime.approval;
-      if (handler == null) {
-        allowed = false;
+    String? denialReason;
+    var approvedInteractively = false;
+    if (permission == ToolPermission.deny) {
+      denialReason = 'Tool denied.';
+    } else if (permission == ToolPermission.ask) {
+      if (!session.definition.interactiveApproval) {
+        denialReason =
+            'Tool requires interactive approval, but this run cannot wait '
+            'for it.';
       } else {
-        try {
-          allowed = await _awaitUnlessCancelled(handler.approve(invocation));
-          _resetIdle();
-        } on AgentException catch (error) {
-          if (error.error.kind == AgentErrorKind.cancelled) {
-            rethrow;
+        final handler = session.runtime.approval;
+        if (handler == null) {
+          denialReason = 'Tool denied.';
+        } else {
+          try {
+            final approved = await _awaitUnlessCancelled(
+              handler.approve(invocation),
+            );
+            _resetIdle();
+            approvedInteractively = approved;
+            if (!approved) {
+              denialReason = 'Tool denied.';
+            }
+          } on AgentException catch (error) {
+            if (error.error.kind == AgentErrorKind.cancelled) {
+              rethrow;
+            }
+            return _toolResult(
+              callId: call.callId,
+              success: false,
+              content: jsonEncode(<String, Object?>{
+                'error': sanitizePublicText(
+                  error.error.message,
+                  fallback: 'Tool execution failed.',
+                ),
+              }),
+            );
+          } on Object {
+            return _toolResult(
+              callId: call.callId,
+              success: false,
+              content: jsonEncode(<String, Object?>{
+                'error': sanitizePublicText(
+                  null,
+                  fallback: 'Tool execution failed.',
+                ),
+              }),
+            );
           }
-          return _toolResult(
-            callId: call.callId,
-            success: false,
-            content: jsonEncode(<String, Object?>{
-              'error': sanitizePublicText(
-                error.error.message,
-                fallback: 'Tool execution failed.',
-              ),
-            }),
-          );
-        } on Object {
-          return _toolResult(
-            callId: call.callId,
-            success: false,
-            content: jsonEncode(<String, Object?>{
-              'error': sanitizePublicText(
-                null,
-                fallback: 'Tool execution failed.',
-              ),
-            }),
-          );
         }
       }
     }
-    if (!allowed) {
-      return _toolResult(
-        callId: call.callId,
-        success: false,
-        content: jsonEncode(<String, Object?>{'error': 'Tool denied.'}),
-      );
+    // Identity and schema are enforced immediately before execution and again
+    // after an awaited approval: a catalog refresh that removed or rebound the
+    // tool fails closed, independent of the model prompt.
+    denialReason ??= _recheckLiveTool(call.name, advertised);
+    if (denialReason == null && approvedInteractively) {
+      // The user answered while the catalog or the grant could have changed:
+      // the current policy decides again, the stale approval alone does not.
+      try {
+        if (policy.decide(invocation) == ToolPermission.deny) {
+          denialReason = 'Tool denied.';
+        }
+      } on Object {
+        denialReason = 'Tool denied.';
+      }
+    }
+    final denial = denialReason;
+    if (denial != null) {
+      return _denyTool(call.callId, denial);
     }
     _throwIfCancelled();
     _emit(AgentToolStarted(callId: call.callId, name: call.name));
@@ -3713,15 +3799,37 @@ final class _LiveRun implements AgentRun {
     return _toolResult(
       callId: call.callId,
       success: result.success,
-      content: result.success
-          ? result.transcriptContent
-          : jsonEncode(<String, Object?>{
-              'error': sanitizePublicText(
-                result.errorMessage,
-                fallback: 'Tool execution failed.',
-              ),
-            }),
+      content: result.transcriptContent,
     );
+  }
+
+  /// Denies a call with a visible reason that reaches the trace and transcript.
+  LlmToolResultPart _denyTool(ToolCallId callId, String reason) => _toolResult(
+    callId: callId,
+    success: false,
+    content: jsonEncode(<String, Object?>{'error': reason}),
+  );
+
+  /// Re-validates a call against the live registry and this run's snapshot.
+  ///
+  /// Returns `null` when the call may proceed, otherwise the visible reason it
+  /// is rejected. Bindings compare by identity first and by value afterwards,
+  /// so an atomic catalog rebuild that republished the same route keeps
+  /// working while a removed or rebound tool fails closed.
+  String? _recheckLiveTool(String name, AgentTool advertised) {
+    final live = session.runtime.tools.lookup(name);
+    if (live == null) {
+      return 'Tool is no longer available.';
+    }
+    final unavailable = live.unavailableReason;
+    if (unavailable != null) {
+      return 'Tool is unavailable: $unavailable';
+    }
+    if (!identical(live, advertised) && live.binding != advertised.binding) {
+      return 'Tool binding changed while the run was active; '
+          'the call was rejected.';
+    }
+    return null;
   }
 
   LlmToolResultPart _toolResult({

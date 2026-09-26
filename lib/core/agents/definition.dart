@@ -16,6 +16,7 @@ final class AgentDefinition {
     LlmGenerationConfig? generation,
     List<ToolId> enabledTools = const <ToolId>[],
     PolicyId? policy,
+    this.interactiveApproval = true,
     this.limits,
     this.liveness,
     this.noProgress,
@@ -63,6 +64,9 @@ final class AgentDefinition {
         'enabledTools',
       ).map(ToolId.fromJson).toList(),
       policy: map['policy'] == null ? null : PolicyId.fromJson(map['policy']),
+      interactiveApproval: map['interactiveApproval'] == null
+          ? true
+          : requireBool(map, 'interactiveApproval'),
       limits: map['limits'] == null
           ? null
           : AgentRunLimits.fromJson(map['limits']),
@@ -88,6 +92,11 @@ final class AgentDefinition {
   final LlmGenerationConfig generation;
   final List<ToolId> enabledTools;
   final PolicyId policy;
+
+  /// When false (scheduled task runs), an `ask` decision is denied instead of
+  /// prompting: an unattended run never waits for a person.
+  final bool interactiveApproval;
+
   final AgentRunLimits? limits;
   final AgentLivenessPolicy? liveness;
   final AgentNoProgressPolicy? noProgress;
@@ -106,6 +115,9 @@ final class AgentDefinition {
       'enabledTools': enabledTools.map((tool) => tool.toJson()).toList(),
       'policy': policy.toJson(),
     };
+    if (!interactiveApproval) {
+      fields['interactiveApproval'] = false;
+    }
     if (limits != null) {
       fields['limits'] = limits!.toJson();
     }
@@ -133,6 +145,7 @@ final class AgentDefinition {
           other.generation == generation &&
           listEquals(other.enabledTools, enabledTools) &&
           other.policy == policy &&
+          other.interactiveApproval == interactiveApproval &&
           other.limits == limits &&
           other.liveness == liveness &&
           other.noProgress == noProgress &&
@@ -148,6 +161,7 @@ final class AgentDefinition {
     generation,
     Object.hashAll(enabledTools),
     policy,
+    interactiveApproval,
     limits,
     liveness,
     noProgress,

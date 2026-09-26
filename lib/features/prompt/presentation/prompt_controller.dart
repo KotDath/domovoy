@@ -211,6 +211,7 @@ final class PromptController extends ChangeNotifier {
       case AgentInboundMessageConsumed():
       case AgentToolAssembled():
       case AgentPermissionDecision():
+      case AgentToolUnavailable():
       case AgentToolStarted():
       case AgentToolProgress():
       case AgentToolFinished():

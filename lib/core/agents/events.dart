@@ -252,6 +252,17 @@ final class AgentPermissionDecision extends AgentRunEvent {
   final ToolPermission permission;
 }
 
+/// Emitted once per enabled tool that exists but cannot be offered to the
+/// provider, for example because its JSON Schema cannot be represented
+/// faithfully. The tool is not advertised and its calls are rejected; the
+/// reason stays visible in the run trace.
+final class AgentToolUnavailable extends AgentRunEvent {
+  const AgentToolUnavailable({required this.toolId, required this.reason});
+
+  final ToolId toolId;
+  final String reason;
+}
+
 final class AgentToolStarted extends AgentRunEvent {
   const AgentToolStarted({required this.callId, required this.name});
 
