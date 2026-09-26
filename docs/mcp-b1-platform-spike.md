@@ -35,29 +35,31 @@
 `x86_64`), временный probe через `flutter run`, удалён из репозитория:
 
 ```
-http-endpoint=streamableHttp http-url=http://127.0.0.1:38359/mcp
+http-endpoint=streamableHttp http-url=http://127.0.0.1:41577/mcp
 stdio-supported=false
 http-handshake=android-smoke/2026-07-28
 http-tools=search
 http-call=android-smoke:search:android
-stream-handshake=android-smoke-stream
-stream-call=android-smoke-stream:echo:stream
+stream-handshake=android-stream
+stream-reconnect-call=android-stream:search:stream
 result=ok
 ```
 
 То есть на Android работают и loopback HTTP с bearer-токеном, и in-process
-stream; сторонний stdio через публичный API не предлагается
-(`McpStdioLauncher.isSupported == false`).
+stream, включая переподключение к тому же встроенному серверу; сторонний stdio
+через публичный API не предлагается (`McpStdioLauncher.isSupported == false`).
 
 ## Платформенные ограничения
 
 - **Linux/Windows/macOS**: доступны все три транспорта. stdio запускается через
   `dart:io` с минимальным окружением.
-- **Android**: сторонний stdio не предлагается (явная ошибка `unsupported`).
-  Loopback HTTP и in-process stream подтверждены на эмуляторе API 35;
-  встроенные серверы можно поднимать обоими способами.
+- **Android**: сторонний stdio не предлагается; гейт — только Linux
+  (без `Platform.operatingSystem == 'aurora'`), Windows и macOS. Loopback HTTP
+  и in-process stream подтверждены на эмуляторе API 35; встроенные серверы
+  можно поднимать обоими способами.
 - **Аврора**: `dart:io` есть, но loopback HTTP и запуск процессов не
-  подтверждены. До smoke использовать stream; конкретику зафиксирует B9.
+  подтверждены. Сторонний stdio отключён тем же гейтом; до smoke использовать
+  stream (fallback для встроенных серверов), конкретику зафиксирует B9.
 - **Web**: серверы и stdio недоступны (stub), внутренние потоки и HTTP-клиент
   компилируются; `flutter build web` с подключённым `infrastructure/mcp`
   проходит.
@@ -81,6 +83,21 @@ Android-loopback воспроизводится временным `flutter run`
 При обычном `flutter test` тест stdio остаётся валидным, но проверка утечки
 родительских секретов становится тривиальной: задайте переменные окружения,
 как в команде выше.
+
+## Правки после ревью раунда 2
+
+- `_attemptConnect` различает `connected` / `failed` / `stale`: отменённая
+  явным disconnect или stop попытка не планирует реконнект.
+- `McpConnectionRepository.loadTombstones()` отдаёт ревизии удалённых
+  соединений; после рестарта re-add продолжает tombstone-ревизию, optimistic
+  проверки не ослаблены.
+- Каталог публикуется транзакционно: кандидат строится до мутаций, поэтому
+  коллизия имён роняет только своё соединение (закрывается, маршруты
+  снимаются) и не ломает соседей; `refreshCatalog` ведёт себя так же.
+- `LocalMcpServerHost.start` не сохраняет сломанный endpoint: неудачная
+  сессия очищается и повторный `start()` работает. Живой stream-клиент
+  резервирует сессию, конкурентные `acquireStreams` отклоняются.
+- Сторонний stdio разрешён только на Linux (кроме Aurora), Windows и macOS.
 
 ## Правки после ревью раунда 1
 
@@ -108,5 +125,9 @@ Android-loopback воспроизводится временным `flutter run`
   переподключении и явный `refreshCatalog`.
 - Схемы MCP сложнее формата LLM-провайдера: полная схема сохраняется в
   каталоге, но недоступные для провайдера инструменты должен явно помечать B2.
-- `mcp_dart` 2.4.2 логирует протокольные метаданные на уровне debug в stdout;
-  перед публичной сборкой B9 стоит выставить уровень логгера SDK.
+- `mcp_dart` 2.4.2 по умолчанию пишет свои debug/info-логи **в stderr** на VM
+  (`logging_io.dart`: `writeLog(stderr.writeln)`), на web — в `print`. Это
+  метаданные конверта (методы, id), не payload; секреты туда не попадают, а
+  при необходимости B9 может замолчать их через `silenceMcpLogs()` или
+  перехватить через `setMcpLogHandler`. Наши собственные диагностические
+  сообщения проходят через `McpSecretRedactor` и `sanitizeMcpText`.
