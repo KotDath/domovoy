@@ -29,6 +29,10 @@ final class _UnsupportedStdioLauncher implements McpStdioLauncher {
   bool get isSupported => false;
 
   @override
+  String? get unsupportedReason =>
+      'stdio MCP servers are not available on this platform.';
+
+  @override
   Future<McpTransportConnection> launch({
     required McpConnectionId connectionId,
     required McpStdioTransportConfig config,
@@ -58,23 +62,87 @@ void main() {
       bool linux = false,
       bool windows = false,
       bool macOS = false,
+      bool disabledByPolicy = false,
     }) {
       return supportsStdioOnPlatform(
         operatingSystem: operatingSystem,
         isLinux: linux,
         isWindows: windows,
         isMacOS: macOS,
+        disabledByPolicy: disabledByPolicy,
       );
     }
 
     expect(policy('linux', linux: true), isTrue);
     expect(policy('windows', windows: true), isTrue);
     expect(policy('macos', macOS: true), isTrue);
-    // Aurora reports itself as Linux but child processes are not confirmed.
-    expect(policy('aurora', linux: true), isFalse);
     expect(policy('android'), isFalse);
     expect(policy('ios'), isFalse);
     expect(policy('fuchsia'), isFalse);
+    // Runtimes exposing a distinct Aurora OS string are excluded directly.
+    expect(policy('aurora'), isFalse);
+  });
+
+  test('Aurora reporting as Linux requires the composition override', () {
+    // Dart defines Platform.isLinux as `operatingSystem == 'linux'`, so a real
+    // Aurora runtime cannot be told apart from Linux by platform facts alone.
+    expect(
+      supportsStdioOnPlatform(
+        operatingSystem: 'linux',
+        isLinux: true,
+        isWindows: false,
+        isMacOS: false,
+      ),
+      isTrue,
+    );
+    expect(
+      supportsStdioOnPlatform(
+        operatingSystem: 'linux',
+        isLinux: true,
+        isWindows: false,
+        isMacOS: false,
+        disabledByPolicy: true,
+      ),
+      isFalse,
+    );
+  });
+
+  test('force-disabled launcher refuses stdio with its reason', () async {
+    final launcher = createMcpStdioLauncher(
+      forceDisabled: true,
+      disabledReason: auroraStdioDisabledReason,
+    );
+    expect(launcher.isSupported, isFalse);
+    expect(launcher.unsupportedReason, auroraStdioDisabledReason);
+
+    final factory = McpSdkTransportFactory(stdioLauncher: launcher);
+    expect(factory.supportsStdio, isFalse);
+    await expectLater(
+      factory.create(
+        McpConnectionConfig(
+          connectionId: McpConnectionId('external'),
+          alias: 'external',
+          transport: McpStdioTransportConfig(
+            command: 'node',
+            args: const <String>['server.js'],
+          ),
+        ),
+        secrets: InMemoryMcpSecretVault(),
+      ),
+      throwsA(
+        isA<McpException>()
+            .having(
+              (error) => error.error.kind,
+              'kind',
+              McpErrorKind.unsupported,
+            )
+            .having(
+              (error) => error.error.message,
+              'message',
+              auroraStdioDisabledReason,
+            ),
+      ),
+    );
   });
 
   test(

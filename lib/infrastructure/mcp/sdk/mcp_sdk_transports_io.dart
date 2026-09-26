@@ -11,19 +11,43 @@ import 'mcp_platform_policy.dart';
 import 'mcp_sdk_connection.dart';
 import 'mcp_sdk_transports.dart';
 
-McpStdioLauncher createMcpStdioLauncher() => const DartIoMcpStdioLauncher();
+McpStdioLauncher createMcpStdioLauncher({
+  bool forceDisabled = false,
+  String? disabledReason,
+}) => DartIoMcpStdioLauncher(
+  forceDisabled: forceDisabled,
+  disabledReason: disabledReason,
+);
 
 /// Spawns a configured command with a minimal environment.
 ///
 /// stdout is reserved for protocol frames; stderr is drained from process
 /// start (not after the handshake) into diagnostics after secret redaction.
 final class DartIoMcpStdioLauncher implements McpStdioLauncher {
-  const DartIoMcpStdioLauncher();
+  const DartIoMcpStdioLauncher({
+    this.forceDisabled = false,
+    this.disabledReason,
+  });
 
-  /// Third-party stdio servers are offered only on confirmed desktop
-  /// platforms; Aurora and unknown platforms fall back to built-in streams.
+  /// Composition override for builds Dart cannot classify (Aurora as Linux).
+  final bool forceDisabled;
+  final String? disabledReason;
+
   @override
-  bool get isSupported => supportsStdioOnPlatform(
+  bool get isSupported => !forceDisabled && _platformSupportsStdio;
+
+  @override
+  String? get unsupportedReason {
+    if (forceDisabled) {
+      return disabledReason ??
+          'Third-party stdio MCP servers are disabled for this build.';
+    }
+    return _platformSupportsStdio
+        ? null
+        : 'stdio MCP servers are not offered on this platform.';
+  }
+
+  bool get _platformSupportsStdio => supportsStdioOnPlatform(
     operatingSystem: Platform.operatingSystem,
     isLinux: Platform.isLinux,
     isWindows: Platform.isWindows,

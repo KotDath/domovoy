@@ -17,8 +17,12 @@ abstract interface class McpStdioLauncher {
   /// True when this platform can offer third-party stdio servers.
   ///
   /// Mobile platforms cannot guarantee launching arbitrary external
-  /// executables; Domovoy only offers built-in servers and HTTPS there.
+  /// executables, and Aurora may report as Linux: the composition passes
+  /// [createMcpStdioLauncher]'s force-disable override for those builds.
   bool get isSupported;
+
+  /// Human-readable reason when [isSupported] is false, for the host status.
+  String? get unsupportedReason;
 
   Future<McpTransportConnection> launch({
     required McpConnectionId connectionId,
@@ -29,8 +33,19 @@ abstract interface class McpStdioLauncher {
   });
 }
 
-/// Returns the platform stdio launcher; the stub throws `unsupported`.
-McpStdioLauncher createMcpStdioLauncher() => platform.createMcpStdioLauncher();
+/// Returns the platform stdio launcher.
+///
+/// [forceDisabled] is the composition override for builds whose target cannot
+/// be inferred from Dart platform facts (Aurora reporting as Linux); B9 passes
+/// `forceDisabled: true` with [auroraStdioDisabledReason]. The web stub always
+/// reports unsupported.
+McpStdioLauncher createMcpStdioLauncher({
+  bool forceDisabled = false,
+  String? disabledReason,
+}) => platform.createMcpStdioLauncher(
+  forceDisabled: forceDisabled,
+  disabledReason: disabledReason,
+);
 
 /// Builds SDK transports for every `McpTransportConfig` variant.
 final class McpSdkTransportFactory implements McpTransportFactory {
@@ -59,7 +74,8 @@ final class McpSdkTransportFactory implements McpTransportFactory {
         if (!supportsStdio) {
           throwMcp(
             McpErrorKind.unsupported,
-            'stdio MCP servers are not offered on this platform.',
+            _stdioLauncher.unsupportedReason ??
+                'stdio MCP servers are not offered on this platform.',
           );
         }
         return _stdioLauncher.launch(
