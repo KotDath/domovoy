@@ -34,6 +34,7 @@ import 'infrastructure/memory/memory.dart';
 import 'infrastructure/personalization/personalization.dart';
 import 'infrastructure/projects/platform_projects.dart';
 import 'infrastructure/tools/local_workspace_tools.dart';
+import 'infrastructure/tools/mcp_remote_tools.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
 import 'infrastructure/llm/discovery/native_streaming_provider.dart';
@@ -242,6 +243,7 @@ final class DomovoyDependencies {
     this.memoryInspector,
     this.profileController,
     this.profileInterviewLlm,
+    this.remoteTools,
     DeepSeekModelSettingsStore? modelSettingsStore,
     http.Client? httpClient,
     this.disposeCallback,
@@ -252,6 +254,7 @@ final class DomovoyDependencies {
   factory DomovoyDependencies.production({
     http.Client? httpClient,
     ProviderCredentialStore? credentialStore,
+    McpRemoteTools? remoteTools,
   }) {
     const storage = FlutterSecureStorage();
     final overrideStore = SecureApiKeyOverrideStore(storage);
@@ -291,11 +294,22 @@ final class DomovoyDependencies {
     );
     final projectStack = createPlatformProjectStack();
     final localTools = createLocalWorkspaceTools(projectStack);
+    final agentTools = AgentToolRegistry();
+    final enabledTools = <ToolId>[...localTools.enabled];
+    for (final id in localTools.enabled) {
+      agentTools.register(localTools.registry.lookup(id.value)!);
+    }
+    if (remoteTools != null) {
+      for (final id in remoteTools.enabled) {
+        agentTools.register(remoteTools.registry.lookup(id.value)!);
+        enabledTools.add(id);
+      }
+    }
     final stack = buildProductionAgentStack(
       httpClient: client,
       credentials: credentials,
-      tools: localTools.registry,
-      enabledTools: localTools.enabled,
+      tools: agentTools,
+      enabledTools: enabledTools,
       dynamicContextProvider:
           CompositeAgentDynamicContextProvider(<AgentDynamicContextProvider>[
             PersonalizationDynamicContextProvider(catalog: profileCatalog),
@@ -358,6 +372,7 @@ final class DomovoyDependencies {
       memoryInspector: memoryInspector,
       profileController: profileController,
       profileInterviewLlm: profileInterviewLlm,
+      remoteTools: remoteTools,
     );
   }
 
@@ -376,6 +391,7 @@ final class DomovoyDependencies {
   final MemoryInspectorController? memoryInspector;
   final ProfileController? profileController;
   final ProfileInterviewLlm? profileInterviewLlm;
+  final McpRemoteTools? remoteTools;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -402,6 +418,11 @@ final class DomovoyDependencies {
       firstError ??= sanitizeCloseFailure(error);
     }
     try {
+      await remoteTools?.close();
+    } on Object catch (error) {
+      firstError ??= sanitizeCloseFailure(error);
+    }
+    try {
       disposeCallback?.call();
     } on Object catch (error) {
       firstError ??= sanitizeCloseFailure(error);
@@ -423,8 +444,10 @@ final class DomovoyDependencies {
 class DomovoyApp extends StatefulWidget {
   const DomovoyApp({required this.dependencies, super.key});
 
-  factory DomovoyApp.production() {
-    return DomovoyApp(dependencies: DomovoyDependencies.production());
+  factory DomovoyApp.production({McpRemoteTools? remoteTools}) {
+    return DomovoyApp(
+      dependencies: DomovoyDependencies.production(remoteTools: remoteTools),
+    );
   }
 
   final DomovoyDependencies dependencies;
