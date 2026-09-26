@@ -1201,6 +1201,120 @@ void main() {
       );
     });
 
+    test(
+      'a late collision failure does not resurrect a removed connection',
+      () async {
+        final collision = ScriptedMcpConnection(
+          connectionId: McpConnectionId('collision'),
+          pages: <McpToolPage>[
+            McpToolPage(
+              tools: <McpToolDescriptor>[
+                scriptedTool('collision', mcpCollidingToolNames[0]),
+              ],
+            ),
+          ],
+        );
+        manager = McpHostManager(
+          transports: ScriptedMcpTransportFactory(
+            <String, ScriptedMcpConnection Function()>{
+              'collision': () => collision,
+            },
+          ),
+          repository: repository,
+          secrets: InMemoryMcpSecretVault(),
+          reconnectPolicy: const McpReconnectPolicy(maxAttempts: 0),
+          delay: (duration) async {},
+        );
+        await save(configFor('collision'));
+        await manager.start();
+        await waitFor(
+          () =>
+              manager.snapshot.statusFor(McpConnectionId('collision'))!.isReady,
+        );
+        expect(
+          manager.snapshot.catalog.lookup(mcpCollidingModelName),
+          isNotNull,
+        );
+
+        collision.replacePages(<McpToolPage>[
+          McpToolPage(
+            tools: <McpToolDescriptor>[
+              scriptedTool('collision', mcpCollidingToolNames[0]),
+              scriptedTool('collision', mcpCollidingToolNames[1]),
+            ],
+          ),
+        ]);
+        collision.armCloseGate();
+        final refresh = manager.refreshCatalog(McpConnectionId('collision'));
+        await waitFor(() => collision.closeCount >= 1);
+        await manager.removeConnection(McpConnectionId('collision'));
+        collision.releaseCloseGate();
+        await refresh;
+
+        expect(
+          manager.snapshot.statusFor(McpConnectionId('collision')),
+          isNull,
+        );
+        expect(manager.snapshot.catalog.lookup(mcpCollidingModelName), isNull);
+        expect(await repository.load(McpConnectionId('collision')), isNull);
+      },
+    );
+
+    test(
+      'a late collision failure does not overwrite a stopped status',
+      () async {
+        final collision = ScriptedMcpConnection(
+          connectionId: McpConnectionId('collision'),
+          pages: <McpToolPage>[
+            McpToolPage(
+              tools: <McpToolDescriptor>[
+                scriptedTool('collision', mcpCollidingToolNames[0]),
+              ],
+            ),
+          ],
+        );
+        manager = McpHostManager(
+          transports: ScriptedMcpTransportFactory(
+            <String, ScriptedMcpConnection Function()>{
+              'collision': () => collision,
+            },
+          ),
+          repository: repository,
+          secrets: InMemoryMcpSecretVault(),
+          reconnectPolicy: const McpReconnectPolicy(maxAttempts: 0),
+          delay: (duration) async {},
+        );
+        await save(configFor('collision'));
+        await manager.start();
+        await waitFor(
+          () =>
+              manager.snapshot.statusFor(McpConnectionId('collision'))!.isReady,
+        );
+
+        collision.replacePages(<McpToolPage>[
+          McpToolPage(
+            tools: <McpToolDescriptor>[
+              scriptedTool('collision', mcpCollidingToolNames[0]),
+              scriptedTool('collision', mcpCollidingToolNames[1]),
+            ],
+          ),
+        ]);
+        collision.armCloseGate();
+        final refresh = manager.refreshCatalog(McpConnectionId('collision'));
+        await waitFor(() => collision.closeCount >= 1);
+        await manager.stop();
+        collision.releaseCloseGate();
+        await refresh;
+
+        final status = manager.snapshot.statusFor(
+          McpConnectionId('collision'),
+        )!;
+        expect(status.phase, McpConnectionPhase.stopped);
+        expect(status.lastError, isNull);
+        expect(manager.snapshot.catalog.lookup(mcpCollidingModelName), isNull);
+      },
+    );
+
     test('a refresh collision rolls back and keeps other servers', () async {
       final collision = ScriptedMcpConnection(
         connectionId: McpConnectionId('collision'),

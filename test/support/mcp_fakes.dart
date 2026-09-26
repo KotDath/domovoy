@@ -47,9 +47,10 @@ final class ScriptedMcpConnection implements McpTransportConnection {
   var _pageIndex = 0;
   Duration? lastCallTimeout;
 
-  /// When armed, the next connect/list call waits for the matching release.
+  /// When armed, the next connect/list/close call waits for its release.
   Completer<void>? _connectGate;
   Completer<void>? _listGate;
+  Completer<void>? _closeGate;
 
   void armConnectGate() {
     _connectGate = Completer<void>();
@@ -70,6 +71,18 @@ final class ScriptedMcpConnection implements McpTransportConnection {
   void releaseListGate() {
     final gate = _listGate;
     _listGate = null;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  void armCloseGate() {
+    _closeGate = Completer<void>();
+  }
+
+  void releaseCloseGate() {
+    final gate = _closeGate;
+    _closeGate = null;
     if (gate != null && !gate.isCompleted) {
       gate.complete();
     }
@@ -225,6 +238,10 @@ final class ScriptedMcpConnection implements McpTransportConnection {
   Future<void> close() async {
     closeCount += 1;
     connected = false;
+    final gate = _closeGate;
+    if (gate != null) {
+      await gate.future;
+    }
   }
 }
 

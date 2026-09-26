@@ -370,8 +370,15 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
         if (error.error.kind == McpErrorKind.nameCollision) {
           // Fail only this connection: close it, drop its routes and keep
           // every other server's catalog intact.
-          await _failConnectionForCatalog(connectionId, error.error.message);
-          changed.add(connectionId);
+          final failed = await _failConnectionForCatalog(
+            connectionId,
+            error.error.message,
+            generation: generation,
+            connection: connection,
+          );
+          if (failed) {
+            changed.add(connectionId);
+          }
           continue;
         }
         // A failed refresh keeps the previous catalog: the connection may
@@ -751,19 +758,32 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
   }
 
   /// Fails one connection because its catalog cannot be represented.
-  Future<void> _failConnectionForCatalog(
+  ///
+  /// Returns true when the failure was published. State is removed before the
+  /// close await, and the operation generation plus connection identity are
+  /// revalidated after it: a remove, disconnect or stop that interleaves with
+  /// the close must not resurrect a deleted or stopped status.
+  Future<bool> _failConnectionForCatalog(
     McpConnectionId id,
-    String message,
-  ) async {
-    final connection = _connections.remove(id.value);
+    String message, {
+    required int generation,
+    required McpTransportConnection connection,
+  }) async {
+    if (!identical(_connections[id.value], connection) ||
+        !_isOperationCurrent(id, generation)) {
+      return false;
+    }
+    _connections.remove(id.value);
     _tools.remove(id.value);
     _reconnectAttempts.remove(id.value);
-    if (connection != null) {
-      try {
-        await connection.close();
-      } on Object {
-        // The session may already be gone.
-      }
+    try {
+      await connection.close();
+    } on Object {
+      // The session may already be gone.
+    }
+    if (!_isOperationCurrent(id, generation) ||
+        _connections.containsKey(id.value)) {
+      return false;
     }
     final config = _configs[id.value];
     _statuses[id.value] =
@@ -791,6 +811,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
       ),
     );
     _rebuildCatalog(changed: <McpConnectionId>[id]);
+    return true;
   }
 
   String _signature(McpCatalog catalog) => catalog.routes
