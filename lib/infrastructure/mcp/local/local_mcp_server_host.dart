@@ -1,0 +1,294 @@
+import 'dart:async';
+import 'dart:math';
+
+import 'package:mcp_dart/mcp_dart.dart' as sdk;
+
+import '../../../core/mcp/mcp.dart';
+import '../mcp_diagnostics.dart';
+import '../secrets/mcp_secret_vault.dart';
+import 'local_http_launcher.dart';
+import 'local_mcp_definition.dart';
+
+/// Preferred local transport for `LocalMcpServerHost.start`.
+enum McpLocalTransportPreference {
+  /// Loopback HTTP when the platform supports it, otherwise in-process stream.
+  auto,
+
+  /// Loopback Streamable HTTP with a short-lived bearer token.
+  http,
+
+  /// In-process `IOStreamTransport` pair; works on every platform.
+  stream,
+}
+
+/// Bidirectional byte streams connecting an in-process MCP server and client.
+final class McpStreamPair {
+  McpStreamPair._(this._clientToServer, this._serverToClient);
+
+  factory McpStreamPair.create() {
+    final clientToServer = StreamController<List<int>>();
+    final serverToClient = StreamController<List<int>>();
+    return McpStreamPair._(clientToServer, serverToClient);
+  }
+
+  final StreamController<List<int>> _clientToServer;
+  final StreamController<List<int>> _serverToClient;
+
+  /// Server-side incoming stream.
+  Stream<List<int>> get serverInbound => _clientToServer.stream;
+
+  /// Server-side outgoing sink.
+  StreamSink<List<int>> get serverOutbound => _serverToClient.sink;
+
+  /// Client-side incoming stream.
+  Stream<List<int>> get clientInbound => _serverToClient.stream;
+
+  /// Client-side outgoing sink.
+  StreamSink<List<int>> get clientOutbound => _clientToServer.sink;
+
+  Future<void> close() async {
+    await _clientToServer.close();
+    await _serverToClient.close();
+  }
+}
+
+/// Lookup of live streams for `inProcessStream` connection configurations.
+abstract interface class LocalMcpStreamRegistry {
+  McpStreamPair? streamsFor(String serverId);
+}
+
+/// Data describing a started local server endpoint.
+sealed class LocalMcpServerEndpoint {
+  const LocalMcpServerEndpoint({required this.serverId, required this.kind});
+
+  final String serverId;
+  final McpTransportKind kind;
+}
+
+final class LocalMcpHttpEndpoint extends LocalMcpServerEndpoint {
+  const LocalMcpHttpEndpoint({
+    required super.serverId,
+    required this.url,
+    required this.bearerToken,
+  }) : super(kind: McpTransportKind.streamableHttp);
+
+  final Uri url;
+
+  /// Short-lived token, kept only in memory for in-process clients.
+  final String bearerToken;
+}
+
+final class LocalMcpStreamEndpoint extends LocalMcpServerEndpoint {
+  const LocalMcpStreamEndpoint({required super.serverId, required this.pair})
+    : super(kind: McpTransportKind.inProcessStream);
+
+  final McpStreamPair pair;
+}
+
+/// Owns registration, start and shutdown of built-in local MCP servers.
+///
+/// B3-B6 register their factories; B9 composes the host with the MCP host
+/// manager. The host itself does not know any specific server.
+final class LocalMcpServerHost implements LocalMcpStreamRegistry {
+  LocalMcpServerHost({
+    this.preference = McpLocalTransportPreference.auto,
+    RuntimeMcpSecretResolver? runtimeSecrets,
+    this.diagnostics = const NoopMcpDiagnosticsSink(),
+    McpHttpServerLauncher? httpLauncher,
+    Random? random,
+  }) : _runtimeSecrets = runtimeSecrets,
+       _http = httpLauncher ?? createMcpHttpServerLauncher(),
+       _random = random;
+
+  final McpLocalTransportPreference preference;
+  final RuntimeMcpSecretResolver? _runtimeSecrets;
+  final McpDiagnosticsSink diagnostics;
+  final McpHttpServerLauncher _http;
+  final Random? _random;
+  final Map<String, LocalMcpServerFactory> _factories =
+      <String, LocalMcpServerFactory>{};
+  final Map<String, _RunningLocalServer> _running =
+      <String, _RunningLocalServer>{};
+
+  bool get supportsLoopbackHttp => _http.isSupported;
+
+  List<String> get serverIds => List<String>.unmodifiable(_factories.keys);
+
+  /// Registers one built-in server factory; the last registration wins.
+  void register(LocalMcpServerFactory factory) {
+    final definition = factory.create();
+    _factories[definition.id] = factory;
+  }
+
+  /// True when the server is currently started.
+  bool isRunning(String serverId) => _running.containsKey(serverId);
+
+  LocalMcpServerEndpoint? endpointFor(String serverId) =>
+      _running[serverId]?.endpoint;
+
+  @override
+  McpStreamPair? streamsFor(String serverId) => _running[serverId]?.pair;
+
+  /// Starts [serverId] and returns its endpoint, reusing a running instance.
+  Future<LocalMcpServerEndpoint> start(
+    String serverId, {
+    McpLocalTransportPreference? preference,
+  }) async {
+    final running = _running[serverId];
+    if (running != null) {
+      return running.endpoint;
+    }
+    final factory = _factories[serverId];
+    if (factory == null) {
+      throwMcp(
+        McpErrorKind.configuration,
+        'Unknown local MCP server "$serverId".',
+      );
+    }
+    final definition = factory.create();
+    final effective = _effectivePreference(preference ?? this.preference);
+    if (effective == McpLocalTransportPreference.http) {
+      final token = _generateToken();
+      final handle = await _http.start(definition, bearerToken: token);
+      final endpoint = LocalMcpHttpEndpoint(
+        serverId: definition.id,
+        url: handle.url,
+        bearerToken: token,
+      );
+      _running[definition.id] = _RunningLocalServer(
+        definition: definition,
+        endpoint: endpoint,
+        httpStop: handle.stop,
+      );
+      _runtimeSecrets?.put(_bearerReference(definition.id), token);
+      diagnostics.log(
+        'mcp local server ${definition.id} listening on ${handle.url}',
+      );
+      return endpoint;
+    }
+    final pair = McpStreamPair.create();
+    final server = createLocalMcpServer(definition);
+    await server.connect(
+      sdk.IOStreamTransport(
+        stream: pair.serverInbound,
+        sink: pair.serverOutbound,
+      ),
+    );
+    final endpoint = LocalMcpStreamEndpoint(
+      serverId: definition.id,
+      pair: pair,
+    );
+    _running[definition.id] = _RunningLocalServer(
+      definition: definition,
+      endpoint: endpoint,
+      server: server,
+      pair: pair,
+    );
+    diagnostics.log(
+      'mcp local server ${definition.id} started in-process stream',
+    );
+    return endpoint;
+  }
+
+  /// Stops one running server and releases its endpoint.
+  Future<void> stop(String serverId) async {
+    final running = _running.remove(serverId);
+    if (running == null) {
+      return;
+    }
+    _runtimeSecrets?.remove(_bearerReference(serverId));
+    try {
+      await running.httpStop?.call();
+    } on Object {
+      // Listener may already be closed.
+    }
+    try {
+      await running.server?.close();
+    } on Object {
+      // Session may already be gone.
+    }
+    try {
+      await running.pair?.close();
+    } on Object {
+      // Streams may already be closed.
+    }
+    diagnostics.log('mcp local server $serverId stopped');
+  }
+
+  /// Stops every server this host started.
+  Future<void> stopAll() async {
+    for (final serverId in _running.keys.toList(growable: false)) {
+      await stop(serverId);
+    }
+  }
+
+  /// Builds the connection configuration for a started endpoint.
+  McpConnectionConfig connectionConfig(
+    String serverId, {
+    String? alias,
+    bool enabled = true,
+    int revision = 0,
+  }) {
+    final running = _running[serverId];
+    if (running == null) {
+      throwMcp(
+        McpErrorKind.configuration,
+        'Local MCP server "$serverId" is not started.',
+      );
+    }
+    final endpoint = running.endpoint;
+    final connectionId = McpConnectionId(serverId);
+    final transport = switch (endpoint) {
+      LocalMcpHttpEndpoint() => McpHttpTransportConfig(
+        url: endpoint.url.toString(),
+        bearerSecret: _bearerReference(serverId),
+      ),
+      LocalMcpStreamEndpoint() => McpInProcessStreamTransportConfig(
+        serverId: serverId,
+      ),
+    };
+    return McpConnectionConfig(
+      connectionId: connectionId,
+      alias: alias ?? running.definition.displayName,
+      transport: transport,
+      enabled: enabled,
+      revision: revision,
+    );
+  }
+
+  McpLocalTransportPreference _effectivePreference(
+    McpLocalTransportPreference requested,
+  ) {
+    if (requested == McpLocalTransportPreference.auto) {
+      return _http.isSupported
+          ? McpLocalTransportPreference.http
+          : McpLocalTransportPreference.stream;
+    }
+    return requested;
+  }
+
+  McpSecretReference _bearerReference(String serverId) =>
+      McpSecretReference.bearer(McpConnectionId(serverId));
+
+  String _generateToken() {
+    final random = _random ?? Random.secure();
+    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+  }
+}
+
+final class _RunningLocalServer {
+  _RunningLocalServer({
+    required this.definition,
+    required this.endpoint,
+    this.server,
+    this.pair,
+    this.httpStop,
+  });
+
+  final LocalMcpServerDefinition definition;
+  final LocalMcpServerEndpoint endpoint;
+  final sdk.McpServer? server;
+  final McpStreamPair? pair;
+  final Future<void> Function()? httpStop;
+}

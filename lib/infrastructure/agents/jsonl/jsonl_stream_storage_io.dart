@@ -49,6 +49,7 @@ final class JsonlFilesystemStreamStorage implements JsonlStreamStorage {
   static const applicationDirectoryName = 'ru.kotdath.domovoy';
   static const storageDirectoryName = 'agent-sessions-jsonl-v1';
   static const projectStorageDirectoryName = 'project-workspaces-jsonl-v1';
+  static const mcpStorageDirectoryName = 'mcp-jsonl-v1';
   static final RegExp _namespaceDirectoryPattern = RegExp(
     r'^[A-Za-z0-9._-]{1,64}$',
   );
