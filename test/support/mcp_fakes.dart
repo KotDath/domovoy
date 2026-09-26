@@ -47,6 +47,34 @@ final class ScriptedMcpConnection implements McpTransportConnection {
   var _pageIndex = 0;
   Duration? lastCallTimeout;
 
+  /// When armed, the next connect/list call waits for the matching release.
+  Completer<void>? _connectGate;
+  Completer<void>? _listGate;
+
+  void armConnectGate() {
+    _connectGate = Completer<void>();
+  }
+
+  void releaseConnectGate() {
+    final gate = _connectGate;
+    _connectGate = null;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  void armListGate() {
+    _listGate = Completer<void>();
+  }
+
+  void releaseListGate() {
+    final gate = _listGate;
+    _listGate = null;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
   @override
   void Function()? get onUnexpectedClose => _onUnexpectedClose;
 
@@ -98,6 +126,10 @@ final class ScriptedMcpConnection implements McpTransportConnection {
     required CancellationToken cancellation,
   }) async {
     connectCount += 1;
+    final gate = _connectGate;
+    if (gate != null) {
+      await gate.future;
+    }
     final delay = connectDelay;
     if (delay != null) {
       await Future<void>.delayed(delay);
@@ -122,6 +154,10 @@ final class ScriptedMcpConnection implements McpTransportConnection {
     required CancellationToken cancellation,
   }) async {
     listedCursors.add(cursor);
+    final gate = _listGate;
+    if (gate != null) {
+      await gate.future;
+    }
     final error = listError;
     if (error != null) {
       throw error;
@@ -234,14 +270,27 @@ Future<void> waitFor(
 }
 
 /// Minimal descriptor used by scripted connections.
-McpToolDescriptor scriptedTool(String connectionId, String name) {
+McpToolDescriptor scriptedTool(
+  String connectionId,
+  String name, {
+  String? description,
+  String? title,
+  Map<String, Object?>? inputSchema,
+  Map<String, Object?>? outputSchema,
+  Map<String, Object?>? annotations,
+}) {
   return McpToolDescriptor(
     connectionId: McpConnectionId(connectionId),
     originalName: name,
-    description: 'Tool $name',
-    inputSchema: const <String, Object?>{
-      'type': 'object',
-      'properties': <String, Object?>{},
-    },
+    title: title,
+    description: description ?? 'Tool $name',
+    inputSchema:
+        inputSchema ??
+        const <String, Object?>{
+          'type': 'object',
+          'properties': <String, Object?>{},
+        },
+    outputSchema: outputSchema,
+    annotations: annotations,
   );
 }

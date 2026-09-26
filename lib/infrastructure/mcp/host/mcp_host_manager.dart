@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/llm/cancellation.dart';
+import '../../../core/llm/json.dart';
 import '../../../core/mcp/mcp.dart';
 import '../mcp_diagnostics.dart';
 
@@ -78,12 +79,21 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
   final Map<String, int> _reconnectAttempts = <String, int>{};
   final Set<String> _refreshing = <String>{};
 
+  /// Monotonic operation counter and the per-connection generation it stamps.
+  ///
+  /// In-flight connects and catalog refreshes compare their stamp before
+  /// publishing, so a disconnect, remove, upsert or stop that happened during
+  /// an await can never install a stale connection or route.
+  var _operationCounter = 0;
+  final Map<String, int> _connectionGenerations = <String, int>{};
+
   final StreamController<McpHostEvent> _events =
       StreamController<McpHostEvent>.broadcast(sync: true);
   CancellationSource _stopSource = CancellationSource();
   final CancellationToken _neverCancelled = CancellationSource().token;
 
   McpCatalog _catalog = McpCatalog.empty;
+  McpError? _configurationError;
   var _revision = 0;
   var _started = false;
   var _stopped = false;
@@ -96,6 +106,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
       revision: _revision,
       connections: List<McpConnectionStatus>.unmodifiable(statuses),
       catalog: _catalog,
+      configurationError: _configurationError,
     );
   }
 
@@ -114,12 +125,18 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     _stopSource = CancellationSource();
     final token = cancellation ?? _neverCancelled;
     List<McpConnectionConfig> configs;
+    McpError? configurationError;
     try {
       configs = await _repository.loadAll();
     } on McpException catch (error) {
-      _diagnostics.log('mcp configuration load failed: ${error.error.message}');
+      // Never silently treat stored connections as absent: record the failure,
+      // expose it on the snapshot and rethrow to the composition boundary.
+      configurationError = error.error;
       configs = const <McpConnectionConfig>[];
+      _diagnostics.log('mcp configuration load failed: ${error.error.message}');
+      _emit(McpConfigurationFailed(at: _now(), error: error.error));
     }
+    _configurationError = configurationError;
     for (final config in configs) {
       _configs[config.connectionId.value] = config;
       _statuses[config.connectionId.value] = McpConnectionStatus(
@@ -132,9 +149,14 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
       );
     }
     notifyListeners();
+    if (configurationError != null) {
+      // Allow a later retry once the configuration is repaired.
+      _started = false;
+      throw McpException(configurationError);
+    }
     await Future.wait(<Future<void>>[
       for (final config in configs)
-        if (config.enabled) _connectAndSettle(config, token),
+        if (config.enabled) _attemptConnect(config, token),
     ]);
   }
 
@@ -146,6 +168,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     _stopped = true;
     _stopSource.cancel();
     _cancelReconnectTimers();
+    _invalidateInFlightOperations();
     final connections = _connections.values.toList(growable: false);
     _connections.clear();
     _tools.clear();
@@ -179,9 +202,19 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
   }) async {
     final id = config.connectionId;
     final existing = _configs[id.value];
-    final expectedRevision =
-        existing?.revision ?? _deletedRevisions[id.value] ?? 0;
-    final normalized = config.copyWith(revision: expectedRevision + 1);
+    final tombstoneRevision = existing == null
+        ? _deletedRevisions[id.value]
+        : null;
+    final expectedRevision = expectedMcpConnectionRevision(
+      existing: existing,
+      tombstoneRevision: tombstoneRevision,
+    );
+    final normalized = config.copyWith(
+      revision: nextMcpConnectionRevision(
+        existing: existing,
+        tombstoneRevision: tombstoneRevision,
+      ),
+    );
     await _repository.save(
       normalized,
       expectedRevision: expectedRevision,
@@ -286,8 +319,16 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
       if (connection == null) {
         continue;
       }
+      // Refreshing claims this connection: any earlier in-flight operation for
+      // the same id becomes stale, and this result is discarded if the
+      // connection is replaced while tools/list is in flight.
+      final generation = _beginOperation(connectionId);
       try {
         final tools = await _listAllTools(connection, _stopSource.token);
+        if (!_isOperationCurrent(connectionId, generation) ||
+            !identical(_connections[connectionId.value], connection)) {
+          continue;
+        }
         _tools[connectionId.value] = tools;
         _statuses[connectionId.value] =
             (_statuses[connectionId.value] ??
@@ -299,6 +340,10 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
                   updatedAt: _now(),
                 );
       } on McpException catch (error) {
+        if (!_isOperationCurrent(connectionId, generation) ||
+            !identical(_connections[connectionId.value], connection)) {
+          continue;
+        }
         // A failed refresh keeps the previous catalog: the connection may
         // still serve its old tools, and any removed tool fails explicitly at
         // call time. The error is surfaced in the status and diagnostics.
@@ -357,6 +402,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     _stopped = true;
     _stopSource.cancel();
     _cancelReconnectTimers();
+    _invalidateInFlightOperations();
     for (final connection in _connections.values) {
       unawaited(connection.close());
     }
@@ -366,12 +412,36 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     super.dispose();
   }
 
-  Future<void> _connectAndSettle(
+  /// Connects [config] once and schedules at most one bounded reconnect on
+  /// failure. Used by lifecycle paths only (start and reconnect).
+  Future<void> _attemptConnect(
+    McpConnectionConfig config,
+    CancellationToken token,
+  ) async {
+    final id = config.connectionId;
+    final connected = await _connectAndSettle(config, token);
+    if (connected) {
+      _reconnectAttempts.remove(id.value);
+      return;
+    }
+    if (!_stopped) {
+      _scheduleReconnect(id);
+    }
+  }
+
+  /// Connects [config] and installs its session and catalog atomically.
+  ///
+  /// Returns true when this operation published its result. A disconnect,
+  /// remove, upsert or stop that happens during an await bumps the generation
+  /// or stops the host; the stale operation then closes its connection without
+  /// touching the catalog or status.
+  Future<bool> _connectAndSettle(
     McpConnectionConfig config,
     CancellationToken token,
   ) async {
     final id = config.connectionId;
     await _disconnectInternal(id);
+    final generation = _beginOperation(id);
     _setStatus(
       id,
       (_statuses[id.value] ?? _statusFor(config)).copyWith(
@@ -394,10 +464,14 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
         timeout: _timeouts.connect,
         cancellation: token,
       );
-      final tools = await _listAllTools(connection, token);
-      if (_stopped) {
+      if (!_isOperationCurrent(id, generation)) {
         await connection.close();
-        return;
+        return false;
+      }
+      final tools = await _listAllTools(connection, token);
+      if (!_isOperationCurrent(id, generation)) {
+        await connection.close();
+        return false;
       }
       _connections[id.value] = connection;
       _tools[id.value] = tools;
@@ -419,8 +493,12 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
       );
       _rebuildCatalog(changed: <McpConnectionId>[id]);
       notifyListeners();
+      return true;
     } on Object catch (error) {
       await connection?.close();
+      if (!_isOperationCurrent(id, generation)) {
+        return false;
+      }
       final message = _describeFailure(error);
       _statuses[id.value] = (_statuses[id.value] ?? _statusFor(config))
           .copyWith(
@@ -441,12 +519,13 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
       );
       _rebuildCatalog(changed: <McpConnectionId>[id]);
       notifyListeners();
-      _scheduleReconnect(id);
+      return false;
     }
   }
 
   Future<void> _disconnectInternal(McpConnectionId id) async {
     _cancelReconnectTimer(id);
+    _beginOperation(id);
     final connection = _connections.remove(id.value);
     _tools.remove(id.value);
     if (connection != null) {
@@ -546,13 +625,9 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     if (current == null || !current.enabled) {
       return;
     }
-    await _connectAndSettle(current, _stopSource.token);
-    if (_statuses[id.value]?.phase == McpConnectionPhase.ready) {
-      _reconnectAttempts.remove(id.value);
-    } else if (_reconnectAttempts[id.value] == null ||
-        _reconnectAttempts[id.value]! <= _reconnectPolicy.maxAttempts) {
-      _scheduleReconnect(id);
-    }
+    // Exactly one reconnect attempt per failure: _attemptConnect schedules the
+    // next bounded retry itself, so this method never schedules a second one.
+    await _attemptConnect(current, _stopSource.token);
   }
 
   Future<List<McpToolDescriptor>> _listAllTools(
@@ -617,11 +692,15 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
   }
 
   String _signature(McpCatalog catalog) => catalog.routes
-      .map(
-        (route) =>
-            '${route.connectionId.value}\u0000'
-            '${route.originalToolName}\u0000${route.modelToolName.value}',
-      )
+      .map((route) {
+        final descriptor = route.descriptor;
+        return '${route.connectionId.value}\u0000'
+            '${route.originalToolName}\u0000${route.modelToolName.value}\u0000'
+            '${descriptor.title ?? ''}\u0000${descriptor.description ?? ''}\u0000'
+            '${jsonHash(descriptor.inputSchema)}\u0000'
+            '${jsonHash(descriptor.outputSchema)}\u0000'
+            '${jsonHash(descriptor.annotations)}';
+      })
       .join('|');
 
   McpConnectionStatus _statusFor(McpConnectionConfig config) =>
@@ -667,6 +746,23 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
 
   void _cancelReconnectTimer(McpConnectionId id) {
     _reconnectGenerations.remove(id.value);
+  }
+
+  /// Starts a new operation generation for [id] and returns its stamp.
+  int _beginOperation(McpConnectionId id) {
+    final generation = ++_operationCounter;
+    _connectionGenerations[id.value] = generation;
+    return generation;
+  }
+
+  bool _isOperationCurrent(McpConnectionId id, int generation) =>
+      !_stopped && _connectionGenerations[id.value] == generation;
+
+  /// Invalidates every in-flight operation, for example on stop.
+  void _invalidateInFlightOperations() {
+    for (final key in _connectionGenerations.keys.toList(growable: false)) {
+      _connectionGenerations[key] = ++_operationCounter;
+    }
   }
 
   void _emit(McpHostEvent event) {

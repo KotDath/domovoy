@@ -65,6 +65,8 @@ String describeMcpHostEvent(McpHostEvent event, McpSecretRedactor redactor) {
           '${error == null ? '' : ': $error'}',
     McpCatalogChanged(:final revision, :final toolCount) =>
       'mcp catalog revision $revision with $toolCount tools',
+    McpConfigurationFailed(:final error) =>
+      'mcp configuration failed: ${error.kind.name}',
     McpToolCallCompleted(
       :final modelToolName,
       :final connectionId,
