@@ -7,6 +7,7 @@ import 'package:mcp_dart/mcp_dart.dart' as sdk;
 import '../../../core/mcp/mcp.dart';
 import '../mcp_diagnostics.dart';
 import '../stdio_environment.dart';
+import 'mcp_platform_policy.dart';
 import 'mcp_sdk_connection.dart';
 import 'mcp_sdk_transports.dart';
 
@@ -19,9 +20,15 @@ McpStdioLauncher createMcpStdioLauncher() => const DartIoMcpStdioLauncher();
 final class DartIoMcpStdioLauncher implements McpStdioLauncher {
   const DartIoMcpStdioLauncher();
 
-  /// Mobile platforms cannot guarantee spawning arbitrary external commands.
+  /// Third-party stdio servers are offered only on confirmed desktop
+  /// platforms; Aurora and unknown platforms fall back to built-in streams.
   @override
-  bool get isSupported => !Platform.isAndroid && !Platform.isIOS;
+  bool get isSupported => supportsStdioOnPlatform(
+    operatingSystem: Platform.operatingSystem,
+    isLinux: Platform.isLinux,
+    isWindows: Platform.isWindows,
+    isMacOS: Platform.isMacOS,
+  );
 
   @override
   Future<McpTransportConnection> launch({

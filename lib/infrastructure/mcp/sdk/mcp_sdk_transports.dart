@@ -104,9 +104,14 @@ final class McpSdkTransportFactory implements McpTransportFactory {
           );
         }
         final pair = await registry.acquireStreams(streamConfig.serverId);
-        final transport = sdk.IOStreamTransport(
-          stream: pair.clientInbound,
-          sink: pair.clientOutbound,
+        final transport = _StreamSessionReleasingTransport(
+          sdk.IOStreamTransport(
+            stream: pair.clientInbound,
+            sink: pair.clientOutbound,
+          ),
+          onReleased: () {
+            registry.releaseStreams(streamConfig.serverId, pair);
+          },
         );
         return McpSdkConnection(
           connectionId: config.connectionId,
@@ -179,4 +184,75 @@ final class _ResolvedSecrets {
   final Map<String, String> stdioEnvironment;
   final String? bearer;
   final McpSecretRedactor redactor;
+}
+
+/// Releases a reserved in-process stream session when its client goes away.
+///
+/// The release runs once, either from [close] or from the inner transport's
+/// close callback, so a host reconnect can request a fresh session without a
+/// live client losing the one it owns.
+final class _StreamSessionReleasingTransport implements sdk.Transport {
+  _StreamSessionReleasingTransport(this._inner, {required this.onReleased});
+
+  final sdk.Transport _inner;
+  final void Function() onReleased;
+  var _released = false;
+
+  void Function()? _onclose;
+  void Function(Error error)? _onerror;
+  void Function(sdk.JsonRpcMessage message)? _onmessage;
+
+  void _releaseOnce() {
+    if (_released) {
+      return;
+    }
+    _released = true;
+    onReleased();
+  }
+
+  @override
+  Future<void> start() async {
+    _inner.onclose = () {
+      _releaseOnce();
+      _onclose?.call();
+    };
+    _inner.onerror = (error) => _onerror?.call(error);
+    _inner.onmessage = (message) => _onmessage?.call(message);
+    await _inner.start();
+  }
+
+  @override
+  Future<void> send(sdk.JsonRpcMessage message, {int? relatedRequestId}) =>
+      _inner.send(message, relatedRequestId: relatedRequestId);
+
+  @override
+  Future<void> close() async {
+    try {
+      await _inner.close();
+    } finally {
+      _releaseOnce();
+    }
+  }
+
+  @override
+  String? get sessionId => _inner.sessionId;
+
+  @override
+  void Function()? get onclose => _onclose;
+
+  @override
+  set onclose(void Function()? callback) => _onclose = callback;
+
+  @override
+  void Function(Error error)? get onerror => _onerror;
+
+  @override
+  set onerror(void Function(Error error)? callback) => _onerror = callback;
+
+  @override
+  void Function(sdk.JsonRpcMessage message)? get onmessage => _onmessage;
+
+  @override
+  set onmessage(void Function(sdk.JsonRpcMessage message)? callback) =>
+      _onmessage = callback;
 }

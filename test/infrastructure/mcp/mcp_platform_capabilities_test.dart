@@ -52,6 +52,31 @@ void main() {
     expect(host.supportsLoopbackHttp, isTrue);
   });
 
+  test('stdio policy covers only confirmed desktop platforms', () {
+    bool policy(
+      String operatingSystem, {
+      bool linux = false,
+      bool windows = false,
+      bool macOS = false,
+    }) {
+      return supportsStdioOnPlatform(
+        operatingSystem: operatingSystem,
+        isLinux: linux,
+        isWindows: windows,
+        isMacOS: macOS,
+      );
+    }
+
+    expect(policy('linux', linux: true), isTrue);
+    expect(policy('windows', windows: true), isTrue);
+    expect(policy('macos', macOS: true), isTrue);
+    // Aurora reports itself as Linux but child processes are not confirmed.
+    expect(policy('aurora', linux: true), isFalse);
+    expect(policy('android'), isFalse);
+    expect(policy('ios'), isFalse);
+    expect(policy('fuchsia'), isFalse);
+  });
+
   test(
     'platforms without a loopback listener fall back to in-process streams',
     () async {

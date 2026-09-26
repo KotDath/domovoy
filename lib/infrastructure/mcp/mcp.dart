@@ -5,6 +5,7 @@ export 'local/local_http_launcher.dart';
 export 'local/local_mcp_definition.dart';
 export 'local/local_mcp_server_host.dart';
 export 'mcp_diagnostics.dart';
+export 'sdk/mcp_platform_policy.dart';
 export 'sdk/mcp_sdk_connection.dart';
 export 'sdk/mcp_sdk_transports.dart';
 export 'secrets/mcp_secret_vault.dart';

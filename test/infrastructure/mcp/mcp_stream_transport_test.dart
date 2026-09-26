@@ -4,8 +4,40 @@ import 'package:domovoy/core/llm/cancellation.dart';
 import 'package:domovoy/core/mcp/mcp.dart';
 import 'package:domovoy/infrastructure/mcp/mcp.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mcp_dart/mcp_dart.dart' as sdk;
 
 import '../../support/mcp_fixture_servers.dart';
+
+/// Test factory whose first tool registration fails.
+final class _FlakyStreamFactory implements LocalMcpServerFactory {
+  _FlakyStreamFactory({required this.serverId});
+
+  final String serverId;
+  var registrations = 0;
+
+  @override
+  LocalMcpServerDefinition create() => LocalMcpServerDefinition(
+    serverId: serverId,
+    displayName: serverId,
+    version: '1.0.0',
+    registerTools: (server) {
+      registrations += 1;
+      if (registrations == 1) {
+        throw StateError('registration failed');
+      }
+      server.registerTool(
+        'ping',
+        description: 'Ping',
+        inputSchema: sdk.JsonSchema.object(
+          properties: const <String, sdk.JsonSchema>{},
+        ),
+        callback: (args, extra) async => const sdk.CallToolResult(
+          content: <sdk.Content>[sdk.TextContent(text: 'pong')],
+        ),
+      );
+    },
+  );
+}
 
 void main() {
   late LocalMcpServerHost host;
@@ -231,5 +263,121 @@ void main() {
     );
     expect(result.textContent, 'echo:again');
     await second.close();
+  });
+
+  test('a failed local server start can be retried', () async {
+    final flaky = _FlakyStreamFactory(serverId: 'flaky');
+    host.register(flaky);
+
+    await expectLater(host.start('flaky'), throwsA(isA<StateError>()));
+    expect(host.isRunning('flaky'), isFalse);
+    expect(host.endpointFor('flaky'), isNull);
+
+    final endpoint = await host.start('flaky');
+    expect(endpoint, isA<LocalMcpStreamEndpoint>());
+    expect(host.isRunning('flaky'), isTrue);
+
+    final connection = await factory.create(
+      host.connectionConfig('flaky'),
+      secrets: secrets,
+    );
+    final handshake = await connection.connect(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(handshake.serverName, 'flaky');
+    final page = await connection.listTools(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(page.tools.single.originalName, 'ping');
+    final result = await connection.callTool(
+      originalToolName: 'ping',
+      arguments: const <String, Object?>{},
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(result.textContent, 'pong');
+    await connection.close();
+  });
+
+  test('a live stream client reserves its session', () async {
+    host.register(
+      FixtureMcpServerFactory(
+        serverId: 'reserved',
+        tools: fixtureToolsFor('reserved'),
+      ),
+    );
+    await host.start('reserved');
+    final config = host.connectionConfig('reserved');
+
+    final first = await factory.create(config, secrets: secrets);
+    await first.connect(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+
+    // A second client must not close the session the first one owns.
+    await expectLater(
+      factory.create(config, secrets: secrets),
+      throwsA(
+        isA<McpException>().having(
+          (error) => error.error.kind,
+          'kind',
+          McpErrorKind.unavailable,
+        ),
+      ),
+    );
+    final echo = await first.callTool(
+      originalToolName: 'echo',
+      arguments: const <String, Object?>{'value': 'live'},
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(echo.textContent, 'echo:live');
+    await first.close();
+
+    // After release a fresh session is handed out and works.
+    final second = await factory.create(config, secrets: secrets);
+    final handshake = await second.connect(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(handshake.serverName, 'reserved');
+    final again = await second.callTool(
+      originalToolName: 'echo',
+      arguments: const <String, Object?>{'value': 'again'},
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(again.textContent, 'echo:again');
+    await second.close();
+  });
+
+  test('concurrent stream acquisitions are rejected', () async {
+    host.register(
+      FixtureMcpServerFactory(
+        serverId: 'concurrent',
+        tools: fixtureToolsFor('concurrent'),
+      ),
+    );
+    await host.start('concurrent');
+    final first = await host.acquireStreams('concurrent');
+    host.releaseStreams('concurrent', first);
+
+    final pending = host.acquireStreams('concurrent');
+    await expectLater(
+      host.acquireStreams('concurrent'),
+      throwsA(
+        isA<McpException>().having(
+          (error) => error.error.kind,
+          'kind',
+          McpErrorKind.unavailable,
+        ),
+      ),
+    );
+    final second = await pending;
+    expect(identical(second, first), isFalse);
+    host.releaseStreams('concurrent', second);
   });
 }
