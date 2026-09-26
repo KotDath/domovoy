@@ -1,3 +1,4 @@
+import 'errors.dart';
 import 'ids.dart';
 import 'naming.dart';
 import 'protocol.dart';
@@ -76,16 +77,18 @@ final class McpCatalog {
           .putIfAbsent(route.connectionId.value, () => <McpToolRoute>[])
           .add(route);
     }
-    return grouped;
+    return Map<String, List<McpToolRoute>>.unmodifiable(
+      grouped.map(
+        (key, value) => MapEntry(key, List<McpToolRoute>.unmodifiable(value)),
+      ),
+    );
   }
 }
 
 /// Builds a [McpCatalog] with deterministic names and collision handling.
 final class McpCatalogBuilder {
-  McpCatalogBuilder({
-    this.policy = const McpToolNamePolicy(),
-    this.revision = 1,
-  });
+  McpCatalogBuilder({McpToolNamePolicy? policy, this.revision = 1})
+    : policy = policy ?? McpToolNamePolicy();
 
   final McpToolNamePolicy policy;
   final int revision;
@@ -116,37 +119,34 @@ final class McpCatalogBuilder {
         return a.originalName.compareTo(b.originalName);
       });
     final seenPairs = <String>{};
-    final usedNames = <String>{};
+    final owners = <String, String>{};
     final routes = <McpToolRoute>[];
     for (final tool in sorted) {
       final pairKey = '${tool.connectionId.value}\u0000${tool.originalName}';
       if (!seenPairs.add(pairKey)) {
         continue;
       }
-      final route = McpToolRoute(
+      final name = policy.candidate(
         connectionId: tool.connectionId,
-        modelToolName: _allocateName(tool, usedNames),
-        descriptor: tool,
+        originalToolName: tool.originalName,
       );
-      routes.add(route);
+      final owner = owners[name];
+      if (owner != null) {
+        throwMcp(
+          McpErrorKind.configuration,
+          'Model-facing tool name "$name" collides for "$owner" and '
+          '"$pairKey". Rename one of the tools.',
+        );
+      }
+      owners[name] = pairKey;
+      routes.add(
+        McpToolRoute(
+          connectionId: tool.connectionId,
+          modelToolName: McpModelToolName(name),
+          descriptor: tool,
+        ),
+      );
     }
     return McpCatalog(revision: revision, routes: routes);
-  }
-
-  McpModelToolName _allocateName(
-    McpToolDescriptor tool,
-    Set<String> usedNames,
-  ) {
-    final base = policy.candidate(
-      connectionId: tool.connectionId,
-      originalToolName: tool.originalName,
-    );
-    var candidate = base;
-    var ordinal = 1;
-    while (!usedNames.add(candidate)) {
-      ordinal += 1;
-      candidate = policy.withOrdinal(base, ordinal);
-    }
-    return McpModelToolName(candidate);
   }
 }

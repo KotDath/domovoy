@@ -1,49 +1,79 @@
+import 'errors.dart';
 import 'ids.dart';
 
 /// Derives stable, provider-safe model-facing names for MCP tools.
 ///
-/// The name depends only on `(connectionId, originalToolName)`, so it survives
-/// alias renames and catalog refreshes. Ordinal disambiguation is applied by
-/// [McpCatalogBuilder] when two different pairs still collide after
-/// sanitization.
-final class McpToolNamePolicy {
-  const McpToolNamePolicy({
+/// A name is a pure function of `(connectionId, originalToolName)`:
+/// - when both identifiers are already canonical (`[A-Za-z0-9]` at the edges,
+///   no `__` separator inside), the readable name `mcp_<connection>__<tool>`
+///   is injective over that pair;
+/// - otherwise a stable hash of the exact pair is appended, so the name never
+///   changes when other tools or connections join or leave the catalog.
+///
+/// The rare full-name collision between two different pairs is detected by
+/// `McpCatalogBuilder` and rejected explicitly instead of being silently
+/// reordered.
+class McpToolNamePolicy {
+  McpToolNamePolicy({
     this.prefix = 'mcp',
     this.maxLength = McpModelToolName.maxLength,
-  }) : assert(maxLength > 0);
+  }) {
+    if (maxLength < _minimumLength) {
+      throwMcp(
+        McpErrorKind.configuration,
+        'Model tool name budget must be at least $_minimumLength characters.',
+      );
+    }
+    if (!RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(prefix)) {
+      throwMcp(
+        McpErrorKind.configuration,
+        'Model tool name prefix contains unsupported characters.',
+      );
+    }
+  }
+
+  static const _minimumLength = 17;
+  static final RegExp _canonicalPattern = RegExp(
+    r'^[A-Za-z0-9][A-Za-z0-9_-]*$',
+  );
 
   final String prefix;
   final int maxLength;
 
-  /// Candidate name for one server tool.
+  /// Stable model-facing name for one server tool.
   String candidate({
     required McpConnectionId connectionId,
     required String originalToolName,
   }) {
-    final connection = _segment(connectionId.value, fallback: 'server');
-    final tool = _segment(originalToolName, fallback: 'tool');
-    final base = '${prefix}_${connection}__$tool';
-    if (base.length <= maxLength) {
-      return base;
+    final rawConnection = connectionId.value.trim();
+    final rawTool = originalToolName.trim();
+    if (_isCanonical(rawConnection) && _isCanonical(rawTool)) {
+      final plain = '${prefix}_${rawConnection}__$rawTool';
+      if (plain.length <= maxLength) {
+        return plain;
+      }
     }
-    final digest = stableToolNameHash('${connectionId.value}\u0000$tool');
-    final suffix = '_$digest';
-    final available = maxLength - prefix.length - 1 - suffix.length;
-    final truncated = _truncateSegment(
-      base.substring(prefix.length + 1),
-      available,
+    final connectionSegment = _segment(rawConnection, fallback: 'server');
+    final toolSegment = _segment(rawTool, fallback: 'tool');
+    final hash = stableToolNameHash('$rawConnection\u0000$rawTool');
+    final suffix = '_$hash';
+    final available = maxLength - prefix.length - 1 - 2 - suffix.length;
+    var connectionBudget = (available * 3) ~/ 5;
+    if (connectionBudget > available - 1) {
+      connectionBudget = available - 1;
+    }
+    if (connectionBudget < 1) {
+      connectionBudget = 1;
+    }
+    final connectionPart = _truncateSegment(
+      connectionSegment,
+      connectionBudget,
     );
-    return '${prefix}_$truncated$suffix';
-  }
-
-  /// Appends `_2`, `_3`, ... while staying within [maxLength].
-  String withOrdinal(String base, int ordinal) {
-    if (ordinal <= 1) {
-      return base;
-    }
-    final suffix = '_$ordinal';
-    final head = _truncateSegment(base, maxLength - suffix.length);
-    return '$head$suffix';
+    final toolPart = _truncateSegment(
+      toolSegment,
+      available - connectionPart.length,
+    );
+    return '${prefix}_${connectionPart}__$toolPart$suffix';
   }
 }
 
@@ -58,6 +88,22 @@ String stableToolNameHash(String value) {
   }
   return hash.toRadixString(16).padLeft(8, '0');
 }
+
+bool _isCanonical(String value) {
+  if (value.isEmpty || !McpToolNamePolicy._canonicalPattern.hasMatch(value)) {
+    return false;
+  }
+  if (value.contains('__')) {
+    return false;
+  }
+  final last = value.codeUnitAt(value.length - 1);
+  return _isAlphaNumeric(last);
+}
+
+bool _isAlphaNumeric(int codeUnit) =>
+    (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+    (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+    (codeUnit >= 0x61 && codeUnit <= 0x7A);
 
 String _segment(String value, {required String fallback}) {
   final sanitized = value
