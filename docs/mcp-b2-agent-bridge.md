@@ -1,9 +1,10 @@
 # B2: агентский мост MCP и политика инструментов
 
-Статус: реализация B2 завершена, `dart format`, `flutter analyze` и
-`flutter test` зелёные. Область: `lib/core/agents` (мост, схемы, права),
-затронутые точки агентского рантайма и зеркальные тесты. Собственные MCP-серверы,
-планировщик, UI и финальная композиция `lib/app.dart` не входят (B3–B9).
+Статус: реализация B2 завершена, ревью раунда 1 учтено (см. правки в конце
+документа), `dart format`, `flutter analyze` и `flutter test` зелёные. Область:
+`lib/core/agents` (мост, схемы, права), затронутые точки агентского рантайма и
+зеркальные тесты. Собственные MCP-серверы, планировщик, UI и финальная
+композиция `lib/app.dart` не входят (B3–B9).
 
 ## Что добавлено
 
@@ -11,9 +12,9 @@
 |---|---|
 | `lib/core/agents/tool_schema.dart` | профили JSON Schema по wire-семействам, проверка представимости, валидатор значений с бюджетом работы |
 | `lib/core/agents/mcp_tools.dart` | `McpAgentToolSource`, `McpAgentToolBinding`, `McpToolResultMapper`, `McpAgentToolBridge` |
-| `lib/core/agents/access.dart` | `ToolAccessGrant`, `ToolAccessPolicy` — явные права чата/проекта/задачи |
+| `lib/core/agents/access.dart` | `ToolAccessGrant`, `ToolAccessPolicy`, `ScheduledToolRestrictions` — явные права чата/проекта/задачи и внутренний запрет создания расписаний |
 | `lib/core/agents/tools.dart` | динамические `AgentToolSource`, атомарный merge в `AgentToolRegistry`, `AgentToolView`, per-provider проекция дескриптора, `binding`, `unavailableReason` |
-| `lib/core/agents/runtime.dart` | снимок tools на запуск, проверка идентичности и прав перед каждым вызовом и после подтверждения, отказ без интерактивного подтверждения, `AgentToolUnavailable` |
+| `lib/core/agents/runtime.dart` | снимок tools на запуск, проверка живой идентичности и текущей политики по id перед каждым вызовом, после подтверждения и после `beforeTool`-хуков, отказ без интерактивного подтверждения, `AgentToolUnavailable` |
 | `lib/core/agents/definition.dart` | флаг `interactiveApproval` (по умолчанию `true`; старые записи читаются без миграции) |
 | `lib/core/agents/events.dart` | событие `AgentToolUnavailable(toolId, reason)` |
 
@@ -35,8 +36,7 @@ policies['chat-42'] = ToolAccessPolicy(
 policies['task-7'] = ToolAccessPolicy(
   id: PolicyId('task-7'),
   grant: ToolAccessGrant.scheduledTask(
-    allowedToolIds: taskSelection,
-    deniedToolIds: taskCreationToolIds,
+    allowedToolIds: taskSelection, // deny-список не нужен: см. ниже
   ),
 );
 ```
@@ -47,6 +47,15 @@ policies['task-7'] = ToolAccessPolicy(
 `ProjectId` (`ToolAccessPolicy(projectId: ...)`): вызов из другого проекта или
 из чата без проекта отклоняется. Отключение источника: `bridge.detachFrom(tools)` и
 `bridge.dispose()`; `registry.dispose()` снимает подписки.
+
+Любой неприсмотренный грант (`isUnattended`: `interactiveApproval == false`
+или `scope == scheduledTask`) **сам** запрещает встроенный маршрут создания
+расписаний: `ScheduledToolRestrictions` вычисляет стабильное имя для пары
+`(connectionId: 'automation', originalToolName: 'create_task')` через политику
+имён B1 и добавляет его в `denied`. Это не зависит от того, передал ли
+B6/B9 явный deny-список, и не затрагивает сторонние серверы с инструментом
+`create_task` на другом соединении. Если destructive-аннотация добавляет этот
+же идентификатор в `ask`, внутренний запрет побеждает без ошибки конфигурации.
 
 `bridge.source.unavailableTools` отдаёт UI карту
 `modelToolName -> причина` для инструментов, которые видны в каталоге, но не
@@ -75,12 +84,17 @@ policies['task-7'] = ToolAccessPolicy(
   превращается в отказ, когда интерактивное подтверждение невозможно.
 - Каждый запуск фиксирует свой набор инструментов и их идентичности до первого
   обращения к модели. Обновление каталога не расширяет текущий запуск.
-- Перед каждым вызовом заново проверяются: живой маршрут `(connectionId,
-  originalToolName)`, отпечаток схемы и текущая политика. После ожидания
-  интерактивного подтверждения проверка повторяется — устаревшее подтверждение
-  не обходит ни изменение каталога, ни изменение прав.
-- Инструмент, удалённый из каталога или сменивший маршрут, падает явной
-  ошибкой без вызова сервера.
+- Политика никогда не кэшируется на время ожидания: перед вызовом, после
+  подтверждения и ещё раз после `beforeTool`-хуков рантайм заново берёт
+  `runtime.policies[definition.policy]` по идентификатору. Замена записи на
+  запрещающую во время ожидания, отсутствие политики и исключение из `decide`
+  дают видимый отказ, а не выполнение по устаревшему решению (B7 меняет права
+  именно заменой записи в map).
+- Перед вызовом (в том числе сразу после хуков) заново проверяются: живой
+  маршрут `(connectionId, originalToolName)`, отпечаток схемы и текущая
+  политика. Инструмент, удалённый из каталога или сменивший маршрут/схему,
+  падает явной ошибкой без вызова сервера; отказ после `AgentToolStarted`
+  приходит как `AgentToolFinished(success: false)`, а не как успех.
 
 ## Результаты MCP
 
@@ -91,6 +105,12 @@ policies['task-7'] = ToolAccessPolicy(
 - Текстовые, медиа-, resource-link, embedded-resource и неизвестные блоки
   отображаются структурно; медиа не теряется молча — указываются MIME,
   длина и признак усечения, неизвестный тип назван (`unsupported` + label).
+- Ответ недоверенного сервера не может раздуть транскрипт: текст и data
+  ограничены оставшимся бюджетом `maxResultCharacters`, поля-идентификаторы
+  (`uri`, `name`, `mimeType`, `label`) — `maxFieldCharacters`, число записей —
+  `maxBlockEntries`. Все пропущенные блоки сворачиваются в **один** маркер
+  `{"type": "omitted", "blocks": N}`; усечение всегда видно (`truncated`,
+  `contentTruncated`, `<поле>Truncated`, `<поле>Characters`).
 - `timeout` и `cancelled` различаются: таймаут — ошибка инструмента, отмена
   разворачивает запуск (`AgentRunCancelled`), progress из сервера доходит как
   `AgentToolProgress`.
@@ -103,9 +123,11 @@ policies['task-7'] = ToolAccessPolicy(
 | Файл | Что проверяет |
 |---|---|
 | `test/core/agents/tool_schema_test.dart` | представимость сложных схем, per-provider профиль, отказ по `$ref`/`if`/tuple items/неизвестному `format`, полный набор ограничений при валидации, бюджет работы |
-| `test/core/agents/access_test.dart` | deny-by-default, приоритет явного запрета, `ask`→`deny` для задачи, destructive-аннотации, миграция старой записи определения |
+| `test/core/agents/access_test.dart` | deny-by-default, приоритет явного запрета, `ask`→`deny` для задачи, destructive-аннотации, **внутренний запрет `automation.create_task` для неприсмотренных грантов**, независимость стороннего `create_task`, миграция старой записи определения |
 | `test/core/agents/tool_sources_test.dart` | атомарный merge источников, коллизии имён, отключение источника, приоритет встроенных инструментов |
-| `test/core/agents/mcp_tools_test.dart` | вызов B1-фикстуры через обычный чат, маршрутизация двух серверов с `search`, refresh без расширения прав, удалённый инструмент без вызова, сложные схемы, `isError`/`structuredContent`/медиа, progress/timeout/отмена, подтверждение и повторная проверка, задача без подтверждений и создания задач |
+| `test/core/agents/mcp_tools_test.dart` | вызов B1-фикстуры через обычный чат, маршрутизация двух серверов с `search`, refresh без расширения прав, удалённый инструмент без вызова, сложные схемы, `isError`/`structuredContent`/медиа, progress/timeout/отмена, подтверждение и повторная проверка, **замена политики во время подтверждения**, **отзыв прав и удаление инструмента во время `beforeTool`-хука**, задача без подтверждений и создания задач без deny-списка |
+| `test/core/agents/mcp_tool_result_bounds_test.dart` | точные границы полей/записей/маркера усечения при малых лимитах |
+| `test/core/agents/mcp_tool_result_mapper_test.dart` | границы на дефолтной конфигурации маппера при враждебном ответе (компилируется и падает до фикса) |
 
 Существующие тесты Pi-инструментов и реплея старых сессий не менялись и
 проходят; `interactiveApproval` по умолчанию сохраняет прежнее поведение, а
@@ -124,3 +146,27 @@ policies['task-7'] = ToolAccessPolicy(
 - Гранты и права строит композиция (B7/B9): B2 предоставляет контракт,
   фабрики и проверку перед каждым вызовом, но не UI выбора и не хранилище
   прав.
+- Внутренний запрет создания расписаний зашит для встроенного маршрута
+  `automation/create_task`. Если B6 зарегистрирует сервер создания расписаний
+  под другим `connectionId`, композиция должна либо использовать канонический
+  id, либо добавить идентификатор в deny-список гранта явно.
+
+## Правки после ревью раунда 1
+
+- Политика больше не захватывается до ожидания подтверждения: после `await`
+  рантайм берёт `runtime.policies[policyId]` заново и отказывает, если запись
+  заменена на запрещающую или удалена (регрессия: gated approval + подмена
+  `DenyAllPolicy`).
+- После `beforeTool`-хуков (тоже await-точка) повторно проверяются живой
+  binding и текущая политика; отказ приходит как `AgentToolFinished(false)`
+  после `AgentToolStarted`, без ложного успеха (регрессии: отзыв прав и
+  удаление инструмента во время хука).
+- `ScheduledToolRestrictions` делает запрет `automation.create_task`
+  внутренним для `interactiveApproval: false`/`scheduledTask`-грантов;
+  сторонние `create_task` на других соединениях не затронуты (регрессия:
+  грант без deny-списка).
+- `McpToolResultMapper` ограничивает поля-идентификаторы
+  (`maxFieldCharacters`), число записей (`maxBlockEntries`) и сворачивает все
+  пропущенные блоки в один счётчик вместо маркера на блок; размер транскрипта
+  на враждебном ответе ограничен бюджетом (регрессии: 1 МБ `uri`/`name`,
+  5000 блоков, дефолтная конфигурация).
