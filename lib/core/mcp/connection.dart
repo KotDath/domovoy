@@ -172,6 +172,7 @@ final class InMemoryMcpConnectionRepository implements McpConnectionRepository {
   final McpConnectionCodec codec;
   final Map<String, McpConnectionConfig> _records =
       <String, McpConnectionConfig>{};
+  final Map<String, int> _tombstones = <String, int>{};
 
   @override
   Future<McpConnectionConfig?> load(McpConnectionId id) async =>
@@ -191,16 +192,30 @@ final class InMemoryMcpConnectionRepository implements McpConnectionRepository {
     required CancellationToken cancellation,
   }) async {
     _throwIfCancelled(cancellation);
-    final existing = _records[config.connectionId.value];
-    if (existing == null) {
-      if (expectedRevision != 0 || config.revision != 0) {
+    final key = config.connectionId.value;
+    final existing = _records[key];
+    if (existing != null) {
+      if (existing.revision != expectedRevision ||
+          config.revision != expectedRevision + 1) {
         _throwConflict(config.connectionId);
       }
-    } else if (existing.revision != expectedRevision ||
-        config.revision != expectedRevision + 1) {
+      _records[key] = config;
+      return;
+    }
+    final tombstoneRevision = _tombstones[key];
+    if (tombstoneRevision != null) {
+      if (expectedRevision != tombstoneRevision ||
+          config.revision != tombstoneRevision + 1) {
+        _throwConflict(config.connectionId);
+      }
+      _tombstones.remove(key);
+      _records[key] = config;
+      return;
+    }
+    if (expectedRevision != 0 || config.revision != 0) {
       _throwConflict(config.connectionId);
     }
-    _records[config.connectionId.value] = config;
+    _records[key] = config;
   }
 
   @override
@@ -215,7 +230,36 @@ final class InMemoryMcpConnectionRepository implements McpConnectionRepository {
       _throwConflict(id);
     }
     _records.remove(id.value);
+    _tombstones[id.value] = existing.revision;
   }
+}
+
+/// Revision the stored record must carry for a create/update of [id].
+int nextMcpConnectionRevision({
+  required McpConnectionConfig? existing,
+  required int? tombstoneRevision,
+}) {
+  if (existing != null) {
+    return existing.revision + 1;
+  }
+  if (tombstoneRevision != null) {
+    return tombstoneRevision + 1;
+  }
+  return 0;
+}
+
+/// Revision the caller must expect for a create/update of [id].
+int expectedMcpConnectionRevision({
+  required McpConnectionConfig? existing,
+  required int? tombstoneRevision,
+}) {
+  if (existing != null) {
+    return existing.revision;
+  }
+  if (tombstoneRevision != null) {
+    return tombstoneRevision;
+  }
+  return 0;
 }
 
 String _requireAlias(String alias) {

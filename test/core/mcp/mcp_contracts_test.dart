@@ -166,40 +166,81 @@ void main() {
       );
     });
 
-    test('in-memory repository enforces revisions', () async {
-      final repository = InMemoryMcpConnectionRepository();
-      final token = CancellationSource().token;
-      final config = McpConnectionConfig(
-        connectionId: McpConnectionId('arxiv'),
-        alias: 'arXiv',
-        transport: McpInProcessStreamTransportConfig(serverId: 'arxiv'),
-      );
-      await repository.save(config, expectedRevision: 0, cancellation: token);
-      expect((await repository.load(McpConnectionId('arxiv')))!, config);
+    test(
+      'in-memory repository enforces revisions across delete and re-add',
+      () async {
+        final repository = InMemoryMcpConnectionRepository();
+        final token = CancellationSource().token;
+        final config = McpConnectionConfig(
+          connectionId: McpConnectionId('arxiv'),
+          alias: 'arXiv',
+          transport: McpInProcessStreamTransportConfig(serverId: 'arxiv'),
+        );
+        await repository.save(config, expectedRevision: 0, cancellation: token);
+        expect((await repository.load(McpConnectionId('arxiv')))!, config);
 
-      final updated = config.copyWith(alias: 'arXiv 2', revision: 1);
-      await repository.save(updated, expectedRevision: 0, cancellation: token);
-      expect(
-        (await repository.load(McpConnectionId('arxiv')))!.alias,
-        'arXiv 2',
-      );
+        // A create must carry revision 0; revision 1 for a new key is rejected.
+        await expectLater(
+          repository.save(
+            McpConnectionConfig(
+              connectionId: McpConnectionId('fresh'),
+              alias: 'Fresh',
+              transport: McpInProcessStreamTransportConfig(serverId: 'fresh'),
+              revision: 1,
+            ),
+            expectedRevision: 0,
+            cancellation: token,
+          ),
+          throwsA(isA<McpException>()),
+        );
 
-      await expectLater(
-        repository.save(
-          config.copyWith(alias: 'stale', revision: 1),
+        final updated = config.copyWith(alias: 'arXiv 2', revision: 1);
+        await repository.save(
+          updated,
           expectedRevision: 0,
           cancellation: token,
-        ),
-        throwsA(isA<McpException>()),
-      );
+        );
+        expect(
+          (await repository.load(McpConnectionId('arxiv')))!.alias,
+          'arXiv 2',
+        );
 
-      await repository.delete(
-        McpConnectionId('arxiv'),
-        expectedRevision: 1,
-        cancellation: token,
-      );
-      expect(await repository.load(McpConnectionId('arxiv')), isNull);
-    });
+        await expectLater(
+          repository.save(
+            config.copyWith(alias: 'stale', revision: 1),
+            expectedRevision: 0,
+            cancellation: token,
+          ),
+          throwsA(isA<McpException>()),
+        );
+
+        await repository.delete(
+          McpConnectionId('arxiv'),
+          expectedRevision: 1,
+          cancellation: token,
+        );
+        expect(await repository.load(McpConnectionId('arxiv')), isNull);
+
+        // Re-add after delete continues the tombstone revision.
+        await expectLater(
+          repository.save(
+            config.copyWith(revision: 0),
+            expectedRevision: 0,
+            cancellation: token,
+          ),
+          throwsA(isA<McpException>()),
+        );
+        await repository.save(
+          config.copyWith(alias: 'arXiv 3', revision: 2),
+          expectedRevision: 1,
+          cancellation: token,
+        );
+        expect(
+          (await repository.load(McpConnectionId('arxiv')))!.alias,
+          'arXiv 3',
+        );
+      },
+    );
   });
 
   group('errors', () {

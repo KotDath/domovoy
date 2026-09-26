@@ -1,6 +1,7 @@
 import '../llm/cancellation.dart';
 import 'catalog.dart';
 import 'connection.dart';
+import 'errors.dart';
 import 'ids.dart';
 import 'protocol.dart';
 import 'transport.dart';
@@ -163,6 +164,7 @@ final class McpHostSnapshot {
     required this.revision,
     required this.connections,
     required this.catalog,
+    this.configurationError,
   });
 
   static final McpHostSnapshot empty = McpHostSnapshot(
@@ -174,6 +176,9 @@ final class McpHostSnapshot {
   final int revision;
   final List<McpConnectionStatus> connections;
   final McpCatalog catalog;
+
+  /// Set when stored configuration could not be read; never silently empty.
+  final McpError? configurationError;
 
   McpConnectionStatus? statusFor(McpConnectionId id) {
     for (final status in connections) {
@@ -223,6 +228,17 @@ final class McpCatalogChanged extends McpHostEvent {
 
   @override
   String toString() => 'McpCatalogChanged(rev $revision, $toolCount tools)';
+}
+
+/// Stored MCP configuration could not be read or decoded.
+final class McpConfigurationFailed extends McpHostEvent {
+  const McpConfigurationFailed({required super.at, required this.error});
+
+  final McpError error;
+
+  @override
+  String toString() =>
+      'McpConfigurationFailed(${error.kind.name}: ${error.message})';
 }
 
 final class McpToolCallCompleted extends McpHostEvent {
