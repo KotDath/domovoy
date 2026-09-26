@@ -53,13 +53,23 @@ stream, включая переподключение к тому же встр�
 
 - **Linux/Windows/macOS**: доступны все три транспорта. stdio запускается через
   `dart:io` с минимальным окружением.
-- **Android**: сторонний stdio не предлагается; гейт — только Linux
-  (без `Platform.operatingSystem == 'aurora'`), Windows и macOS. Loopback HTTP
-  и in-process stream подтверждены на эмуляторе API 35; встроенные серверы
-  можно поднимать обоими способами.
+- **Android**: сторонний stdio не предлагается. Loopback HTTP и in-process
+  stream подтверждены на эмуляторе API 35; встроенные серверы можно поднимать
+  обоими способами.
 - **Аврора**: `dart:io` есть, но loopback HTTP и запуск процессов не
-  подтверждены. Сторонний stdio отключён тем же гейтом; до smoke использовать
-  stream (fallback для встроенных серверов), конкретику зафиксирует B9.
+  подтверждены. Dart определяет `Platform.isLinux` как
+  `operatingSystem == 'linux'`, поэтому Aurora может выглядеть как обычный
+  Linux; **автоматическое определение Aurora не заявляется**. B9 обязан
+  отключить сторонний stdio явным override композиции:
+
+  ```dart
+  createMcpStdioLauncher(
+    forceDisabled: true,
+    disabledReason: auroraStdioDisabledReason,
+  )
+  ```
+
+  До smoke на устройстве встроенные серверы работают через stream-fallback.
 - **Web**: серверы и stdio недоступны (stub), внутренние потоки и HTTP-клиент
   компилируются; `flutter build web` с подключённым `infrastructure/mcp`
   проходит.
@@ -84,6 +94,20 @@ Android-loopback воспроизводится временным `flutter run`
 родительских секретов становится тривиальной: задайте переменные окружения,
 как в команде выше.
 
+## Правки после ревью раунда 3
+
+- Поздний отказ каталога (`_failConnectionForCatalog`) перепроверяет поколение
+  операции и идентичность соединения после `await close()`: remove, disconnect
+  или stop во время закрытия не воскрешают удалённый/остановленный статус.
+- `LocalMcpServerHost.acquireStreams` после старта сессии перепроверяет, что
+  running-состояние всё ещё зарегистрировано: остановка во время старта
+  закрывает отвязанную сессию и даёт явную ошибку, повторный `start()` и
+  подключение работают; правило одного живого клиента сохранено.
+- Сторонний stdio отключается явным override
+  (`createMcpStdioLauncher(forceDisabled: true, disabledReason: ...)`) для
+  сборок, где Dart не может отличить Aurora от Linux; автоопределение не
+  заявляется, B9 обязан выставить override.
+
 ## Правки после ревью раунда 2
 
 - `_attemptConnect` различает `connected` / `failed` / `stale`: отменённая
@@ -97,7 +121,8 @@ Android-loopback воспроизводится временным `flutter run`
 - `LocalMcpServerHost.start` не сохраняет сломанный endpoint: неудачная
   сессия очищается и повторный `start()` работает. Живой stream-клиент
   резервирует сессию, конкурентные `acquireStreams` отклоняются.
-- Сторонний stdio разрешён только на Linux (кроме Aurora), Windows и macOS.
+- Сторонний stdio разрешён только на Linux, Windows и macOS; для Aurora B9
+  добавляет явный override (см. раунд 3).
 
 ## Правки после ревью раунда 1
 
