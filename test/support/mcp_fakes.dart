@@ -19,6 +19,7 @@ final class ScriptedMcpConnection implements McpTransportConnection {
     this.listError,
     this.callDelay,
     this.callHandler,
+    this.emitProgress = false,
   }) : pages = List<McpToolPage>.of(pages);
 
   @override
@@ -38,6 +39,9 @@ final class ScriptedMcpConnection implements McpTransportConnection {
     Map<String, Object?> arguments,
   )?
   callHandler;
+
+  /// Emits two progress notifications before serving a call.
+  final bool emitProgress;
 
   final List<String?> listedCursors = <String?>[];
   final List<String> calledTools = <String>[];
@@ -196,6 +200,10 @@ final class ScriptedMcpConnection implements McpTransportConnection {
   }) async {
     calledTools.add(originalToolName);
     lastCallTimeout = timeout;
+    if (emitProgress) {
+      onProgress?.call(0.25);
+      onProgress?.call(0.75);
+    }
     final delay = callDelay;
     if (delay != null) {
       final completer = Completer<McpToolCallResult>();
