@@ -105,6 +105,70 @@ void main() {
       expect(grant.permits('mcp_automation__run_task_now'), isFalse);
     });
 
+    test(
+      'scheduled grants intrinsically deny the built-in create_task route',
+      () {
+        final grant = ToolAccessGrant.scheduledTask(
+          allowedToolIds: <String>[
+            'mcp_automation__create_task',
+            'mcp_automation__list_tasks',
+            'mcp_other__create_task',
+          ],
+        );
+        expect(grant.isUnattended, isTrue);
+        // Denied without any caller-supplied deny list.
+        expect(
+          grant.permissionFor('mcp_automation__create_task'),
+          ToolPermission.deny,
+        );
+        expect(grant.permits('mcp_automation__list_tasks'), isTrue);
+        // A third-party create_task on another connection stays governable.
+        expect(grant.permits('mcp_other__create_task'), isTrue);
+
+        final builder = McpCatalogBuilder();
+        builder.addConnection(
+          McpConnectionId('automation'),
+          <McpToolDescriptor>[
+            scriptedTool(
+              'automation',
+              'create_task',
+              annotations: const <String, Object?>{'destructiveHint': true},
+            ),
+            scriptedTool('automation', 'list_tasks'),
+          ],
+        );
+        final scheduled = ToolAccessGrant.forMcpCatalog(
+          catalog: builder.build(),
+          allowedToolIds: <String>[
+            'mcp_automation__create_task',
+            'mcp_automation__list_tasks',
+          ],
+          interactiveApproval: false,
+          scope: ToolAccessScope.scheduledTask,
+        );
+        // The destructive annotation would add create_task to the approval set;
+        // the intrinsic denial wins instead of raising a conflict.
+        expect(
+          scheduled.permissionFor('mcp_automation__create_task'),
+          ToolPermission.deny,
+        );
+        expect(scheduled.permits('mcp_automation__list_tasks'), isTrue);
+      },
+    );
+
+    test('an interactive grant keeps the built-in create_task governable', () {
+      final scheduled = ToolAccessGrant.scheduledTask(
+        allowedToolIds: <String>['mcp_automation__create_task'],
+      );
+      expect(scheduled.permits('mcp_automation__create_task'), isFalse);
+
+      final interactive = ToolAccessGrant(
+        allowedToolIds: <String>['mcp_automation__create_task'],
+      );
+      expect(interactive.isUnattended, isFalse);
+      expect(interactive.permits('mcp_automation__create_task'), isTrue);
+    });
+
     test('policy delegates every decision to the grant', () {
       final policy = ToolAccessPolicy(
         id: PolicyId('chat-42'),
