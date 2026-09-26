@@ -83,18 +83,32 @@ final class McpAgentToolBinding {
 /// into the transcript as data. `isError` always produces a failed result:
 /// a server-side failure can never be mistaken for success, and any
 /// `structuredContent` it returned is preserved under `details`.
+///
+/// The transcript is bounded even for hostile responses: text and media data
+/// are capped by the remaining character budget, every identifier/label field
+/// by [maxFieldCharacters], at most [maxBlockEntries] entries are emitted, and
+/// all further blocks collapse into one counted `omitted` marker. Truncation
+/// is always visible (`truncated`, `contentTruncated`, `*Truncated`).
 final class McpToolResultMapper {
   const McpToolResultMapper({
     this.maxBlockCharacters = 60000,
     this.maxResultCharacters = 120000,
     this.maxStructuredCharacters = 120000,
     this.maxErrorSummaryCharacters = 400,
+    this.maxFieldCharacters = 4096,
+    this.maxBlockEntries = 64,
   });
 
   final int maxBlockCharacters;
   final int maxResultCharacters;
   final int maxStructuredCharacters;
   final int maxErrorSummaryCharacters;
+
+  /// Per-string cap for `uri`, `name`, `mimeType`, `label` and similar fields.
+  final int maxFieldCharacters;
+
+  /// Maximum number of content entries emitted before the rest are counted.
+  final int maxBlockEntries;
 
   ToolExecutionResult map(
     McpToolCallResult result, {
@@ -147,15 +161,11 @@ final class McpToolResultMapper {
   Map<String, Object?> _payload(McpToolCallResult result) {
     final blocks = <Object?>[];
     var budget = maxResultCharacters;
+    var omittedBlocks = 0;
     var truncated = false;
     for (final block in result.content) {
-      if (budget <= 0) {
-        blocks.add(<String, Object?>{
-          'type': block.kind.name,
-          'omitted': true,
-          'reason': 'Результат превысил лимит размера.',
-        });
-        truncated = true;
+      if (budget <= 0 || blocks.length >= maxBlockEntries) {
+        omittedBlocks += 1;
         continue;
       }
       final mapped = _block(block, budget: budget);
@@ -164,6 +174,17 @@ final class McpToolResultMapper {
         truncated = true;
       }
       blocks.add(mapped);
+    }
+    if (omittedBlocks > 0) {
+      // Exactly one bounded marker instead of one entry per dropped block; the
+      // count keeps the omission visible without letting the peer grow the
+      // transcript.
+      blocks.add(<String, Object?>{
+        'type': 'omitted',
+        'blocks': omittedBlocks,
+        'reason': 'Результат превысил лимит размера.',
+      });
+      truncated = true;
     }
     final payload = <String, Object?>{'content': blocks};
     final structured = result.structuredContent;
@@ -191,23 +212,25 @@ final class McpToolResultMapper {
   }
 
   Object? _block(McpContentBlock block, {required int budget}) {
-    final limit = _min(maxBlockCharacters, budget);
+    final textLimit = _min(maxBlockCharacters, budget);
+    final fieldLimit = _min(maxFieldCharacters, budget);
     return switch (block) {
-      McpTextBlock(:final text) => _textBlock(text, limit),
+      McpTextBlock(:final text) => _textBlock(text, textLimit),
       McpMediaBlock(:final kind, :final data, :final mimeType) =>
         <String, Object?>{
           'type': kind == McpContentKind.audio ? 'audio' : 'image',
-          'mimeType': mimeType,
+          ..._cappedField('mimeType', mimeType, fieldLimit),
           'characters': data.length,
-          if (data.length <= limit) 'data': data else 'dataOmitted': true,
-          if (data.length > limit) 'truncated': true,
+          if (data.length <= textLimit) 'data': data else 'dataOmitted': true,
+          if (data.length > textLimit) 'truncated': true,
         },
       McpResourceLinkBlock(:final uri, :final name, :final mimeType) =>
         <String, Object?>{
           'type': 'resource_link',
-          'uri': uri,
-          'name': ?name,
-          'mimeType': ?mimeType,
+          ..._cappedField('uri', uri, fieldLimit),
+          if (name != null) ..._cappedField('name', name, fieldLimit),
+          if (mimeType != null)
+            ..._cappedField('mimeType', mimeType, fieldLimit),
         },
       McpEmbeddedResourceBlock(
         :final uri,
@@ -216,18 +239,19 @@ final class McpToolResultMapper {
         :final mimeType,
       ) =>
         <String, Object?>{
-          if (embeddedText != null) ..._cappedText(embeddedText, limit),
+          if (embeddedText != null) ..._cappedText(embeddedText, textLimit),
           'type': 'resource',
-          'uri': uri,
-          'mimeType': ?mimeType,
+          ..._cappedField('uri', uri, fieldLimit),
+          if (mimeType != null)
+            ..._cappedField('mimeType', mimeType, fieldLimit),
           if (data != null) 'characters': data.length,
-          if (data != null && data.length <= limit) 'data': data,
-          if (data != null && data.length > limit) 'dataOmitted': true,
+          if (data != null && data.length <= textLimit) 'data': data,
+          if (data != null && data.length > textLimit) 'dataOmitted': true,
         },
       McpUnsupportedBlock(:final label, :final text) => <String, Object?>{
         'type': 'unsupported',
-        'label': label,
-        ..._cappedText(text, limit),
+        ..._cappedField('label', label, fieldLimit),
+        ..._cappedText(text, textLimit),
       },
     };
   }
@@ -244,6 +268,16 @@ final class McpToolResultMapper {
           'text': text.substring(0, limit),
           'truncated': true,
           'characters': text.length,
+        };
+
+  /// Caps one identifier-like field and marks the cut explicitly.
+  Map<String, Object?> _cappedField(String key, String value, int limit) =>
+      value.length <= limit
+      ? <String, Object?>{key: value}
+      : <String, Object?>{
+          key: value.substring(0, limit),
+          '${key}Truncated': true,
+          '${key}Characters': value.length,
         };
 
   String _errorSummary(McpToolCallResult result, {required String toolName}) {
@@ -615,7 +649,11 @@ final class McpAgentToolBridge {
   /// Builds an explicit grant for one chat/project/task from the live catalog.
   ///
   /// Only [allowedToolIds] receive access; destructive server annotations can
-  /// add an approval requirement but never remove the explicit denial.
+  /// add an approval requirement but never remove the explicit denial. With
+  /// [interactiveApproval] disabled (or [ToolAccessScope.scheduledTask]) the
+  /// grant additionally denies [ScheduledToolRestrictions.intrinsicDeniedToolIds],
+  /// so a scheduled run cannot create new schedules even without a caller
+  /// deny list.
   ToolAccessGrant grantFor({
     required Iterable<String> allowedToolIds,
     Iterable<String> deniedToolIds = const <String>[],
