@@ -22,9 +22,13 @@ ProjectPlatformStack createPlatformProjectStack() {
         JsonlFilesystemStreamStorage.projectStorageDirectoryName,
   );
   final store = JsonlProjectStore(storage: storage);
-  if (Platform.isAndroid || Platform.isIOS) {
+  if (Platform.isAndroid ||
+      Platform.isIOS ||
+      Platform.operatingSystem == 'aurora') {
     final kind = Platform.isIOS
         ? ProjectPlatformKind.ios
+        : Platform.operatingSystem == 'aurora'
+        ? ProjectPlatformKind.aurora
         : ProjectPlatformKind.android;
     return ProjectPlatformStack(
       repository: store,
@@ -32,6 +36,8 @@ ProjectPlatformStack createPlatformProjectStack() {
       provisioner: MobileSandboxProjectRootProvisioner(
         capabilities: kind == ProjectPlatformKind.ios
             ? ProjectPlatformCapabilities.ios
+            : kind == ProjectPlatformKind.aurora
+            ? ProjectPlatformCapabilities.aurora
             : ProjectPlatformCapabilities.android,
         sandbox: IoMobileProjectSandbox(
           platformKind: kind,

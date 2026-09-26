@@ -9,6 +9,7 @@ export 'hooks.dart';
 export 'ids.dart';
 export 'messaging.dart';
 export 'policies.dart';
+export 'pi_default_tools.dart';
 export 'record.dart';
 export 'repository.dart';
 export 'runtime.dart';

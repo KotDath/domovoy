@@ -83,6 +83,17 @@ final class ProjectPlatformCapabilities {
     pickerSupported: false,
   );
 
+  static const aurora = ProjectPlatformCapabilities(
+    platformKind: ProjectPlatformKind.aurora,
+    projectCreationSupported: true,
+    desktopExternalRoots: false,
+    mobileSandboxRoots: true,
+    appManagedSandboxRoots: true,
+    additionalDirectories: false,
+    regrantSupported: false,
+    pickerSupported: false,
+  );
+
   static const web = ProjectPlatformCapabilities(
     platformKind: ProjectPlatformKind.web,
     projectCreationSupported: false,

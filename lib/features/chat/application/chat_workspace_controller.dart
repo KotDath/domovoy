@@ -241,6 +241,7 @@ final class ChatWorkspaceController {
       }
     }
     try {
+      await _upgradeLegacyToolConfiguration(id);
       final restored = await _agent.restoreSession(id);
       if (!_isCurrent(generation)) {
         await _safelyClose(restored);
@@ -258,6 +259,49 @@ final class ChatWorkspaceController {
     } on Object catch (error) {
       return _recordFailure(error, generation, clearSelection: true);
     }
+  }
+
+  Future<void> _upgradeLegacyToolConfiguration(AgentSessionId id) async {
+    final record = await repository.load(id);
+    if (record == null) return;
+    final previous = record.definition;
+    final limits = previous.limits;
+    if (previous.id != definition.id ||
+        previous.enabledTools.isNotEmpty ||
+        previous.policy != PolicyId('deny') ||
+        limits?.maxModelTurns != 1 ||
+        limits?.maxToolCalls != 0 ||
+        (definition.enabledTools.isEmpty &&
+            definition.policy == previous.policy &&
+            definition.limits == limits)) {
+      return;
+    }
+    final upgraded = AgentDefinition(
+      id: previous.id,
+      name: previous.name,
+      systemPrompt: previous.systemPrompt,
+      model: previous.model,
+      initialMessages: previous.initialMessages,
+      generation: previous.generation,
+      enabledTools: definition.enabledTools,
+      policy: definition.policy,
+      limits: definition.limits,
+      liveness: previous.liveness,
+      noProgress: previous.noProgress,
+      budget: previous.budget,
+    );
+    final now = clock.nowMicros();
+    await repository.save(
+      record.copyWith(
+        revision: record.revision + 1,
+        definition: upgraded,
+        updatedAtMicros: now > record.updatedAtMicros
+            ? now
+            : record.updatedAtMicros,
+      ),
+      expectedRevision: record.revision,
+      cancellation: CancellationSource().token,
+    );
   }
 
   Future<ChatCommandResult> closeSelected() {

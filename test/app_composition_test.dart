@@ -485,8 +485,8 @@ void main() {
 
         expect(stack.runtime.compactionTrigger, isNotNull);
         expect(stack.runtime.historyCompactor, isNotNull);
-        expect(stack.promptDefinition.limits?.maxModelTurns, 1);
-        expect(stack.promptDefinition.limits?.maxToolCalls, 0);
+        expect(stack.promptDefinition.limits?.maxModelTurns, 10000);
+        expect(stack.promptDefinition.limits?.maxToolCalls, 10000);
 
         final agent = stack.runtime.agent(stack.promptDefinition);
         final first = await agent.run('first').events.toList();
@@ -856,8 +856,8 @@ void main() {
           stack.promptDefinition.model.modelId,
           BuiltInLlmCatalog.deepSeekFlash,
         );
-        expect(stack.promptDefinition.limits?.maxModelTurns, 1);
-        expect(stack.promptDefinition.limits?.maxToolCalls, 0);
+        expect(stack.promptDefinition.limits?.maxModelTurns, 10000);
+        expect(stack.promptDefinition.limits?.maxToolCalls, 10000);
         expect(
           stack.promptDefinition.generation.reasoningMode,
           ReasoningMode.enabled,

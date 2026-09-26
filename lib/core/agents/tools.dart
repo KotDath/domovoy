@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../llm/cancellation.dart';
 import '../llm/json.dart';
 import '../llm/tools.dart';
+import '../projects/ids.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'policies.dart';
@@ -13,11 +14,13 @@ final class ToolInvocation {
     required this.callId,
     required this.name,
     required Map<String, Object?> arguments,
+    this.projectId,
   }) : arguments = freezeJsonMap(copyJsonMap(arguments));
 
   final String callId;
   final String name;
   final Map<String, Object?> arguments;
+  final ProjectId? projectId;
 }
 
 final class ToolExecutionResult {

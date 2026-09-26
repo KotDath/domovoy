@@ -33,6 +33,7 @@ import 'infrastructure/agents/jsonl/jsonl.dart';
 import 'infrastructure/memory/memory.dart';
 import 'infrastructure/personalization/personalization.dart';
 import 'infrastructure/projects/platform_projects.dart';
+import 'infrastructure/tools/local_workspace_tools.dart';
 import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
 import 'infrastructure/llm/openai_responses/openai_responses.dart';
 import 'infrastructure/llm/discovery/native_streaming_provider.dart';
@@ -67,6 +68,8 @@ ProductionAgentStack buildProductionAgentStack({
   bool diagnosticNoCompaction = false,
   AgentIdFactory? ids,
   AgentDynamicContextProvider? dynamicContextProvider,
+  AgentToolRegistry? tools,
+  List<ToolId> enabledTools = const <ToolId>[],
 }) {
   if ((repository == null) != (catalog == null)) {
     throw ArgumentError(
@@ -164,7 +167,7 @@ ProductionAgentStack buildProductionAgentStack({
   );
   final runtime = InMemoryAgentRuntime(
     registry: registry,
-    tools: AgentToolRegistry(),
+    tools: tools ?? AgentToolRegistry(),
     policies: <String, ToolPermissionPolicy>{
       'deny': const DenyAllPolicy(),
       'allow': const AllowAllPolicy(),
@@ -182,7 +185,11 @@ ProductionAgentStack buildProductionAgentStack({
   return ProductionAgentStack(
     registry: registry,
     runtime: runtime,
-    promptDefinition: PromptWorkspace.definition(),
+    promptDefinition: PromptWorkspace.definition(
+      enabledTools: enabledTools,
+      policy: enabledTools.isEmpty ? PolicyId('deny') : PolicyId('allow'),
+      runLimits: PromptWorkspace.interactiveLimits,
+    ),
     credentials: credentials,
     repository: resolvedRepository,
     catalog: resolvedCatalog,
@@ -282,9 +289,13 @@ final class DomovoyDependencies {
       activeProfile: profileRepository,
       nowMicros: () => DateTime.now().microsecondsSinceEpoch,
     );
+    final projectStack = createPlatformProjectStack();
+    final localTools = createLocalWorkspaceTools(projectStack);
     final stack = buildProductionAgentStack(
       httpClient: client,
       credentials: credentials,
+      tools: localTools.registry,
+      enabledTools: localTools.enabled,
       dynamicContextProvider:
           CompositeAgentDynamicContextProvider(<AgentDynamicContextProvider>[
             PersonalizationDynamicContextProvider(catalog: profileCatalog),
@@ -343,7 +354,7 @@ final class DomovoyDependencies {
       apiKeyResolver: resolver,
       modelSettingsStore: modelSettingsStore,
       httpClient: client,
-      projectStack: createPlatformProjectStack(),
+      projectStack: projectStack,
       memoryInspector: memoryInspector,
       profileController: profileController,
       profileInterviewLlm: profileInterviewLlm,

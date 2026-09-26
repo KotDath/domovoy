@@ -202,6 +202,7 @@ final class AgentSessionRecord {
 
   AgentSessionRecord copyWith({
     int? revision,
+    AgentDefinition? definition,
     AgentTranscript? transcript,
     LlmUsage? usage,
     int? modelTurns,
@@ -228,7 +229,7 @@ final class AgentSessionRecord {
     return AgentSessionRecord(
       id: id,
       revision: revision ?? this.revision,
-      definition: definition,
+      definition: definition ?? this.definition,
       transcript: nextTranscript,
       usage: nextUsage,
       modelTurns: modelTurns ?? this.modelTurns,

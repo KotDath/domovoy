@@ -2,12 +2,48 @@ import 'dart:async';
 
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
+import 'package:domovoy/core/projects/projects.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/agent_harness.dart';
 
 void main() {
   group('tools, schema, policy, and hooks', () {
+    test('tool invocation carries the chat project', () async {
+      ProjectId? invokedProject;
+      final tools = AgentToolRegistry()
+        ..register(
+          AgentTool(
+            descriptor: LlmToolDescriptor(name: 'lookup'),
+            executor: ScriptedToolExecutor((
+              invocation, {
+              required cancellation,
+              required liveness,
+            }) async {
+              invokedProject = invocation.projectId;
+              return ToolExecutionResult.success(<String, Object?>{'ok': true});
+            }),
+          ),
+        );
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[
+          toolTurn(name: 'lookup', callId: 'call-1'),
+          textTurn('done'),
+        ],
+      );
+      final runtime = testRuntime(provider: provider, tools: tools);
+      final session = await runtime
+          .agent(testDefinition(tools: <ToolId>[ToolId('lookup')]))
+          .createSession(projectId: ProjectId('selected'));
+      final events = await session.run('inspect').events.toList();
+      expect(events.last, isA<AgentRunCompleted>());
+      expect(invokedProject, ProjectId('selected'));
+      await session.close();
+      await runtime.close();
+    });
+
     test('rejects malformed required and enum shapes', () {
       expect(
         () => validateToolSchema(<String, Object?>{

@@ -11,8 +11,16 @@ final class PromptWorkspace {
     maxToolCalls: 0,
   );
 
+  static final AgentRunLimits interactiveLimits = AgentRunLimits(
+    maxModelTurns: 10000,
+    maxToolCalls: 10000,
+  );
+
   static AgentDefinition definition({
     ReasoningMode reasoningMode = ReasoningMode.enabled,
+    List<ToolId> enabledTools = const <ToolId>[],
+    PolicyId? policy,
+    AgentRunLimits? runLimits,
   }) {
     return AgentDefinition(
       id: agentId,
@@ -20,9 +28,9 @@ final class PromptWorkspace {
       systemPrompt: '',
       model: BuiltInLlmCatalog.deepSeekFlashModel.ref,
       generation: LlmGenerationConfig(reasoningMode: reasoningMode),
-      enabledTools: const <ToolId>[],
-      policy: PolicyId('deny'),
-      limits: limits,
+      enabledTools: enabledTools,
+      policy: policy ?? PolicyId('deny'),
+      limits: runLimits ?? limits,
     );
   }
 

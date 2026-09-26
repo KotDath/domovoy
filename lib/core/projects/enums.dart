@@ -12,7 +12,7 @@ enum DirectoryGrantAccess { readWrite, readOnly }
 
 enum DirectoryGrantOrigin { attached, created }
 
-enum ProjectPlatformKind { linux, windows, macos, android, ios, web }
+enum ProjectPlatformKind { linux, windows, macos, android, ios, aurora, web }
 
 enum ProjectAccessStatus {
   active,
@@ -95,7 +95,9 @@ extension ProjectPlatformKindCodec on ProjectPlatformKind {
       this == ProjectPlatformKind.macos;
 
   bool get isMobileSandbox =>
-      this == ProjectPlatformKind.android || this == ProjectPlatformKind.ios;
+      this == ProjectPlatformKind.android ||
+      this == ProjectPlatformKind.ios ||
+      this == ProjectPlatformKind.aurora;
 
   bool get treatsPathsCaseInsensitive =>
       this == ProjectPlatformKind.windows || this == ProjectPlatformKind.macos;

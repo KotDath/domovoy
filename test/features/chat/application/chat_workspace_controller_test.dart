@@ -5,6 +5,7 @@ import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_controller.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_state.dart';
+import 'package:domovoy/features/prompt/domain/prompt_workspace.dart';
 import 'package:domovoy/infrastructure/agents/jsonl/jsonl.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -663,6 +664,59 @@ void main() {
       await restartedRuntime.close();
     },
   );
+
+  test('restoring a legacy prompt chat enables current local tools', () async {
+    final repository = InMemoryAgentSessionRepository();
+    final provider = QueueScriptedLlmProvider(
+      id: BuiltInLlmCatalog.deepSeek,
+      wireFamily: LlmWireFamily.openaiChatCompletions,
+      turns: const <List<LlmEvent>>[],
+    );
+    final runtime = testRuntime(
+      provider: provider,
+      repository: repository,
+      tools: AgentToolRegistry()
+        ..register(
+          AgentTool(
+            descriptor: LlmToolDescriptor(name: 'read'),
+            executor: ScriptedToolExecutor(
+              (invocation, {required cancellation, required liveness}) async =>
+                  ToolExecutionResult.success(<String, Object?>{}),
+            ),
+          ),
+        ),
+    );
+    final oldSession = await runtime
+        .agent(PromptWorkspace.definition())
+        .createSession(
+          id: AgentSessionId('legacy-prompt'),
+          persistence: SessionPersistence.repository,
+        );
+    await oldSession.close();
+    final legacyRevision = (await repository.load(
+      AgentSessionId('legacy-prompt'),
+    ))!.revision;
+
+    final currentDefinition = PromptWorkspace.definition(
+      enabledTools: <ToolId>[ToolId('read')],
+      policy: PolicyId('allow'),
+      runLimits: PromptWorkspace.interactiveLimits,
+    );
+    final controller = ChatWorkspaceController(
+      runtime: runtime,
+      definition: currentDefinition,
+      catalog: repository,
+      repository: repository,
+      registry: runtime.registry,
+    );
+    expect((await controller.initialize()).isSuccess, isTrue);
+    final restored = controller.state.selectedSession!;
+    expect(restored.definition.enabledTools, <ToolId>[ToolId('read')]);
+    expect(restored.definition.limits!.maxToolCalls, 10000);
+    expect((await repository.load(restored.id))!.revision, legacyRevision + 1);
+    await controller.dispose();
+    await runtime.close();
+  });
 }
 
 ChatWorkspaceController _controller(

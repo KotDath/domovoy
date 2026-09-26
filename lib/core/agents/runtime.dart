@@ -3594,6 +3594,7 @@ final class _LiveRun implements AgentRun {
       callId: call.callId.value,
       name: call.name,
       arguments: arguments,
+      projectId: session.projectId,
     );
     final policy = session.runtime.policies[session.definition.policy.value]!;
     late final ToolPermission permission;
