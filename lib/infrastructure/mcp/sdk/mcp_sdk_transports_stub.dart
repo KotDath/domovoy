@@ -10,6 +10,9 @@ final class UnsupportedMcpStdioLauncher implements McpStdioLauncher {
   const UnsupportedMcpStdioLauncher();
 
   @override
+  bool get isSupported => false;
+
+  @override
   Future<McpTransportConnection> launch({
     required McpConnectionId connectionId,
     required McpStdioTransportConfig config,

@@ -80,7 +80,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
 
   final StreamController<McpHostEvent> _events =
       StreamController<McpHostEvent>.broadcast(sync: true);
-  final CancellationSource _stopSource = CancellationSource();
+  CancellationSource _stopSource = CancellationSource();
   final CancellationToken _neverCancelled = CancellationSource().token;
 
   McpCatalog _catalog = McpCatalog.empty;
@@ -111,6 +111,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     }
     _started = true;
     _stopped = false;
+    _stopSource = CancellationSource();
     final token = cancellation ?? _neverCancelled;
     List<McpConnectionConfig> configs;
     try {

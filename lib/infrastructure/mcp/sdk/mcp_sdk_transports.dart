@@ -14,6 +14,12 @@ const domovoyMcpClientVersion = '1.0.0';
 
 /// Creates stdio client sessions on platforms that can spawn processes.
 abstract interface class McpStdioLauncher {
+  /// True when this platform can offer third-party stdio servers.
+  ///
+  /// Mobile platforms cannot guarantee launching arbitrary external
+  /// executables; Domovoy only offers built-in servers and HTTPS there.
+  bool get isSupported;
+
   Future<McpTransportConnection> launch({
     required McpConnectionId connectionId,
     required McpStdioTransportConfig config,
@@ -39,6 +45,9 @@ final class McpSdkTransportFactory implements McpTransportFactory {
   final McpDiagnosticsSink diagnostics;
   final McpStdioLauncher _stdioLauncher;
 
+  /// True when third-party stdio servers can be offered on this platform.
+  bool get supportsStdio => _stdioLauncher.isSupported;
+
   @override
   Future<McpTransportConnection> create(
     McpConnectionConfig config, {
@@ -47,6 +56,12 @@ final class McpSdkTransportFactory implements McpTransportFactory {
     final resolved = await _resolveSecrets(config, secrets);
     switch (config.transport) {
       case final McpStdioTransportConfig stdio:
+        if (!supportsStdio) {
+          throwMcp(
+            McpErrorKind.unsupported,
+            'stdio MCP servers are not offered on this platform.',
+          );
+        }
         return _stdioLauncher.launch(
           connectionId: config.connectionId,
           config: stdio,

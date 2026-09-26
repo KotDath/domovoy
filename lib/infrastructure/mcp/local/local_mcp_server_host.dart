@@ -46,9 +46,14 @@ final class McpStreamPair {
   /// Client-side outgoing sink.
   StreamSink<List<int>> get clientOutbound => _clientToServer.sink;
 
+  /// Closes both directions without waiting on the peer.
+  ///
+  /// A single-subscription controller's `close()` future only completes once
+  /// the done event is delivered; after a transport cancels its subscription
+  /// that may never happen, so shutdown must not await it.
   Future<void> close() async {
-    await _clientToServer.close();
-    await _serverToClient.close();
+    _clientToServer.close().ignore();
+    _serverToClient.close().ignore();
   }
 }
 
@@ -203,9 +208,10 @@ final class LocalMcpServerHost implements LocalMcpStreamRegistry {
       // Listener may already be closed.
     }
     try {
-      await running.server?.close();
+      await running.server?.close().timeout(const Duration(seconds: 5));
     } on Object {
-      // Session may already be gone.
+      // Session may already be gone or shutdown may be stuck; the stream pair
+      // is closed below regardless.
     }
     try {
       await running.pair?.close();

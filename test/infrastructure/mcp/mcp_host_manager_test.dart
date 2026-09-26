@@ -491,6 +491,49 @@ void main() {
     });
 
     test(
+      'host can be stopped and started again with a fresh lifecycle',
+      () async {
+        var created = 0;
+        manager = McpHostManager(
+          transports: ScriptedMcpTransportFactory(
+            <String, ScriptedMcpConnection Function()>{
+              'paged': () {
+                created += 1;
+                return ScriptedMcpConnection(
+                  connectionId: McpConnectionId('paged'),
+                  pages: <McpToolPage>[
+                    McpToolPage(
+                      tools: <McpToolDescriptor>[scriptedTool('paged', 'a')],
+                    ),
+                  ],
+                );
+              },
+            },
+          ),
+          repository: repository,
+          secrets: InMemoryMcpSecretVault(),
+          reconnectPolicy: const McpReconnectPolicy(maxAttempts: 0),
+          delay: (duration) async {},
+        );
+        await save(configFor('paged'));
+        await manager.start();
+        await waitFor(
+          () => manager.snapshot.statusFor(McpConnectionId('paged'))!.isReady,
+        );
+        await manager.stop();
+        expect(
+          manager.snapshot.statusFor(McpConnectionId('paged'))!.phase,
+          McpConnectionPhase.stopped,
+        );
+        await manager.start();
+        await waitFor(
+          () => manager.snapshot.statusFor(McpConnectionId('paged'))!.isReady,
+        );
+        expect(created, 2);
+      },
+    );
+
+    test(
       'configuration persistence and diagnostics never contain a token',
       () async {
         final storage = FakeMemoryJsonlStorage();

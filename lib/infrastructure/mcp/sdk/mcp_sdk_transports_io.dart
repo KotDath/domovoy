@@ -18,6 +18,10 @@ McpStdioLauncher createMcpStdioLauncher() => const DartIoMcpStdioLauncher();
 final class DartIoMcpStdioLauncher implements McpStdioLauncher {
   const DartIoMcpStdioLauncher();
 
+  /// Mobile platforms cannot guarantee spawning arbitrary external commands.
+  @override
+  bool get isSupported => !Platform.isAndroid && !Platform.isIOS;
+
   @override
   Future<McpTransportConnection> launch({
     required McpConnectionId connectionId,
