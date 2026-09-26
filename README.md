@@ -36,14 +36,6 @@ edit affects the next message without recreating the chat. Profile data and
 memory remain separate. See [docs/personalization.md](docs/personalization.md)
 for the data model, request path, and demo script.
 
-## MCP
-
-Two standalone Streamable HTTP MCP servers provide Internet Archive search and
-persistent scheduled digests. Domovoy discovers their tools at startup and makes
-them available beside the local workspace tools. See
-[docs/mcp-integration.md](docs/mcp-integration.md) for setup, the five-day demo
-flow, tests, and VPS deployment notes.
-
 ## Linux development
 
 The application stores an optional DeepSeek API-key override with Secret
