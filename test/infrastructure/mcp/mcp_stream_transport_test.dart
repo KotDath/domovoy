@@ -301,6 +301,59 @@ void main() {
     await connection.close();
   });
 
+  test(
+    'acquire fails and cleans up when the server is stopped mid-start',
+    () async {
+      host.register(
+        FixtureMcpServerFactory(
+          serverId: 'raced',
+          tools: fixtureToolsFor('raced'),
+        ),
+      );
+      await host.start('raced');
+      // Consume the initial session so the next acquire must create a fresh one.
+      final first = await host.acquireStreams('raced');
+      host.releaseStreams('raced', first);
+
+      final pending = host.acquireStreams('raced');
+      await host.stop('raced');
+      await expectLater(
+        pending,
+        throwsA(
+          isA<McpException>().having(
+            (error) => error.error.kind,
+            'kind',
+            McpErrorKind.unavailable,
+          ),
+        ),
+      );
+      expect(host.isRunning('raced'), isFalse);
+      expect(host.endpointFor('raced'), isNull);
+      expect(
+        diagnostics.lines.join('\n'),
+        contains('discarded a session started after stop'),
+      );
+
+      // A fresh start serves a client normally.
+      await host.start('raced');
+      final connection = await factory.create(
+        host.connectionConfig('raced'),
+        secrets: secrets,
+      );
+      final handshake = await connection.connect(
+        timeout: const Duration(seconds: 10),
+        cancellation: token,
+      );
+      expect(handshake.serverName, 'raced');
+      final page = await connection.listTools(
+        timeout: const Duration(seconds: 10),
+        cancellation: token,
+      );
+      expect(page.tools, isNotEmpty);
+      await connection.close();
+    },
+  );
+
   test('a live stream client reserves its session', () async {
     host.register(
       FixtureMcpServerFactory(

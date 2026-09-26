@@ -173,6 +173,19 @@ final class LocalMcpServerHost implements LocalMcpStreamRegistry {
       if (!running.sessionUsable) {
         await _startStreamSession(running);
       }
+      if (!identical(_running[serverId], running)) {
+        // The server was stopped (or restarted) while the fresh session was
+        // being created; close the detached session instead of leaking it.
+        await running.closeSession();
+        diagnostics.log(
+          'mcp local server $serverId discarded a session started after stop',
+        );
+        throwMcp(
+          McpErrorKind.unavailable,
+          'Local MCP server "$serverId" was stopped while acquiring a stream '
+          'session.',
+        );
+      }
       final pair = running.pair!;
       // The pair is single-subscription: it is consumed by this client and
       // must be replaced after release.
