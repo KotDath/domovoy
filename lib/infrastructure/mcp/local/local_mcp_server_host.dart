@@ -59,7 +59,12 @@ final class McpStreamPair {
 
 /// Lookup of live streams for `inProcessStream` connection configurations.
 abstract interface class LocalMcpStreamRegistry {
-  McpStreamPair? streamsFor(String serverId);
+  /// Returns a usable in-process stream session for [serverId].
+  ///
+  /// A single-subscription `McpStreamPair` and its server-side protocol state
+  /// cannot be reused after the client disconnects, so the host creates a
+  /// fresh session when the previous one was already handed to a client.
+  Future<McpStreamPair> acquireStreams(String serverId);
 }
 
 /// Data describing a started local server endpoint.
@@ -84,10 +89,8 @@ final class LocalMcpHttpEndpoint extends LocalMcpServerEndpoint {
 }
 
 final class LocalMcpStreamEndpoint extends LocalMcpServerEndpoint {
-  const LocalMcpStreamEndpoint({required super.serverId, required this.pair})
+  const LocalMcpStreamEndpoint({required super.serverId})
     : super(kind: McpTransportKind.inProcessStream);
-
-  final McpStreamPair pair;
 }
 
 /// Owns registration, start and shutdown of built-in local MCP servers.
@@ -132,7 +135,28 @@ final class LocalMcpServerHost implements LocalMcpStreamRegistry {
       _running[serverId]?.endpoint;
 
   @override
-  McpStreamPair? streamsFor(String serverId) => _running[serverId]?.pair;
+  Future<McpStreamPair> acquireStreams(String serverId) async {
+    final running = _running[serverId];
+    if (running == null) {
+      throwMcp(
+        McpErrorKind.unavailable,
+        'Local MCP server "$serverId" is not running.',
+      );
+    }
+    if (running.endpoint is! LocalMcpStreamEndpoint) {
+      throwMcp(
+        McpErrorKind.configuration,
+        'Local MCP server "$serverId" is not an in-process stream endpoint.',
+      );
+    }
+    if (!running.streamHandedOut) {
+      running.streamHandedOut = true;
+      return running.pair!;
+    }
+    await _startStreamSession(running);
+    running.streamHandedOut = true;
+    return running.pair!;
+  }
 
   /// Starts [serverId] and returns its endpoint, reusing a running instance.
   Future<LocalMcpServerEndpoint> start(
@@ -171,28 +195,52 @@ final class LocalMcpServerHost implements LocalMcpStreamRegistry {
       );
       return endpoint;
     }
+    final endpoint = LocalMcpStreamEndpoint(serverId: definition.id);
+    final runningState = _RunningLocalServer(
+      definition: definition,
+      endpoint: endpoint,
+    );
+    _running[definition.id] = runningState;
+    await _startStreamSession(runningState);
+    diagnostics.log(
+      'mcp local server ${definition.id} started in-process stream',
+    );
+    return endpoint;
+  }
+
+  /// Replaces the in-process session with a freshly connected pair.
+  Future<void> _startStreamSession(_RunningLocalServer running) async {
+    final oldServer = running.server;
+    final oldPair = running.pair;
+    running.server = null;
+    running.pair = null;
+    if (oldServer != null) {
+      try {
+        await oldServer.close().timeout(const Duration(seconds: 5));
+      } on Object {
+        // The old session may already be closed or stuck; replace it anyway.
+      }
+    }
+    if (oldPair != null) {
+      try {
+        await oldPair.close();
+      } on Object {
+        // Streams may already be closed.
+      }
+    }
     final pair = McpStreamPair.create();
-    final server = createLocalMcpServer(definition);
+    final server = createLocalMcpServer(running.definition);
     await server.connect(
       sdk.IOStreamTransport(
         stream: pair.serverInbound,
         sink: pair.serverOutbound,
       ),
     );
-    final endpoint = LocalMcpStreamEndpoint(
-      serverId: definition.id,
-      pair: pair,
-    );
-    _running[definition.id] = _RunningLocalServer(
-      definition: definition,
-      endpoint: endpoint,
-      server: server,
-      pair: pair,
-    );
+    running.pair = pair;
+    running.server = server;
     diagnostics.log(
-      'mcp local server ${definition.id} started in-process stream',
+      'mcp local server ${running.definition.id} started fresh stream session',
     );
-    return endpoint;
   }
 
   /// Stops one running server and releases its endpoint.
@@ -287,14 +335,16 @@ final class _RunningLocalServer {
   _RunningLocalServer({
     required this.definition,
     required this.endpoint,
-    this.server,
-    this.pair,
     this.httpStop,
   });
 
   final LocalMcpServerDefinition definition;
   final LocalMcpServerEndpoint endpoint;
-  final sdk.McpServer? server;
-  final McpStreamPair? pair;
+
+  /// Whether the current stream session was already handed to a client.
+  var streamHandedOut = false;
+
+  sdk.McpServer? server;
+  McpStreamPair? pair;
   final Future<void> Function()? httpStop;
 }

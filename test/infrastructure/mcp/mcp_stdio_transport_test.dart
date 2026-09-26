@@ -96,4 +96,63 @@ void main() {
     expect(joined, isNot(contains('token=stdio-secret')));
     expect(joined, contains('[redacted]'));
   });
+
+  test(
+    'a noisy startup child is drained and does not block the handshake',
+    () async {
+      final diagnostics = MemoryMcpDiagnosticsSink();
+      final factory = McpSdkTransportFactory(diagnostics: diagnostics);
+      final token = CancellationSource().token;
+      final secretReference = McpSecretReference.stdioEnvironment(
+        McpConnectionId('stdio-noisy'),
+        'MCP_FIXTURE_TOKEN',
+      );
+      final secrets = RuntimeMcpSecretResolver();
+      secrets.put(secretReference, 'stdio-secret-token-12345');
+
+      final config = McpConnectionConfig(
+        connectionId: McpConnectionId('stdio-noisy'),
+        alias: 'stdio-noisy',
+        transport: McpStdioTransportConfig(
+          command: 'dart',
+          args: const <String>[
+            'run',
+            'test/support/mcp_fixtures/stdio_fixture_server.dart',
+          ],
+          environment: const <String, String>{
+            'MCP_FIXTURE_ID': 'stdio-noisy',
+            'MCP_FIXTURE_NOISE_LINES': '2000',
+          },
+          secretEnvironment: <String, McpSecretReference>{
+            'MCP_FIXTURE_TOKEN': secretReference,
+          },
+        ),
+      );
+
+      final connection = await factory.create(config, secrets: secrets);
+      final handshake = await connection.connect(
+        timeout: const Duration(seconds: 60),
+        cancellation: token,
+      );
+      expect(handshake.serverName, 'stdio-noisy');
+      final page = await connection.listTools(
+        timeout: const Duration(seconds: 30),
+        cancellation: token,
+      );
+      expect(page.tools.map((tool) => tool.originalName), contains('search'));
+
+      // The earliest noise line proves stderr was drained from process start:
+      // a late listener would only retain the last 64 KiB. Every line carries
+      // the token, so the whole stream is also a redaction check.
+      await waitFor(
+        () => diagnostics.lines.any((line) => line.contains('noise-0001 ')),
+        timeout: const Duration(seconds: 15),
+      );
+      final joined = diagnostics.lines.join('\n');
+      expect(joined, contains('noise-2000 '));
+      expect(joined, isNot(contains('stdio-secret-token-12345')));
+      expect(joined, contains('[redacted]'));
+      await connection.close();
+    },
+  );
 }

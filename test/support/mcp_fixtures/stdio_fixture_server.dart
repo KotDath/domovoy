@@ -25,6 +25,11 @@ Future<void> main() async {
   if (token != null) {
     stderr.writeln('token=$token');
   }
+  final noiseLines =
+      int.tryParse(Platform.environment['MCP_FIXTURE_NOISE_LINES'] ?? '') ?? 0;
+  for (var index = 1; index <= noiseLines; index += 1) {
+    stderr.writeln('noise-${index.toString().padLeft(4, '0')} ${token ?? ''}');
+  }
 
   final server = sdk.McpServer(
     sdk.Implementation(name: serverId, version: '1.0.0'),

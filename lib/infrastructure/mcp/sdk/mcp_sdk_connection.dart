@@ -121,6 +121,15 @@ final class McpSdkConnection implements McpTransportConnection {
     );
   }
 
+  /// Attaches the diagnostic stderr listener as soon as the transport exists.
+  ///
+  /// Safe to call multiple times; only the first call subscribes. The stdio
+  /// launcher calls it from a transport-start hook so a noisy child is drained
+  /// before initialize, not after the handshake.
+  void attachStderr() {
+    _attachStderr();
+  }
+
   void _attachStderr() {
     if (_stderrSubscription != null || _closed) {
       return;

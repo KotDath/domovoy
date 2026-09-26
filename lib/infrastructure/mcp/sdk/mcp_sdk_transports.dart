@@ -96,13 +96,14 @@ final class McpSdkTransportFactory implements McpTransportFactory {
           redactor: resolved.redactor,
         );
       case final McpInProcessStreamTransportConfig streamConfig:
-        final pair = streams?.streamsFor(streamConfig.serverId);
-        if (pair == null) {
+        final registry = streams;
+        if (registry == null) {
           throwMcp(
             McpErrorKind.unavailable,
             'Local MCP server "${streamConfig.serverId}" is not running.',
           );
         }
+        final pair = await registry.acquireStreams(streamConfig.serverId);
         final transport = sdk.IOStreamTransport(
           stream: pair.clientInbound,
           sink: pair.clientOutbound,

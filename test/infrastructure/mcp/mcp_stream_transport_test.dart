@@ -187,4 +187,49 @@ void main() {
     );
     await connection.close();
   });
+
+  test('a closed in-process session is replaced with a fresh one', () async {
+    final fixture = FixtureMcpServerFactory(
+      serverId: 'stream-fixture',
+      tools: fixtureToolsFor('stream-fixture'),
+    );
+    host.register(fixture);
+    await host.start('stream-fixture');
+    final config = host.connectionConfig('stream-fixture');
+
+    final first = await factory.create(config, secrets: secrets);
+    await first.connect(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    final firstPage = await first.listTools(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(firstPage.tools, isNotEmpty);
+    await first.close();
+    expect(first.isConnected, isFalse);
+
+    // A single-subscription pair cannot be reused; the host must hand out a
+    // fresh server session for the reconnect.
+    final second = await factory.create(config, secrets: secrets);
+    expect(
+      identical(second, first),
+      isFalse,
+      reason: 'each client session is its own connection object',
+    );
+    final handshake = await second.connect(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(handshake.serverName, 'stream-fixture');
+    final result = await second.callTool(
+      originalToolName: 'echo',
+      arguments: const <String, Object?>{'value': 'again'},
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(result.textContent, 'echo:again');
+    await second.close();
+  });
 }
