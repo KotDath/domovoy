@@ -886,13 +886,21 @@ void main() {
             textTurn('done'),
           ],
         );
-        final grant = ToolAccessGrant.scheduledTask(
+        // No explicit denied list: the scheduled grant itself must refuse the
+        // built-in schedule-creation route (here via the bridge factory).
+        final grant = harness.bridge.grantFor(
           allowedToolIds: <String>[
             'mcp_automation__create_task',
             'mcp_automation__list_tasks',
           ],
-          deniedToolIds: <String>['mcp_automation__create_task'],
+          interactiveApproval: false,
+          scope: ToolAccessScope.scheduledTask,
         );
+        expect(
+          grant.permissionFor('mcp_automation__create_task'),
+          ToolPermission.deny,
+        );
+        expect(harness.tools.lookup('mcp_automation__create_task'), isNotNull);
         final events =
             await testRuntime(
                   provider: provider,
@@ -933,6 +941,88 @@ void main() {
         await harness.dispose();
       },
     );
+
+    test('a scheduled grant refuses create_task without a deny list', () async {
+      final alpha = ScriptedMcpConnection(
+        connectionId: McpConnectionId('automation'),
+        pages: <McpToolPage>[
+          McpToolPage(
+            tools: <McpToolDescriptor>[
+              scriptedTool('automation', 'create_task'),
+              scriptedTool('automation', 'list_tasks'),
+            ],
+          ),
+        ],
+      );
+      harness = ScriptedMcpAgentHarness(
+        connections: <String, ScriptedMcpConnection>{'automation': alpha},
+      );
+      await harness.start();
+      final approval = _RecordingApproval();
+      // No destructive annotation and no deny list: only the intrinsic
+      // scheduled-run restriction can stop this call.
+      final grant = ToolAccessGrant.scheduledTask(
+        allowedToolIds: <String>[
+          'mcp_automation__create_task',
+          'mcp_automation__list_tasks',
+        ],
+      );
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[
+          toolTurn(
+            name: 'mcp_automation__create_task',
+            callId: 'c1',
+            arguments: '{"query":"q"}',
+          ),
+          toolTurn(
+            name: 'mcp_automation__list_tasks',
+            callId: 'c2',
+            arguments: '{"query":"q"}',
+          ),
+          textTurn('done'),
+        ],
+      );
+      final events =
+          await testRuntime(
+                provider: provider,
+                tools: harness.tools,
+                policies: <String, ToolPermissionPolicy>{
+                  'scheduled': ToolAccessPolicy(grant: grant),
+                },
+                approval: approval,
+              )
+              .agent(
+                AgentDefinition(
+                  id: AgentId('scheduled'),
+                  name: 'Scheduled',
+                  systemPrompt: 'Run.',
+                  model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+                  enabledTools: <ToolId>[
+                    ToolId('mcp_automation__create_task'),
+                    ToolId('mcp_automation__list_tasks'),
+                  ],
+                  policy: PolicyId('scheduled'),
+                  interactiveApproval: false,
+                ),
+              )
+              .run('go')
+              .events
+              .toList();
+      expect(events.last, isA<AgentRunCompleted>());
+      expect(approval.calls, 0);
+      expect(alpha.calledTools, <String>['list_tasks']);
+      expect(
+        _decode(_toolResults(provider.requests.last).first)['error'],
+        'Tool denied.',
+      );
+      expect(
+        events.whereType<AgentToolFinished>().map((event) => event.success),
+        <bool>[false, true],
+      );
+      await harness.dispose();
+    });
 
     test(
       'a policy that asks in an unattended run fails without a prompt',
@@ -1038,6 +1128,171 @@ void main() {
       expect(approval.calls, 1);
       expect(alpha.calledTools, <String>['guarded']);
       expect(events.whereType<AgentToolFinished>().single.success, isTrue);
+      await harness.dispose();
+    });
+
+    test('a policy replaced during approval denies the call', () async {
+      final alpha = ScriptedMcpConnection(
+        connectionId: McpConnectionId('alpha'),
+        pages: <McpToolPage>[pageOf('alpha', 'guarded')],
+      );
+      harness = ScriptedMcpAgentHarness(
+        connections: <String, ScriptedMcpConnection>{'alpha': alpha},
+      );
+      await harness.start();
+      final approval = _GatedApproval();
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[
+          toolTurn(
+            name: 'mcp_alpha__guarded',
+            callId: 'c1',
+            arguments: '{"query":"q"}',
+          ),
+          textTurn('done'),
+        ],
+      );
+      final runtime = testRuntime(
+        provider: provider,
+        tools: harness.tools,
+        policies: <String, ToolPermissionPolicy>{
+          'chat': ToolAccessPolicy(
+            id: PolicyId('chat'),
+            grant: ToolAccessGrant(
+              allowedToolIds: <String>['mcp_alpha__guarded'],
+              askToolIds: <String>['mcp_alpha__guarded'],
+            ),
+          ),
+        },
+        approval: approval,
+      );
+      final run = runtime
+          .agent(
+            testDefinition(
+              tools: <ToolId>[ToolId('mcp_alpha__guarded')],
+              policy: PolicyId('chat'),
+            ),
+          )
+          .run('go');
+      await approval.requested.future;
+      // Rights are revoked while the user is still deciding: the entry in the
+      // live policy map is replaced, not the object captured before the await.
+      runtime.policies['chat'] = const DenyAllPolicy();
+      approval.complete(true);
+      final events = await run.events.toList();
+      expect(events.last, isA<AgentRunCompleted>());
+      expect(alpha.calledTools, isEmpty);
+      expect(
+        _decode(_toolResults(provider.requests.last).single)['error'],
+        'Tool denied.',
+      );
+      expect(events.whereType<AgentToolFinished>().single.success, isFalse);
+      await harness.dispose();
+    });
+
+    test('a policy revoked during beforeTool hooks denies the call', () async {
+      final alpha = ScriptedMcpConnection(
+        connectionId: McpConnectionId('alpha'),
+        pages: <McpToolPage>[pageOf('alpha', 'work')],
+      );
+      harness = ScriptedMcpAgentHarness(
+        connections: <String, ScriptedMcpConnection>{'alpha': alpha},
+      );
+      await harness.start();
+      final hook = _GatedBeforeToolHook();
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[
+          toolTurn(
+            name: 'mcp_alpha__work',
+            callId: 'c1',
+            arguments: '{"query":"q"}',
+          ),
+          textTurn('done'),
+        ],
+      );
+      final runtime = testRuntime(
+        provider: provider,
+        tools: harness.tools,
+        policies: <String, ToolPermissionPolicy>{
+          'allow': const AllowAllPolicy(),
+        },
+        hooks: <AgentLifecycleHook>[hook],
+      );
+      final run = runtime
+          .agent(testDefinition(tools: <ToolId>[ToolId('mcp_alpha__work')]))
+          .run('go');
+      await hook.entered.future;
+      runtime.policies['allow'] = const DenyAllPolicy();
+      hook.release.complete();
+      final events = await run.events.toList();
+      expect(events.last, isA<AgentRunCompleted>());
+      expect(alpha.calledTools, isEmpty);
+      expect(
+        _decode(_toolResults(provider.requests.last).single)['error'],
+        'Tool denied.',
+      );
+      // The trace stays ordered: the call started, then failed; it is never
+      // reported as a success after its permission was withdrawn.
+      final startedIndex = events.indexWhere(
+        (event) => event is AgentToolStarted,
+      );
+      final finishedIndex = events.indexWhere(
+        (event) => event is AgentToolFinished,
+      );
+      expect(startedIndex, greaterThan(-1));
+      expect(finishedIndex, greaterThan(startedIndex));
+      expect((events[finishedIndex] as AgentToolFinished).success, isFalse);
+      await harness.dispose();
+    });
+
+    test('a catalog removal during beforeTool hooks fails closed', () async {
+      final alpha = ScriptedMcpConnection(
+        connectionId: McpConnectionId('alpha'),
+        pages: <McpToolPage>[pageOf('alpha', 'work')],
+      );
+      harness = ScriptedMcpAgentHarness(
+        connections: <String, ScriptedMcpConnection>{'alpha': alpha},
+      );
+      await harness.start();
+      final hook = _GatedBeforeToolHook();
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[
+          toolTurn(
+            name: 'mcp_alpha__work',
+            callId: 'c1',
+            arguments: '{"query":"q"}',
+          ),
+          textTurn('done'),
+        ],
+      );
+      final run =
+          testRuntime(
+                provider: provider,
+                tools: harness.tools,
+                hooks: <AgentLifecycleHook>[hook],
+              )
+              .agent(testDefinition(tools: <ToolId>[ToolId('mcp_alpha__work')]))
+              .run('go');
+      await hook.entered.future;
+      alpha.replacePages(<McpToolPage>[pageOf('alpha', 'other')]);
+      await harness.host.refreshCatalog(McpConnectionId('alpha'));
+      hook.release.complete();
+      final events = await run.events.toList();
+      expect(events.last, isA<AgentRunCompleted>());
+      expect(alpha.calledTools, isEmpty);
+      expect(
+        _decode(
+          _toolResults(provider.requests.last).single,
+        )['error'].toString(),
+        contains('no longer available'),
+      );
+      expect(events.whereType<AgentToolStarted>().length, 1);
+      expect(events.whereType<AgentToolFinished>().single.success, isFalse);
       await harness.dispose();
     });
 
@@ -1296,5 +1551,18 @@ final class _AfterToolHook extends AgentLifecycleHookBase {
   @override
   Future<void> afterTool(AgentHookContext context) async {
     onAfter();
+  }
+}
+
+final class _GatedBeforeToolHook extends AgentLifecycleHookBase {
+  final Completer<void> entered = Completer<void>();
+  final Completer<void> release = Completer<void>();
+
+  @override
+  Future<void> beforeTool(AgentHookContext context) async {
+    if (!entered.isCompleted) {
+      entered.complete();
+    }
+    await release.future;
   }
 }

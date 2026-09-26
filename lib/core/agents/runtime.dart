@@ -3655,10 +3655,14 @@ final class _LiveRun implements AgentRun {
       arguments: arguments,
       projectId: session.projectId,
     );
-    final policy = session.runtime.policies[session.definition.policy.value]!;
+    final initialPolicy =
+        session.runtime.policies[session.definition.policy.value];
+    if (initialPolicy == null) {
+      return _denyTool(call.callId, 'Tool policy is no longer available.');
+    }
     late final ToolPermission permission;
     try {
-      permission = policy.decide(invocation);
+      permission = initialPolicy.decide(invocation);
     } on Object {
       throw AgentException(sanitizedRuntimeError());
     }
@@ -3715,20 +3719,15 @@ final class _LiveRun implements AgentRun {
         }
       }
     }
-    // Identity and schema are enforced immediately before execution and again
-    // after an awaited approval: a catalog refresh that removed or rebound the
-    // tool fails closed, independent of the model prompt.
+    // Identity is enforced immediately before execution and again after an
+    // awaited approval: a catalog refresh that removed or rebound the tool
+    // fails closed, independent of the model prompt.
     denialReason ??= _recheckLiveTool(call.name, advertised);
     if (denialReason == null && approvedInteractively) {
-      // The user answered while the catalog or the grant could have changed:
-      // the current policy decides again, the stale approval alone does not.
-      try {
-        if (policy.decide(invocation) == ToolPermission.deny) {
-          denialReason = 'Tool denied.';
-        }
-      } on Object {
-        denialReason = 'Tool denied.';
-      }
+      // The user answered while the catalog or the grants could have changed.
+      // Resolve the policy from the live map again: B7 replaces the entry when
+      // rights change, so the object captured before the await is stale.
+      denialReason = _recheckCurrentPolicy(invocation);
     }
     final denial = denialReason;
     if (denial != null) {
@@ -3742,6 +3741,16 @@ final class _LiveRun implements AgentRun {
           hook.beforeTool(_hookContext(turnId, callId: call.callId.value)),
     );
     _throwIfCancelled();
+    // Hooks are an await point too: rights and routes can be revoked while
+    // they run. Recheck the live binding and the current policy immediately
+    // before the executor, so a call already in flight is never reported as a
+    // success after its permission was withdrawn.
+    denialReason =
+        _recheckLiveTool(call.name, advertised) ??
+        _recheckCurrentPolicy(invocation);
+    if (denialReason != null) {
+      return _denyTool(call.callId, denialReason);
+    }
     final liveness = _RunLiveness(this, call.callId);
     ToolExecutionResult? result;
     var executionAttempted = false;
@@ -3828,6 +3837,26 @@ final class _LiveRun implements AgentRun {
     if (!identical(live, advertised) && live.binding != advertised.binding) {
       return 'Tool binding changed while the run was active; '
           'the call was rejected.';
+    }
+    return null;
+  }
+
+  /// Resolves the current policy by id and refuses when it is gone or denies.
+  ///
+  /// The policy object is never cached across an await: the composition may
+  /// replace the map entry when rights change, so only the decision of the
+  /// policy that is registered right now can authorize the call.
+  String? _recheckCurrentPolicy(ToolInvocation invocation) {
+    final policy = session.runtime.policies[session.definition.policy.value];
+    if (policy == null) {
+      return 'Tool policy is no longer available.';
+    }
+    try {
+      if (policy.decide(invocation) == ToolPermission.deny) {
+        return 'Tool denied.';
+      }
+    } on Object {
+      return 'Tool denied.';
     }
     return null;
   }
