@@ -1,6 +1,8 @@
 import 'package:domovoy/core/mcp/mcp.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/mcp_fixture_servers.dart';
+
 McpToolDescriptor tool(
   String connectionId,
   String name, {
@@ -165,9 +167,66 @@ void main() {
           isA<McpException>().having(
             (error) => error.error.kind,
             'kind',
-            McpErrorKind.configuration,
+            McpErrorKind.nameCollision,
           ),
         ),
+      );
+    });
+
+    test('detects a real hash collision between two long tool names', () {
+      final first = mcpCollidingToolNames[0];
+      final second = mcpCollidingToolNames[1];
+      final policy = McpToolNamePolicy();
+      expect(
+        policy.candidate(
+          connectionId: McpConnectionId('collision'),
+          originalToolName: first,
+        ),
+        mcpCollidingModelName,
+      );
+      expect(
+        policy.candidate(
+          connectionId: McpConnectionId('collision'),
+          originalToolName: second,
+        ),
+        mcpCollidingModelName,
+      );
+      final builder = McpCatalogBuilder(revision: 1)
+        ..addConnection(McpConnectionId('collision'), <McpToolDescriptor>[
+          tool('collision', 'x' * 80),
+          tool('collision', first),
+          tool('collision', second),
+        ]);
+      expect(
+        builder.build,
+        throwsA(
+          isA<McpException>().having(
+            (error) => error.error.kind,
+            'kind',
+            McpErrorKind.nameCollision,
+          ),
+        ),
+      );
+    });
+
+    test('documents the reviewer example under the shipped hash', () {
+      // Only the first reviewer suffix collides with the expected 2eea3eb6
+      // name; the second reaches 37788220, so the fixtures above use a
+      // verified pair. This guard keeps the hash implementation observable.
+      final policy = McpToolNamePolicy();
+      expect(
+        policy.candidate(
+          connectionId: McpConnectionId('collision'),
+          originalToolName: mcpReviewerFirstToolName,
+        ),
+        mcpCollisionModelName('2eea3eb6'),
+      );
+      expect(
+        policy.candidate(
+          connectionId: McpConnectionId('collision'),
+          originalToolName: mcpReviewerSecondToolName,
+        ),
+        mcpCollisionModelName('37788220'),
       );
     });
   });

@@ -183,6 +183,30 @@ List<FixtureTool> fixtureToolsFor(String serverId, {bool includeSlow = false}) {
   ];
 }
 
+/// Long tool name used by the collision fixtures: [run] x's plus [suffix].
+String mcpLongTool(String suffix, {int run = 74}) => '${'x' * run}$suffix';
+
+String mcpCollisionModelName(String hash) => 'mcp_collision__${'x' * 40}_$hash';
+
+/// Model name shared by the verified colliding fixtures.
+final mcpCollidingModelName = mcpCollisionModelName('3bf4e9a2');
+
+/// Real hash-collision pair for connection id `collision`.
+///
+/// Found by birthday search under the shipped hash: both names truncate to
+/// the same readable prefix and hash to `3bf4e9a2`, so `McpCatalogBuilder`
+/// must reject the result instead of silently dropping one of them.
+final mcpCollidingToolNames = <String>[
+  mcpLongTool('1p0n'),
+  mcpLongTool('30p0'),
+];
+
+/// Reviewer-supplied example. Under the shipped hash only the first name
+/// reaches the expected `2eea3eb6` suffix; the second hashes to `37788220`,
+/// which is why the regression fixtures use the verified pair above.
+final mcpReviewerFirstToolName = mcpLongTool('Qh3zIElgBqy7uT', run: 80);
+final mcpReviewerSecondToolName = mcpLongTool('YKcjwv63sdDNOs', run: 80);
+
 /// Minimal `Paper` fixture shared by B3-B5 contract tests.
 Paper samplePaper({
   String arxivId = '2501.01234',

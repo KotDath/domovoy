@@ -1031,5 +1031,238 @@ void main() {
         healthy.dispose();
       },
     );
+
+    test('a disconnect during a gated start is not reconnected', () async {
+      var created = 0;
+      final delays = <Duration>[];
+      final connection = ScriptedMcpConnection(
+        connectionId: McpConnectionId('paged'),
+        pages: <McpToolPage>[
+          McpToolPage(tools: <McpToolDescriptor>[scriptedTool('paged', 'a')]),
+        ],
+      );
+      manager = McpHostManager(
+        transports: ScriptedMcpTransportFactory(
+          <String, ScriptedMcpConnection Function()>{
+            'paged': () {
+              created += 1;
+              return connection;
+            },
+          },
+        ),
+        repository: repository,
+        secrets: InMemoryMcpSecretVault(),
+        reconnectPolicy: const McpReconnectPolicy(
+          maxAttempts: 3,
+          initialDelay: Duration(milliseconds: 1),
+          maxDelay: Duration(milliseconds: 2),
+        ),
+        delay: (duration) async {
+          delays.add(duration);
+        },
+      );
+      await save(configFor('paged'));
+      connection.armConnectGate();
+      final startFuture = manager.start();
+      await waitFor(() => connection.connectCount == 1);
+      await manager.disconnect(McpConnectionId('paged'));
+      connection.releaseConnectGate();
+      await startFuture;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(created, 1);
+      expect(delays, isEmpty);
+      expect(manager.snapshot.catalog.lookup('mcp_paged__a'), isNull);
+      expect(
+        manager.snapshot.statusFor(McpConnectionId('paged'))!.phase,
+        McpConnectionPhase.stopped,
+      );
+    });
+
+    test('re-add after a restart continues from the JSONL tombstone', () async {
+      final storage = FakeMemoryJsonlStorage();
+      final firstStore = JsonlMcpConnectionStore(storage: storage);
+      final first = McpHostManager(
+        transports: ScriptedMcpTransportFactory(
+          const <String, ScriptedMcpConnection Function()>{},
+        ),
+        repository: firstStore,
+        secrets: InMemoryMcpSecretVault(),
+        reconnectPolicy: const McpReconnectPolicy(maxAttempts: 0),
+        delay: (duration) async {},
+      );
+      final id = McpConnectionId('remote');
+      final base = McpConnectionConfig(
+        connectionId: id,
+        alias: 'Remote',
+        transport: McpInProcessStreamTransportConfig(serverId: 'remote'),
+      );
+      await first.upsertConnection(base, connect: false);
+      await first.removeConnection(id);
+      expect(await firstStore.load(id), isNull);
+      await first.stop();
+      first.dispose();
+
+      // A brand new manager over the same JSONL stream must know the tombstone.
+      final secondStore = JsonlMcpConnectionStore(storage: storage);
+      manager = McpHostManager(
+        transports: ScriptedMcpTransportFactory(
+          const <String, ScriptedMcpConnection Function()>{},
+        ),
+        repository: secondStore,
+        secrets: InMemoryMcpSecretVault(),
+        reconnectPolicy: const McpReconnectPolicy(maxAttempts: 0),
+        delay: (duration) async {},
+      );
+      await manager.start();
+      expect(manager.snapshot.configurationError, isNull);
+      await manager.upsertConnection(
+        base.copyWith(alias: 'Remote again'),
+        connect: false,
+      );
+      final record = await secondStore.load(id);
+      expect(record!.revision, 1);
+      expect(record.alias, 'Remote again');
+
+      // The replayed stream agrees, and optimistic checks stay strict.
+      final replayed = JsonlMcpConnectionStore(storage: storage);
+      expect((await replayed.load(id))!.revision, 1);
+      await expectLater(
+        replayed.save(base, expectedRevision: 0, cancellation: token),
+        throwsA(isA<McpException>()),
+      );
+    });
+
+    test('a catalog collision fails only the colliding connection', () async {
+      final healthy = ScriptedMcpConnection(
+        connectionId: McpConnectionId('healthy'),
+        pages: <McpToolPage>[
+          McpToolPage(
+            tools: <McpToolDescriptor>[scriptedTool('healthy', 'search')],
+          ),
+        ],
+      );
+      final broken = ScriptedMcpConnection(
+        connectionId: McpConnectionId('collision'),
+        pages: <McpToolPage>[
+          McpToolPage(
+            tools: <McpToolDescriptor>[
+              scriptedTool('collision', 'x' * 80),
+              scriptedTool('collision', mcpCollidingToolNames[0]),
+              scriptedTool('collision', mcpCollidingToolNames[1]),
+            ],
+          ),
+        ],
+      );
+      manager = McpHostManager(
+        transports: ScriptedMcpTransportFactory(
+          <String, ScriptedMcpConnection Function()>{
+            'healthy': () => healthy,
+            'collision': () => broken,
+          },
+        ),
+        repository: repository,
+        secrets: InMemoryMcpSecretVault(),
+        reconnectPolicy: const McpReconnectPolicy(maxAttempts: 0),
+        delay: (duration) async {},
+      );
+      await save(configFor('healthy'));
+      await save(configFor('collision'));
+      await manager.start();
+      await waitFor(
+        () => manager.snapshot.statusFor(McpConnectionId('healthy'))!.isReady,
+      );
+      final collisionStatus = manager.snapshot.statusFor(
+        McpConnectionId('collision'),
+      )!;
+      expect(collisionStatus.phase, McpConnectionPhase.failed);
+      expect(collisionStatus.lastError, contains('collides'));
+      expect(manager.snapshot.catalog.lookup('mcp_healthy__search'), isNotNull);
+      expect(
+        manager.snapshot.catalog.forConnection(McpConnectionId('collision')),
+        isEmpty,
+      );
+      expect(broken.closeCount, greaterThanOrEqualTo(1));
+
+      // Refreshing the healthy server must not crash on the failed neighbor.
+      await manager.refreshCatalog();
+      expect(manager.snapshot.catalog.lookup('mcp_healthy__search'), isNotNull);
+      await expectLater(
+        manager.callTool(
+          modelToolName: mcpCollidingModelName,
+          arguments: const <String, Object?>{},
+        ),
+        throwsA(
+          isA<McpException>().having(
+            (error) => error.error.kind,
+            'kind',
+            McpErrorKind.toolNotFound,
+          ),
+        ),
+      );
+    });
+
+    test('a refresh collision rolls back and keeps other servers', () async {
+      final collision = ScriptedMcpConnection(
+        connectionId: McpConnectionId('collision'),
+        pages: <McpToolPage>[
+          McpToolPage(
+            tools: <McpToolDescriptor>[
+              scriptedTool('collision', mcpCollidingToolNames[0]),
+            ],
+          ),
+        ],
+      );
+      final healthy = ScriptedMcpConnection(
+        connectionId: McpConnectionId('healthy'),
+        pages: <McpToolPage>[
+          McpToolPage(
+            tools: <McpToolDescriptor>[scriptedTool('healthy', 'search')],
+          ),
+        ],
+      );
+      manager = McpHostManager(
+        transports: ScriptedMcpTransportFactory(
+          <String, ScriptedMcpConnection Function()>{
+            'collision': () => collision,
+            'healthy': () => healthy,
+          },
+        ),
+        repository: repository,
+        secrets: InMemoryMcpSecretVault(),
+        reconnectPolicy: const McpReconnectPolicy(maxAttempts: 0),
+        delay: (duration) async {},
+      );
+      await save(configFor('collision'));
+      await save(configFor('healthy'));
+      await manager.start();
+      await waitFor(
+        () =>
+            manager.snapshot.statusFor(McpConnectionId('collision'))!.isReady &&
+            manager.snapshot.statusFor(McpConnectionId('healthy'))!.isReady,
+      );
+      expect(manager.snapshot.catalog.lookup(mcpCollidingModelName), isNotNull);
+      expect(manager.snapshot.catalog.lookup('mcp_healthy__search'), isNotNull);
+
+      // The server adds a second tool that collides with its own published
+      // name; the refresh must roll back and fail only this connection.
+      collision.replacePages(<McpToolPage>[
+        McpToolPage(
+          tools: <McpToolDescriptor>[
+            scriptedTool('collision', mcpCollidingToolNames[0]),
+            scriptedTool('collision', mcpCollidingToolNames[1]),
+          ],
+        ),
+      ]);
+      await manager.refreshCatalog(McpConnectionId('collision'));
+
+      final collisionStatus = manager.snapshot.statusFor(
+        McpConnectionId('collision'),
+      )!;
+      expect(collisionStatus.phase, McpConnectionPhase.failed);
+      expect(collisionStatus.lastError, contains('collides'));
+      expect(collision.closeCount, greaterThanOrEqualTo(1));
+      expect(manager.snapshot.catalog.lookup(mcpCollidingModelName), isNull);
+      expect(manager.snapshot.catalog.lookup('mcp_healthy__search'), isNotNull);
+    });
   });
 }

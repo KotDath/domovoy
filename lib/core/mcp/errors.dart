@@ -35,6 +35,9 @@ enum McpErrorKind {
   /// The model tool name has no route in the current catalog.
   toolNotFound,
 
+  /// Two different server tools map to the same model-facing name.
+  nameCollision,
+
   /// A permission policy rejected the call.
   toolDenied,
 

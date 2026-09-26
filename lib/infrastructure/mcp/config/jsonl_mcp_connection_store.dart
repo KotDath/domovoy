@@ -55,6 +55,14 @@ final class JsonlMcpConnectionStore implements McpConnectionRepository {
   }
 
   @override
+  Future<Map<String, int>> loadTombstones() {
+    return _coordinator.run(() async {
+      final state = await _read();
+      return Map<String, int>.unmodifiable(state.tombstoneRevisions);
+    });
+  }
+
+  @override
   Future<void> save(
     McpConnectionConfig config, {
     required int expectedRevision,

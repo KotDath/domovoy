@@ -133,7 +133,7 @@ final class McpCatalogBuilder {
       final owner = owners[name];
       if (owner != null) {
         throwMcp(
-          McpErrorKind.configuration,
+          McpErrorKind.nameCollision,
           'Model-facing tool name "$name" collides for "$owner" and '
           '"$pairKey". Rename one of the tools.',
         );

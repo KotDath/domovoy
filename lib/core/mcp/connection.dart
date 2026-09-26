@@ -153,6 +153,13 @@ abstract interface class McpConnectionRepository {
 
   Future<List<McpConnectionConfig>> loadAll();
 
+  /// Deleted connection IDs mapped to the revision at deletion time.
+  ///
+  /// The host needs this after a restart so re-adding a removed connection
+  /// continues from the tombstone revision instead of guessing zero, without
+  /// weakening the optimistic revision checks in [save].
+  Future<Map<String, int>> loadTombstones();
+
   Future<void> save(
     McpConnectionConfig config, {
     required int expectedRevision,
@@ -184,6 +191,10 @@ final class InMemoryMcpConnectionRepository implements McpConnectionRepository {
       ..sort((a, b) => a.connectionId.value.compareTo(b.connectionId.value));
     return List<McpConnectionConfig>.unmodifiable(records);
   }
+
+  @override
+  Future<Map<String, int>> loadTombstones() async =>
+      Map<String, int>.unmodifiable(_tombstones);
 
   @override
   Future<void> save(
