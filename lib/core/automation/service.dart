@@ -412,16 +412,21 @@ final class AutomationService {
   }
 
   /// Tombstone of a task; an executing run is cancelled and interrupted.
+  ///
+  /// The tombstone is committed **first**: a cancelled client token or a stale
+  /// [expectedRevision] must not cancel a live run while the task stays active.
+  /// Only after the durable delete does the active run receive the deletion
+  /// cancellation; an abort that lands while the write is in flight still
+  /// returns the committed tombstone (B5 pattern) and cancels the run.
   Future<AutomationTask> deleteTask(
     AutomationTaskId taskId, {
     int? expectedRevision,
     CancellationToken? cancellation,
   }) async {
     final task = await _requireTask(taskId);
-    _active[task.taskId.value]?.cancel(reason: _CancellationReason.deleted);
     final now = clock.nowUtc();
     _throwIfCancelled(cancellation, 'Удаление задачи');
-    return _saveTask(
+    final deleted = await _saveTask(
       task,
       task.nextRevision(
         state: AutomationTaskState.deleted,
@@ -430,6 +435,8 @@ final class AutomationService {
       ),
       expectedRevision: expectedRevision ?? task.revision,
     );
+    _active[deleted.taskId.value]?.cancel(reason: _CancellationReason.deleted);
+    return deleted;
   }
 
   /// Edits an existing task from the tasks UI (B8).

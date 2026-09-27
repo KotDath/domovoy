@@ -508,4 +508,169 @@ void main() {
     expect(harness.executor.requests, isEmpty);
     await harness.service.dispose();
   });
+
+  group('deleteTask cancellation ordering', () {
+    test('an aborted delete does not cancel an active run', () async {
+      final execution = Completer<void>();
+      AutomationResultCancellation? runCancellation;
+      final harness = build();
+      harness.executor.handler = (request, cancellation) async {
+        runCancellation = cancellation;
+        await execution.future;
+        return AutomationRunOutcome(
+          status: AutomationRunStatus.succeeded,
+          resultText: 'ok',
+        );
+      };
+      await harness.service.start();
+      final task = await harness.service.createTask(automationDraft());
+      final handle = await harness.service.runTaskNow(task.taskId);
+      await pump();
+      expect(runCancellation, isNotNull);
+
+      final cancellation = CancellationSource()..cancel();
+      await expectLater(
+        harness.service.deleteTask(
+          task.taskId,
+          cancellation: cancellation.token,
+        ),
+        throwsA(
+          isA<AutomationException>().having(
+            (error) => error.error.kind,
+            'kind',
+            AutomationErrorKind.cancelled,
+          ),
+        ),
+      );
+      // The run keeps executing: the tombstone was never committed.
+      expect(runCancellation!.isCancelled, isFalse);
+      final stored = await harness.repository.findTask(task.taskId);
+      expect(stored!.state, AutomationTaskState.active);
+      expect(
+        (await harness.repository.listRuns(taskId: task.taskId)).single.status,
+        AutomationRunStatus.running,
+      );
+
+      execution.complete();
+      final run = await handle.done;
+      expect(run.status, AutomationRunStatus.succeeded);
+      await harness.service.dispose();
+    });
+
+    test('a revision-mismatch delete does not cancel an active run', () async {
+      final execution = Completer<void>();
+      AutomationResultCancellation? runCancellation;
+      final harness = build();
+      harness.executor.handler = (request, cancellation) async {
+        runCancellation = cancellation;
+        await execution.future;
+        return AutomationRunOutcome(
+          status: AutomationRunStatus.succeeded,
+          resultText: 'ok',
+        );
+      };
+      await harness.service.start();
+      final task = await harness.service.createTask(automationDraft());
+      final handle = await harness.service.runTaskNow(task.taskId);
+      await pump();
+      expect(runCancellation, isNotNull);
+
+      await expectLater(
+        harness.service.deleteTask(
+          task.taskId,
+          expectedRevision: task.revision + 1,
+        ),
+        throwsA(
+          isA<AutomationException>().having(
+            (error) => error.error.kind,
+            'kind',
+            AutomationErrorKind.revisionMismatch,
+          ),
+        ),
+      );
+      expect(runCancellation!.isCancelled, isFalse);
+      final stored = await harness.repository.findTask(task.taskId);
+      expect(stored!.state, AutomationTaskState.active);
+
+      execution.complete();
+      final run = await handle.done;
+      expect(run.status, AutomationRunStatus.succeeded);
+      await harness.service.dispose();
+    });
+
+    test(
+      'a successful delete cancels the active run after the commit',
+      () async {
+        final execution = Completer<void>();
+        AutomationResultCancellation? runCancellation;
+        final harness = build();
+        harness.executor.handler = (request, cancellation) async {
+          runCancellation = cancellation;
+          await execution.future;
+          return AutomationRunOutcome(
+            status: AutomationRunStatus.succeeded,
+            resultText: 'ok',
+          );
+        };
+        await harness.service.start();
+        final task = await harness.service.createTask(automationDraft());
+        final handle = await harness.service.runTaskNow(task.taskId);
+        await pump();
+        expect(runCancellation, isNotNull);
+
+        final deleted = await harness.service.deleteTask(task.taskId);
+        expect(deleted.state, AutomationTaskState.deleted);
+        expect(runCancellation!.isCancelled, isTrue);
+
+        execution.complete();
+        final run = await handle.done;
+        expect(run.status, AutomationRunStatus.interrupted);
+        expect(run.error!.kind, AutomationRunErrorKind.interrupted);
+        await harness.service.dispose();
+      },
+    );
+
+    test(
+      'a delete aborted during the write returns the tombstone and cancels the run',
+      () async {
+        final execution = Completer<void>();
+        AutomationResultCancellation? runCancellation;
+        final harness = build();
+        harness.executor.handler = (request, cancellation) async {
+          runCancellation = cancellation;
+          await execution.future;
+          return AutomationRunOutcome(
+            status: AutomationRunStatus.succeeded,
+            resultText: 'ok',
+          );
+        };
+        await harness.service.start();
+        final task = await harness.service.createTask(automationDraft());
+        final handle = await harness.service.runTaskNow(task.taskId);
+        await pump();
+        expect(runCancellation, isNotNull);
+
+        final cancellation = CancellationSource();
+        harness.repository.gate('saveTask');
+        final deleting = harness.service.deleteTask(
+          task.taskId,
+          cancellation: cancellation.token,
+        );
+        await pump();
+        expect(harness.repository.callsFor('saveTask'), 1);
+        cancellation.cancel();
+        harness.repository.release('saveTask');
+
+        // The committed tombstone is the truth, not a fabricated cancellation.
+        final deleted = await deleting;
+        expect(deleted.state, AutomationTaskState.deleted);
+        expect(runCancellation!.isCancelled, isTrue);
+
+        execution.complete();
+        final run = await handle.done;
+        expect(run.status, AutomationRunStatus.interrupted);
+        await harness.service.dispose();
+      },
+    );
+  });
 }
