@@ -589,16 +589,26 @@ final class _McpAgentToolExecutor implements AgentToolExecutor {
 
   /// Validates declared `structuredContent` against the tool's `outputSchema`.
   ///
-  /// A tool that declares an output contract and then violates it fails
-  /// visibly instead of being reported as a success; a result without
-  /// structured content is reported as-is because there is nothing to check.
+  /// MCP 2025-11-25 says a server that declares an output schema MUST return
+  /// structured content conforming to it, so a *successful* result without
+  /// `structuredContent` is a visible failure: the text stays available as
+  /// error details, but the call is never reported as a success. Error results
+  /// keep their own failure and are not required to carry structured content.
   String? _outputProblem(
     McpToolCallResult result,
     Map<String, Object?>? outputSchema,
   ) {
-    final structured = result.structuredContent;
-    if (outputSchema == null || structured == null) {
+    if (outputSchema == null) {
       return null;
+    }
+    final structured = result.structuredContent;
+    if (structured == null) {
+      if (result.isError) {
+        return null;
+      }
+      return 'MCP: инструмент "${binding.modelToolName}" объявил outputSchema, '
+          'но вернул успешный результат без structuredContent. '
+          'Результат не подтверждён схемой.';
     }
     final problem = firstToolSchemaValueProblem(outputSchema, structured);
     if (problem == null) {

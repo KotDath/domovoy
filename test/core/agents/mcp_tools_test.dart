@@ -630,6 +630,97 @@ void main() {
       await harness.dispose();
     });
 
+    test(
+      'a declared outputSchema requires structuredContent on success',
+      () async {
+        const outputSchema = <String, Object?>{
+          'type': 'object',
+          'properties': <String, Object?>{
+            'ok': <String, Object?>{'type': 'boolean'},
+          },
+          'required': <String>['ok'],
+        };
+        final alpha = ScriptedMcpConnection(
+          connectionId: McpConnectionId('alpha'),
+          pages: <McpToolPage>[
+            McpToolPage(
+              tools: <McpToolDescriptor>[
+                scriptedTool('alpha', 'text_only', outputSchema: outputSchema),
+                scriptedTool('alpha', 'error_only', outputSchema: outputSchema),
+              ],
+            ),
+          ],
+          callHandler: (name, arguments) async {
+            if (name == 'text_only') {
+              return const McpToolCallResult(
+                isError: false,
+                content: <McpContentBlock>[McpTextBlock('plain text result')],
+              );
+            }
+            return const McpToolCallResult(
+              isError: true,
+              content: <McpContentBlock>[McpTextBlock('domain failure')],
+            );
+          },
+        );
+        harness = ScriptedMcpAgentHarness(
+          connections: <String, ScriptedMcpConnection>{'alpha': alpha},
+        );
+        await harness.start();
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[
+            toolTurn(name: 'mcp_alpha__text_only', callId: 'c1'),
+            toolTurn(name: 'mcp_alpha__error_only', callId: 'c2'),
+            textTurn('done'),
+          ],
+        );
+        final events =
+            await testRuntime(provider: provider, tools: harness.tools)
+                .agent(
+                  testDefinition(
+                    tools: <ToolId>[
+                      ToolId('mcp_alpha__text_only'),
+                      ToolId('mcp_alpha__error_only'),
+                    ],
+                  ),
+                )
+                .run('go')
+                .events
+                .toList();
+        expect(events.last, isA<AgentRunCompleted>());
+        final results = _toolResults(provider.requests.last);
+        expect(results.length, 2);
+
+        // A successful result that declares an output schema but returns no
+        // structured content is a visible failure, with the text preserved.
+        final textOnly = _decode(results[0]);
+        expect(textOnly['error'].toString(), contains('structuredContent'));
+        expect(textOnly['error'].toString(), contains('outputSchema'));
+        final textDetails = textOnly['details']! as Map<String, Object?>;
+        expect(
+          (textDetails['content']! as List<Object?>).first,
+          <String, Object?>{'type': 'text', 'text': 'plain text result'},
+        );
+
+        // An error result keeps its own domain failure; structured content is
+        // not required for errors.
+        final errorOnly = _decode(results[1]);
+        expect(errorOnly['error'].toString(), contains('domain failure'));
+        expect(
+          errorOnly['error'].toString(),
+          isNot(contains('structuredContent')),
+        );
+
+        expect(
+          events.whereType<AgentToolFinished>().map((event) => event.success),
+          <bool>[false, false],
+        );
+        await harness.dispose();
+      },
+    );
+
     test('progress, timeout and cancellation map safely', () async {
       final progressConnection = ScriptedMcpConnection(
         connectionId: McpConnectionId('progress'),
