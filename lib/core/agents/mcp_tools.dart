@@ -7,6 +7,7 @@ import '../llm/tools.dart';
 import '../mcp/catalog.dart';
 import '../mcp/errors.dart';
 import '../mcp/host.dart';
+import '../mcp/ids.dart';
 import '../mcp/protocol.dart';
 import 'access.dart';
 import 'errors.dart';
@@ -320,9 +321,20 @@ final class McpAgentToolSource implements AgentToolSource {
     this.callTimeout,
     McpToolResultMapper mapper = const McpToolResultMapper(),
     this.maxDescriptionCharacters = 2048,
+    Set<String> digestScopeConnectionIds = const <String>{},
+    Set<String> libraryRunIdConnectionIds = const <String>{},
+    this.digestScopeMetaKey = 'domovoy/runScope',
+    this.libraryRunIdArgument = 'runId',
+    this.saveDigestToolName = 'save_digest',
   }) : _host = host,
        profile = profile ?? ToolSchemaProfile.openaiChatCompletions,
-       _mapper = mapper {
+       _mapper = mapper,
+       _digestScopeConnectionIds = Set<String>.unmodifiable(
+         digestScopeConnectionIds,
+       ),
+       _libraryRunIdConnectionIds = Set<String>.unmodifiable(
+         libraryRunIdConnectionIds,
+       ) {
     _subscription = host.events.listen((_) => _rebuild());
     _rebuild();
   }
@@ -337,6 +349,23 @@ final class McpAgentToolSource implements AgentToolSource {
   final Duration? callTimeout;
 
   final int maxDescriptionCharacters;
+
+  /// App-owned local connections eligible to receive the trusted run scope in
+  /// the JSON-RPC `_meta` envelope (B4 digest model pin).
+  final Set<String> _digestScopeConnectionIds;
+
+  /// App-owned local connections eligible for the trusted run id binding of
+  /// `save_digest` (B5 scheduled-run idempotency).
+  final Set<String> _libraryRunIdConnectionIds;
+
+  /// `_meta` key carrying the per-run scope capability.
+  final String digestScopeMetaKey;
+
+  /// Model-facing argument name of the trusted run id binding.
+  final String libraryRunIdArgument;
+
+  /// Original tool name of the library save operation.
+  final String saveDigestToolName;
 
   final List<void Function()> _listeners = <void Function()>[];
   StreamSubscription<McpHostEvent>? _subscription;
@@ -484,6 +513,11 @@ final class McpAgentToolSource implements AgentToolSource {
         binding: binding,
         mapper: _mapper,
         callTimeout: callTimeout,
+        digestScopeConnectionIds: _digestScopeConnectionIds,
+        libraryRunIdConnectionIds: _libraryRunIdConnectionIds,
+        digestScopeMetaKey: digestScopeMetaKey,
+        libraryRunIdArgument: libraryRunIdArgument,
+        saveDigestToolName: saveDigestToolName,
       ),
     );
   }
@@ -530,12 +564,22 @@ final class _McpAgentToolExecutor implements AgentToolExecutor {
     required this.binding,
     required this.mapper,
     this.callTimeout,
+    this.digestScopeConnectionIds = const <String>{},
+    this.libraryRunIdConnectionIds = const <String>{},
+    this.digestScopeMetaKey = 'domovoy/runScope',
+    this.libraryRunIdArgument = 'runId',
+    this.saveDigestToolName = 'save_digest',
   });
 
   final McpHost host;
   final McpAgentToolBinding binding;
   final McpToolResultMapper mapper;
   final Duration? callTimeout;
+  final Set<String> digestScopeConnectionIds;
+  final Set<String> libraryRunIdConnectionIds;
+  final String digestScopeMetaKey;
+  final String libraryRunIdArgument;
+  final String saveDigestToolName;
 
   @override
   Future<ToolExecutionResult> execute(
@@ -553,14 +597,19 @@ final class _McpAgentToolExecutor implements AgentToolExecutor {
         'с момента подтверждения вызова.',
       );
     }
+    final arguments = _boundArguments(invocation);
+    if (arguments.error != null) {
+      return ToolExecutionResult.failure(arguments.error!);
+    }
     try {
       final result = await host.callTool(
         modelToolName: binding.modelToolName,
-        arguments: invocation.arguments,
+        arguments: arguments.arguments,
         timeout: callTimeout,
         cancellation: cancellation,
         onProgress: (fraction) =>
             liveness.reportProgress(detail: mapper.progressDetail(fraction)),
+        requestMeta: _trustedRequestMeta(invocation),
       );
       final mapped = mapper.map(result, toolName: binding.modelToolName);
       final outputProblem = _outputProblem(
@@ -585,6 +634,59 @@ final class _McpAgentToolExecutor implements AgentToolExecutor {
         mapper.failureMessage(error, toolName: binding.modelToolName),
       );
     }
+  }
+
+  /// `_meta` envelope for this call, or `null` when nothing may be attached.
+  ///
+  /// Only app-owned local connections receive the run scope capability, and
+  /// only when this exact run was issued one. A user-configured server, even
+  /// one reusing the built-in name, is never sent the capability.
+  Map<String, Object?>? _trustedRequestMeta(ToolInvocation invocation) {
+    final context = invocation.runContext;
+    if (context == null) {
+      return null;
+    }
+    if (!digestScopeConnectionIds.contains(binding.connectionId) ||
+        !host.isAppOwnedConnection(McpConnectionId(binding.connectionId))) {
+      return null;
+    }
+    return <String, Object?>{digestScopeMetaKey: context.scopeKey};
+  }
+
+  /// Binds the trusted application run id to local `save_digest` calls.
+  ///
+  /// For a Domovoy-owned scheduled run the runtime run id is the idempotency
+  /// key: a model-authored `runId` never becomes authority, and a conflicting
+  /// supplied value fails closed. Interactive runs keep the model's own
+  /// argument (or its absence), so ordinary manual saves stay distinct.
+  _BoundArguments _boundArguments(ToolInvocation invocation) {
+    final arguments = invocation.arguments;
+    final context = invocation.runContext;
+    final runId = invocation.runId?.value;
+    final applies =
+        context != null &&
+        context.bindLibraryRunId &&
+        runId != null &&
+        binding.originalToolName == saveDigestToolName &&
+        libraryRunIdConnectionIds.contains(binding.connectionId) &&
+        host.isAppOwnedConnection(McpConnectionId(binding.connectionId));
+    if (!applies) {
+      return _BoundArguments(arguments);
+    }
+    final supplied = arguments[libraryRunIdArgument];
+    if (supplied != null && supplied != runId) {
+      return _BoundArguments(
+        arguments,
+        'MCP: аргумент "$libraryRunIdArgument" не может переопределять '
+        'идентификатор запуска приложения. Сохранение отклонено.',
+      );
+    }
+    return _BoundArguments(
+      Map<String, Object?>.unmodifiable(<String, Object?>{
+        ...arguments,
+        libraryRunIdArgument: runId,
+      }),
+    );
   }
 
   /// Validates declared `structuredContent` against the tool's `outputSchema`.
@@ -619,6 +721,13 @@ final class _McpAgentToolExecutor implements AgentToolExecutor {
   }
 }
 
+final class _BoundArguments {
+  const _BoundArguments(this.arguments, [this.error]);
+
+  final Map<String, Object?> arguments;
+  final String? error;
+}
+
 /// Production-ready bridge between one [McpHost] and the agent layer.
 ///
 /// B9 composes it once and hands it to the runtime:
@@ -639,12 +748,22 @@ final class McpAgentToolBridge {
     Duration? callTimeout,
     McpToolResultMapper mapper = const McpToolResultMapper(),
     int maxDescriptionCharacters = 2048,
+    Set<String> digestScopeConnectionIds = const <String>{},
+    Set<String> libraryRunIdConnectionIds = const <String>{},
+    String digestScopeMetaKey = 'domovoy/runScope',
+    String libraryRunIdArgument = 'runId',
+    String saveDigestToolName = 'save_digest',
   }) : source = McpAgentToolSource(
          host: host,
          profile: profile,
          callTimeout: callTimeout,
          mapper: mapper,
          maxDescriptionCharacters: maxDescriptionCharacters,
+         digestScopeConnectionIds: digestScopeConnectionIds,
+         libraryRunIdConnectionIds: libraryRunIdConnectionIds,
+         digestScopeMetaKey: digestScopeMetaKey,
+         libraryRunIdArgument: libraryRunIdArgument,
+         saveDigestToolName: saveDigestToolName,
        );
 
   final McpAgentToolSource source;

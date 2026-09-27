@@ -5,6 +5,7 @@ import 'mcp_sdk_transports.dart';
 McpStdioLauncher createMcpStdioLauncher({
   bool forceDisabled = false,
   String? disabledReason,
+  Duration legacyDiscoveryTimeout = defaultMcpLegacyDiscoveryTimeout,
 }) => UnsupportedMcpStdioLauncher(disabledReason: disabledReason);
 
 /// stdio is unavailable outside Dart IO platforms (web/WASM).

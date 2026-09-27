@@ -50,6 +50,7 @@ final class ScriptedMcpConnection implements McpTransportConnection {
   var connected = false;
   var _pageIndex = 0;
   Duration? lastCallTimeout;
+  Map<String, Object?>? lastRequestMeta;
 
   /// When armed, the next connect/list/close call waits for its release.
   Completer<void>? _connectGate;
@@ -197,9 +198,11 @@ final class ScriptedMcpConnection implements McpTransportConnection {
     required Duration timeout,
     required CancellationToken cancellation,
     void Function(double progress)? onProgress,
+    Map<String, Object?>? requestMeta,
   }) async {
     calledTools.add(originalToolName);
     lastCallTimeout = timeout;
+    lastRequestMeta = requestMeta;
     if (emitProgress) {
       onProgress?.call(0.25);
       onProgress?.call(0.75);

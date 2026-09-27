@@ -37,6 +37,7 @@ final class AgentSessionAutomationExecutor implements AutomationRunExecutor {
     required this.tools,
     required this.policies,
     this.credentials,
+    this.runToolContexts,
     Map<String, String>? credentialEnvironmentVariables,
     this.schemaProfile,
     AutomationRunLimits runLimits = const AutomationRunLimits(),
@@ -59,6 +60,13 @@ final class AgentSessionAutomationExecutor implements AutomationRunExecutor {
   /// check. When null, the check is skipped and the provider reports the
   /// missing key itself.
   final ProviderCredentialResolver? credentials;
+
+  /// Optional issuer of app-owned per-run tool contexts.
+  ///
+  /// Scheduled runs use it for the digest model pin of the task's model and
+  /// bind the runtime run id to local `library.save_digest` calls, so an
+  /// automatic retry after an uncertain save is idempotent.
+  final AgentRunToolContextFactory? runToolContexts;
 
   /// Provider id to environment variable name, used with [credentials].
   final Map<String, String> credentialEnvironmentVariables;
@@ -169,8 +177,17 @@ final class AgentSessionAutomationExecutor implements AutomationRunExecutor {
     final session = await runtime
         .agent(definition)
         .createSession(persistence: SessionPersistence.transient);
+    final runContext = runToolContexts?.begin(
+      model: task.model,
+      bindLibraryRunId: true,
+    );
     try {
-      final run = session.run(request.prompt);
+      final run = session.run(
+        request.prompt,
+        options: runContext == null
+            ? null
+            : AgentRunOptions(toolContext: runContext),
+      );
       final cancelSubscription = cancellation.whenCancelled.then((_) async {
         await run.cancel();
       });
@@ -196,6 +213,9 @@ final class AgentSessionAutomationExecutor implements AutomationRunExecutor {
       }
       return collector.outcome(limits: runLimits);
     } finally {
+      if (runContext != null) {
+        runToolContexts?.end(runContext);
+      }
       try {
         await session.close();
       } on Object {

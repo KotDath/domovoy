@@ -195,24 +195,48 @@ final class McpSdkConnection implements McpTransportConnection {
     required Duration timeout,
     required CancellationToken cancellation,
     void Function(double progress)? onProgress,
+    Map<String, Object?>? requestMeta,
   }) async {
     _ensureConnected();
     final controller = sdk.BasicAbortController();
     final registration = cancellation.register(controller.abort);
     try {
-      final result = await _client.callTool(
-        sdk.CallToolRequest(
-          name: originalToolName,
-          arguments: Map<String, dynamic>.from(arguments),
-        ),
-        options: sdk.RequestOptions(
-          timeout: timeout,
-          signal: controller.signal,
-          onprogress: onProgress == null
-              ? null
-              : (progress) => onProgress(progress.progress.toDouble()),
-        ),
+      final options = sdk.RequestOptions(
+        timeout: timeout,
+        signal: controller.signal,
+        onprogress: onProgress == null
+            ? null
+            : (progress) => onProgress(progress.progress.toDouble()),
       );
+      final sdk.CallToolResult result;
+      if (requestMeta == null) {
+        result = await _client.callTool(
+          sdk.CallToolRequest(
+            name: originalToolName,
+            arguments: Map<String, dynamic>.from(arguments),
+          ),
+          options: options,
+        );
+      } else {
+        // Narrow `_meta` path (B4 digest pin scope). `CallToolRequest` has no
+        // meta field in mcp_dart 2.4.2, so the JSON-RPC envelope is built
+        // explicitly; the public `request` still assigns the wire id, applies
+        // the stateless protocol metadata and parses the result through the
+        // same `CallToolResult.fromJson` contract. Request `_meta` is part of
+        // the envelope, never of the model-authored arguments.
+        result = await _client.request<sdk.CallToolResult>(
+          sdk.JsonRpcCallToolRequest(
+            id: -1,
+            params: sdk.CallToolRequest(
+              name: originalToolName,
+              arguments: Map<String, dynamic>.from(arguments),
+            ).toJson(),
+            meta: Map<String, dynamic>.from(requestMeta),
+          ),
+          sdk.CallToolResult.fromJson,
+          options,
+        );
+      }
       _throwIfCancelled(cancellation);
       return _mapCallResult(result);
     } on McpException {

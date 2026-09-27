@@ -230,6 +230,70 @@ final class ToolAccessPolicy implements ToolPermissionPolicy {
   }
 }
 
+/// Policy that composes stable built-in (Pi) identities with explicit,
+/// per-chat/project MCP selections over the live catalog.
+///
+/// The plain [ToolAccessPolicy] could not serve both sides: a grant built from
+/// the persisted MCP selection denies every built-in tool (it only knows MCP
+/// names), while the legacy [AllowAllPolicy] would grant every newly discovered
+/// MCP tool. This policy separates the two identity spaces explicitly:
+///
+/// - [piToolIds] are allowed exactly as before. They are stable application
+///   identities; the runtime still checks `definition.enabledTools`, so a tool
+///   the session does not authorize is never callable.
+/// - Every other name must be a *live* route of [catalog]. A name that is not
+///   in the catalog right now is denied, so a stored selection like `read`,
+///   `bash` or an unknown identifier can never gain authority over Pi tools or
+///   over a tool that has not been discovered yet.
+/// - MCP routes are allowed only when [selectedToolIds] returns the exact
+///   model-facing id for this invocation's chat/project scope. Destructive
+///   annotations may require an approval, but can never widen access.
+final class CompositeToolAccessPolicy implements ToolPermissionPolicy {
+  CompositeToolAccessPolicy({
+    required this.id,
+    required Iterable<String> piToolIds,
+    required this.catalog,
+    required this.selectedToolIds,
+    this.askOnDestructive = true,
+  }) : piToolIds = Set<String>.unmodifiable(piToolIds);
+
+  @override
+  final PolicyId id;
+
+  /// Stable built-in tool identities (saved Pi behavior).
+  final Set<String> piToolIds;
+
+  /// Reads the current catalog; never cached, so removed routes fail closed.
+  final McpCatalog Function() catalog;
+
+  /// Explicit allowlist for the invocation's chat/project, from the durable
+  /// B7 selection store. Must be deny-by-default when no record exists.
+  final Iterable<String> Function(ToolInvocation invocation) selectedToolIds;
+
+  final bool askOnDestructive;
+
+  @override
+  ToolPermission decide(ToolInvocation invocation) {
+    final name = invocation.name;
+    if (piToolIds.contains(name)) {
+      return ToolPermission.allow;
+    }
+    final live = catalog();
+    if (live.lookup(name) == null) {
+      // Unknown, newly discovered or already removed: never granted by a stale
+      // stored id or by the legacy allow-all behavior.
+      return ToolPermission.deny;
+    }
+    final selected = selectedToolIds(invocation);
+    final grant = ToolAccessGrant.forMcpCatalog(
+      catalog: live,
+      allowedToolIds: selected,
+      askOnDestructive: askOnDestructive,
+    );
+    return grant.permissionFor(name);
+  }
+}
+
 Set<String> _validatedIds(Iterable<String> values, String label) {
   final result = <String>{};
   for (final value in values) {

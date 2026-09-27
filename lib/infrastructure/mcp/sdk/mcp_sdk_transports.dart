@@ -33,6 +33,15 @@ abstract interface class McpStdioLauncher {
   });
 }
 
+/// Bounded `server/discover` probe budget used for body-only stdio sessions.
+///
+/// mcp_dart 2.4.2 defaults to 5 seconds and then falls back to a legacy
+/// `initialize` against a modern stateless peer; a cold `dart run`-style child
+/// can exceed that under load. The value stays below the host's default
+/// connect timeout (20 s) so a genuinely silent legacy peer still gets its
+/// fallback inside the outer handshake budget.
+const defaultMcpLegacyDiscoveryTimeout = Duration(seconds: 15);
+
 /// Returns the platform stdio launcher.
 ///
 /// [forceDisabled] is the composition override for builds whose target cannot
@@ -42,9 +51,11 @@ abstract interface class McpStdioLauncher {
 McpStdioLauncher createMcpStdioLauncher({
   bool forceDisabled = false,
   String? disabledReason,
+  Duration legacyDiscoveryTimeout = defaultMcpLegacyDiscoveryTimeout,
 }) => platform.createMcpStdioLauncher(
   forceDisabled: forceDisabled,
   disabledReason: disabledReason,
+  legacyDiscoveryTimeout: legacyDiscoveryTimeout,
 );
 
 /// Builds SDK transports for every `McpTransportConfig` variant.
@@ -53,11 +64,20 @@ final class McpSdkTransportFactory implements McpTransportFactory {
     this.streams,
     this.diagnostics = const NoopMcpDiagnosticsSink(),
     McpStdioLauncher? stdioLauncher,
-  }) : _stdioLauncher = stdioLauncher ?? createMcpStdioLauncher();
+    this.legacyDiscoveryTimeout = defaultMcpLegacyDiscoveryTimeout,
+  }) : _stdioLauncher =
+           stdioLauncher ??
+           createMcpStdioLauncher(
+             legacyDiscoveryTimeout: legacyDiscoveryTimeout,
+           );
 
   /// Registry of running built-in servers for `inProcessStream` connections.
   final LocalMcpStreamRegistry? streams;
   final McpDiagnosticsSink diagnostics;
+
+  /// Bounded discovery probe budget of every spawned client session.
+  final Duration legacyDiscoveryTimeout;
+
   final McpStdioLauncher _stdioLauncher;
 
   /// True when third-party stdio servers can be offered on this platform.
@@ -144,6 +164,9 @@ final class McpSdkTransportFactory implements McpTransportFactory {
     const sdk.Implementation(
       name: domovoyMcpClientName,
       version: domovoyMcpClientVersion,
+    ),
+    options: sdk.McpClientOptions(
+      legacyDiscoveryTimeout: legacyDiscoveryTimeout,
     ),
   );
 

@@ -47,6 +47,7 @@ final class _ReadOnlyHost extends Fake implements McpHost {
     Duration? timeout,
     cancellation,
     void Function(double)? onProgress,
+    Map<String, Object?>? requestMeta,
   }) {
     calls.add(modelToolName);
     return harness.call(
@@ -215,6 +216,7 @@ final class _DeferredHost extends Fake implements McpHost {
     Duration? timeout,
     cancellation,
     void Function(double)? onProgress,
+    Map<String, Object?>? requestMeta,
   }) {
     final completer = Completer<McpToolCallResult>();
     pending.add(completer);

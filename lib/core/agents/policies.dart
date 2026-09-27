@@ -2,6 +2,7 @@ import '../llm/errors.dart';
 import '../llm/generation.dart';
 import '../llm/json.dart';
 import 'errors.dart';
+import 'run_context.dart';
 
 enum ToolPermission { allow, deny, ask }
 
@@ -314,6 +315,7 @@ final class AgentRunOptions {
     this.noProgressStop,
     this.reasoning,
     this.typedInput,
+    this.toolContext,
   }) {
     _validatePositiveOverride('maxModelTurns', maxModelTurns);
     _validateNonNegativeOverride('maxToolCalls', maxToolCalls);
@@ -347,6 +349,11 @@ final class AgentRunOptions {
   final QuotaOverride<int>? noProgressStop;
   final AgentReasoningOverride? reasoning;
   final Object? typedInput;
+
+  /// App-owned context of this exact run (B4 digest pin scope, B5 scheduled
+  /// run id binding). Copied into every [ToolInvocation] of the run; never
+  /// serialized, never shown to the model and never an argument.
+  final AgentRunToolContext? toolContext;
 }
 
 final class ResolvedRunGuards {

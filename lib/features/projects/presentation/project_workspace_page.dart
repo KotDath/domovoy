@@ -17,6 +17,9 @@ class ProjectWorkspacePage extends StatelessWidget {
     this.onThemeModeChanged,
     this.providersView,
     this.mcpToolAccess,
+    this.onOpenTasks,
+    this.onOpenLibrary,
+    this.onOpenMcpConnections,
     super.key,
   });
 
@@ -28,6 +31,9 @@ class ProjectWorkspacePage extends StatelessWidget {
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final Widget? providersView;
   final McpToolAccessController? mcpToolAccess;
+  final VoidCallback? onOpenTasks;
+  final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenMcpConnections;
 
   @override
   Widget build(BuildContext context) {
@@ -41,6 +47,9 @@ class ProjectWorkspacePage extends StatelessWidget {
       onThemeModeChanged: onThemeModeChanged,
       providersView: providersView,
       mcpToolAccess: mcpToolAccess,
+      onOpenTasks: onOpenTasks,
+      onOpenLibrary: onOpenLibrary,
+      onOpenMcpConnections: onOpenMcpConnections,
     );
   }
 }

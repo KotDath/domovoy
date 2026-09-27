@@ -42,6 +42,7 @@ AutomationStack buildAutomationStack({
   required LlmProviderRegistry models,
   required AgentToolRegistry tools,
   ProviderCredentialResolver? credentials,
+  AgentRunToolContextFactory? runToolContexts,
   AutomationLimits limits = const AutomationLimits(),
   AutomationResultDelivery? delivery,
   AutomationClock? clock,
@@ -56,6 +57,7 @@ AutomationStack buildAutomationStack({
     tools: tools,
     policies: policies,
     credentials: credentials,
+    runToolContexts: runToolContexts,
     runLimits: validated.run,
   );
   final service = AutomationService(

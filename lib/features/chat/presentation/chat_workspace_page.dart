@@ -43,6 +43,9 @@ class ChatWorkspacePage extends StatefulWidget {
     this.onThemeModeChanged,
     this.providersView,
     this.mcpToolAccess,
+    this.onOpenTasks,
+    this.onOpenLibrary,
+    this.onOpenMcpConnections,
     super.key,
   });
 
@@ -57,6 +60,11 @@ class ChatWorkspacePage extends StatefulWidget {
 
   /// Per-chat/project MCP tool permission controller composed by B9.
   final McpToolAccessController? mcpToolAccess;
+
+  /// Navigation of the composed sections; null hides the entry point.
+  final VoidCallback? onOpenTasks;
+  final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenMcpConnections;
 
   @override
   State<ChatWorkspacePage> createState() => _ChatWorkspacePageState();
@@ -251,6 +259,9 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
               chatId: mcpScope.chatId,
               projectId: mcpScope.projectId,
             ),
+      onOpenTasks: widget.onOpenTasks,
+      onOpenLibrary: widget.onOpenLibrary,
+      onOpenMcpConnections: widget.onOpenMcpConnections,
     );
   }
 

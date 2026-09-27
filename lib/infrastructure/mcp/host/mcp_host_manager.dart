@@ -57,6 +57,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     McpTimeouts timeouts = const McpTimeouts(),
     McpReconnectPolicy reconnectPolicy = const McpReconnectPolicy(),
     McpDiagnosticsSink diagnostics = const NoopMcpDiagnosticsSink(),
+    Set<String> appOwnedConnectionIds = const <String>{},
     DateTime Function()? now,
     Future<void> Function(Duration)? delay,
   }) : _transports = transports,
@@ -65,6 +66,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
        _timeouts = timeouts,
        _reconnectPolicy = reconnectPolicy,
        _diagnostics = diagnostics,
+       _appOwnedConnectionIds = Set<String>.unmodifiable(appOwnedConnectionIds),
        _now = now ?? DateTime.now,
        _delay = delay ?? Future<void>.delayed;
 
@@ -76,6 +78,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
   final McpTimeouts _timeouts;
   final McpReconnectPolicy _reconnectPolicy;
   final McpDiagnosticsSink _diagnostics;
+  final Set<String> _appOwnedConnectionIds;
   final DateTime Function() _now;
   final Future<void> Function(Duration) _delay;
 
@@ -125,6 +128,10 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
 
   @override
   Stream<McpHostEvent> get events => _events.stream;
+
+  @override
+  bool isAppOwnedConnection(McpConnectionId id) =>
+      _appOwnedConnectionIds.contains(id.value);
 
   bool get isStarted => _started && !_stopped;
 
@@ -407,6 +414,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
     Duration? timeout,
     CancellationToken? cancellation,
     void Function(double progress)? onProgress,
+    Map<String, Object?>? requestMeta,
   }) async {
     final route = _catalog.lookup(modelToolName);
     if (route == null) {
@@ -424,6 +432,7 @@ final class McpHostManager extends ChangeNotifier implements McpHost {
         timeout: timeout ?? _timeouts.call,
         cancellation: cancellation ?? _neverCancelled,
         onProgress: onProgress,
+        requestMeta: requestMeta,
       );
       _emitCallCompleted(route, isError: result.isError, started: started);
       return result;

@@ -3668,6 +3668,9 @@ final class _LiveRun implements AgentRun {
       name: call.name,
       arguments: arguments,
       projectId: session.projectId,
+      sessionId: session.id,
+      runId: id,
+      runContext: options.toolContext,
     );
     final initialPolicy =
         session.runtime.policies[session.definition.policy.value];

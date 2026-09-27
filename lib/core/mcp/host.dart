@@ -89,6 +89,7 @@ abstract interface class McpTransportConnection {
     required Duration timeout,
     required CancellationToken cancellation,
     void Function(double progress)? onProgress,
+    Map<String, Object?>? requestMeta,
   });
 
   Future<void> close();
@@ -268,6 +269,14 @@ abstract interface class McpHost {
 
   Stream<McpHostEvent> get events;
 
+  /// True when [id] is a Domovoy-owned built-in server (arxiv, digest,
+  /// library, automation) whose configuration the user cannot replace.
+  ///
+  /// Only such connections may receive Domovoy-owned run capabilities in the
+  /// JSON-RPC `_meta` envelope; a user-configured server must never see them,
+  /// even if it reuses a built-in id.
+  bool isAppOwnedConnection(McpConnectionId id);
+
   /// Loads stored connections and connects the enabled ones.
   Future<void> start({CancellationToken? cancellation});
 
@@ -292,11 +301,17 @@ abstract interface class McpHost {
   Future<void> refreshCatalog([McpConnectionId? id]);
 
   /// Routes a model-facing name to `(connectionId, originalToolName)`.
+  ///
+  /// [requestMeta] is an optional, app-owned JSON-RPC `_meta` map. It is only
+  /// ever produced by Domovoy composition for its own local servers (B4 digest
+  /// pin scope); it is part of the JSON-RPC envelope, never of the tool
+  /// arguments, so a model can neither read nor author it.
   Future<McpToolCallResult> callTool({
     required String modelToolName,
     required Map<String, Object?> arguments,
     Duration? timeout,
     CancellationToken? cancellation,
     void Function(double progress)? onProgress,
+    Map<String, Object?>? requestMeta,
   });
 }

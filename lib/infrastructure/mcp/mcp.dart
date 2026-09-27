@@ -1,3 +1,4 @@
+export 'config/app_owned_mcp_connection_repository.dart';
 export 'config/jsonl_mcp_connection_store.dart';
 export 'config/jsonl_mcp_storage_factory.dart';
 export 'config/jsonl_mcp_tool_selection_store.dart';

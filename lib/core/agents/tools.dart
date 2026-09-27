@@ -7,6 +7,7 @@ import '../projects/ids.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'policies.dart';
+import 'run_context.dart';
 import 'schema.dart';
 import 'tool_schema.dart';
 
@@ -16,12 +17,30 @@ final class ToolInvocation {
     required this.name,
     required Map<String, Object?> arguments,
     this.projectId,
+    this.sessionId,
+    this.runId,
+    this.runContext,
   }) : arguments = freezeJsonMap(copyJsonMap(arguments));
 
   final String callId;
   final String name;
   final Map<String, Object?> arguments;
   final ProjectId? projectId;
+
+  /// Session this call belongs to; set by the runtime for every agent call.
+  ///
+  /// Policies use the session scope to resolve the per-chat/project rights, so
+  /// two chats of one runtime never share an accidental grant.
+  final AgentSessionId? sessionId;
+
+  /// Application run this call belongs to; set by the runtime.
+  final RunId? runId;
+
+  /// App-owned per-run context (pinned model scope, scheduled run binding).
+  ///
+  /// Never model-authored: the composition issues it when the run starts and
+  /// the runtime copies it for every tool call of that exact run.
+  final AgentRunToolContext? runContext;
 }
 
 final class ToolExecutionResult {

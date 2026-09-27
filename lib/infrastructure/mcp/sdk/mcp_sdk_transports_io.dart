@@ -14,9 +14,11 @@ import 'mcp_sdk_transports.dart';
 McpStdioLauncher createMcpStdioLauncher({
   bool forceDisabled = false,
   String? disabledReason,
+  Duration legacyDiscoveryTimeout = defaultMcpLegacyDiscoveryTimeout,
 }) => DartIoMcpStdioLauncher(
   forceDisabled: forceDisabled,
   disabledReason: disabledReason,
+  legacyDiscoveryTimeout: legacyDiscoveryTimeout,
 );
 
 /// Spawns a configured command with a minimal environment.
@@ -27,11 +29,15 @@ final class DartIoMcpStdioLauncher implements McpStdioLauncher {
   const DartIoMcpStdioLauncher({
     this.forceDisabled = false,
     this.disabledReason,
+    this.legacyDiscoveryTimeout = defaultMcpLegacyDiscoveryTimeout,
   });
 
   /// Composition override for builds Dart cannot classify (Aurora as Linux).
   final bool forceDisabled;
   final String? disabledReason;
+
+  /// Bounded `server/discover` probe budget of the child session.
+  final Duration legacyDiscoveryTimeout;
 
   @override
   bool get isSupported => !forceDisabled && _platformSupportsStdio;
@@ -91,6 +97,9 @@ final class DartIoMcpStdioLauncher implements McpStdioLauncher {
         const sdk.Implementation(
           name: domovoyMcpClientName,
           version: domovoyMcpClientVersion,
+        ),
+        options: sdk.McpClientOptions(
+          legacyDiscoveryTimeout: legacyDiscoveryTimeout,
         ),
       ),
       transport: drainingTransport,

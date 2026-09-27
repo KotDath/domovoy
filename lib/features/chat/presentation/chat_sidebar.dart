@@ -22,6 +22,9 @@ class ChatSidebar extends StatelessWidget {
     this.usageSelected = false,
     this.profilesSelected = false,
     this.providersSelected = false,
+    this.onOpenTasks,
+    this.onOpenLibrary,
+    this.onOpenMcpConnections,
     super.key,
   });
 
@@ -42,6 +45,9 @@ class ChatSidebar extends StatelessWidget {
   final bool usageSelected;
   final bool profilesSelected;
   final bool providersSelected;
+  final VoidCallback? onOpenTasks;
+  final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenMcpConnections;
 
   @override
   Widget build(BuildContext context) {
@@ -178,6 +184,72 @@ class ChatSidebar extends StatelessWidget {
                         Expanded(
                           child: Text(
                             'Персонализация',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (onOpenTasks != null)
+                FocusTraversalOrder(
+                  order: const NumericFocusOrder(96),
+                  child: DomovoyQuietButton(
+                    key: const ValueKey('open-tasks'),
+                    onPressed: onOpenTasks,
+                    expand: true,
+                    child: const Row(
+                      children: [
+                        Icon(Icons.schedule_outlined),
+                        SizedBox(width: DomovoyDimensions.space3),
+                        Expanded(
+                          child: Text(
+                            'Задачи',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (onOpenLibrary != null)
+                FocusTraversalOrder(
+                  order: const NumericFocusOrder(95),
+                  child: DomovoyQuietButton(
+                    key: const ValueKey('open-library'),
+                    onPressed: onOpenLibrary,
+                    expand: true,
+                    child: const Row(
+                      children: [
+                        Icon(Icons.local_library_outlined),
+                        SizedBox(width: DomovoyDimensions.space3),
+                        Expanded(
+                          child: Text(
+                            'Библиотека',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (onOpenMcpConnections != null)
+                FocusTraversalOrder(
+                  order: const NumericFocusOrder(94),
+                  child: DomovoyQuietButton(
+                    key: const ValueKey('open-mcp-connections'),
+                    onPressed: onOpenMcpConnections,
+                    expand: true,
+                    child: const Row(
+                      children: [
+                        Icon(Icons.hub_outlined),
+                        SizedBox(width: DomovoyDimensions.space3),
+                        Expanded(
+                          child: Text(
+                            'MCP-серверы',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),

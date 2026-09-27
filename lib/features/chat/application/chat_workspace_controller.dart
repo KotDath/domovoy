@@ -25,6 +25,7 @@ final class ChatWorkspaceController {
     this.settingsLauncher,
     this.onTurnCompleted,
     this.chatDeliveries,
+    this.runToolContexts,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
     AgentClock? clock,
@@ -53,6 +54,9 @@ final class ChatWorkspaceController {
   /// Read side of the separately typed automation result cards. Optional: a
   /// composition without scheduled tasks shows a plain chat.
   final AutomationChatDeliverySource? chatDeliveries;
+
+  /// Optional issuer of app-owned per-run tool contexts (digest model pin).
+  final AgentRunToolContextFactory? runToolContexts;
 
   final ChatStreamPacingPolicy pacingPolicy;
   final ChatStreamScheduler scheduler;
@@ -410,8 +414,20 @@ final class ChatWorkspaceController {
     int generation,
   ) async {
     AgentRunEvent? terminal;
+    // App-owned context of this run: registers the digest model pin for the
+    // session's current model and releases it when the run settles, including
+    // cancellation and failure paths.
+    final runContext = runToolContexts?.begin(
+      model: session.snapshot.selection.model,
+    );
     try {
-      final run = session.run(input, titlePolicy: titlePolicy);
+      final run = session.run(
+        input,
+        titlePolicy: titlePolicy,
+        options: runContext == null
+            ? null
+            : AgentRunOptions(toolContext: runContext),
+      );
       _activeRun = run;
       final done = Completer<void>();
       _activeRunDone = done;
@@ -504,6 +520,9 @@ final class ChatWorkspaceController {
       }
       _activeRunDone = null;
       _stopFuture = null;
+      if (runContext != null) {
+        runToolContexts?.end(runContext);
+      }
       _finish(generation);
     }
   }

@@ -7,13 +7,18 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'core/agents/agents.dart';
+import 'core/automation/automation.dart';
 import 'core/environment/platform_environment_reader.dart';
 import 'core/llm/llm.dart';
+import 'core/mcp/mcp.dart';
 import 'core/memory/memory.dart';
 import 'core/personalization/personalization.dart';
 import 'design_system/design_system.dart';
 import 'features/chat/application/chat_workspace_controller.dart';
 import 'features/chat/presentation/chat_workspace_page.dart';
+import 'features/library/application/library_controller.dart';
+import 'features/library/presentation/library_page.dart';
+import 'features/mcp/mcp.dart';
 import 'features/memory/application/memory_inspector_controller.dart';
 import 'features/memory/application/memory_inspector_state.dart';
 import 'features/projects/application/project_application_service.dart';
@@ -28,8 +33,19 @@ import 'features/settings/domain/api_key_credentials.dart';
 import 'features/settings/domain/model_settings.dart';
 import 'features/settings/presentation/api_key_settings_dialog.dart';
 import 'features/settings/presentation/provider_api_keys_dialog.dart';
+import 'features/tasks/application/automation_chat_delivery_sink.dart';
+import 'features/tasks/application/task_editor_controller.dart';
+import 'features/tasks/application/tasks_controller.dart';
+import 'features/tasks/presentation/tasks_page.dart';
 import 'infrastructure/credentials/credentials.dart';
 import 'infrastructure/agents/jsonl/jsonl.dart';
+import 'infrastructure/automation/automation.dart';
+import 'infrastructure/automation_chat/automation_chat.dart';
+import 'infrastructure/mcp/mcp.dart';
+import 'infrastructure/mcp/servers/arxiv/arxiv.dart';
+import 'infrastructure/mcp/servers/automation/automation.dart';
+import 'infrastructure/mcp/servers/digest/digest.dart';
+import 'infrastructure/mcp/servers/library/library.dart';
 import 'infrastructure/memory/memory.dart';
 import 'infrastructure/personalization/personalization.dart';
 import 'infrastructure/projects/platform_projects.dart';
@@ -70,10 +86,19 @@ ProductionAgentStack buildProductionAgentStack({
   AgentDynamicContextProvider? dynamicContextProvider,
   AgentToolRegistry? tools,
   List<ToolId> enabledTools = const <ToolId>[],
+  ToolPermissionPolicy? interactivePolicy,
 }) {
   if ((repository == null) != (catalog == null)) {
     throw ArgumentError(
       'Repository and catalog replacements must be supplied together.',
+    );
+  }
+  if (interactivePolicy != null && interactivePolicy.id != PolicyId('allow')) {
+    throw ArgumentError.value(
+      interactivePolicy.id.value,
+      'interactivePolicy',
+      'The interactive policy must keep the stable "allow" id so existing '
+          'sessions resolve it without a migration.',
     );
   }
   final durableStore = repository == null
@@ -165,12 +190,13 @@ ProductionAgentStack buildProductionAgentStack({
     llm: RegistryAgentSummaryLlmInvocation(registry),
     contextEstimator: contextEstimator,
   );
+  final interactiveTools = enabledTools.isNotEmpty || interactivePolicy != null;
   final runtime = InMemoryAgentRuntime(
     registry: registry,
     tools: tools ?? AgentToolRegistry(),
     policies: <String, ToolPermissionPolicy>{
       'deny': const DenyAllPolicy(),
-      'allow': const AllowAllPolicy(),
+      'allow': interactivePolicy ?? const AllowAllPolicy(),
     },
     repository: resolvedRepository,
     router: InMemorySessionRouter(),
@@ -187,7 +213,7 @@ ProductionAgentStack buildProductionAgentStack({
     runtime: runtime,
     promptDefinition: PromptWorkspace.definition(
       enabledTools: enabledTools,
-      policy: enabledTools.isEmpty ? PolicyId('deny') : PolicyId('allow'),
+      policy: interactiveTools ? PolicyId('allow') : PolicyId('deny'),
       runLimits: PromptWorkspace.interactiveLimits,
     ),
     credentials: credentials,
@@ -197,6 +223,396 @@ ProductionAgentStack buildProductionAgentStack({
   );
 }
 
+/// Build flavor selected with `--dart-define=DOMOVOY_FLAVOR=aurora`.
+///
+/// Aurora can report `Platform.isLinux`, so the composition needs an explicit
+/// fact to disable third-party stdio, pause automation in background and use
+/// the in-process stream transport until a device smoke confirms loopback.
+const domovoyBuildFlavor = String.fromEnvironment('DOMOVOY_FLAVOR');
+
+bool get isAuroraBuildFlavor => domovoyBuildFlavor == 'aurora';
+
+/// Platform capabilities when no explicit composition override is supplied.
+McpPlatformCapabilities defaultMcpPlatformCapabilities() {
+  if (kIsWeb) {
+    return McpPlatformCapabilities.web;
+  }
+  if (defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS) {
+    return McpPlatformCapabilities.mobile;
+  }
+  return McpPlatformCapabilities.desktop;
+}
+
+/// Injectable storage, platform facts and policy overrides of the MCP stack.
+///
+/// Every field is optional; `null` platform storage means "this build has no
+/// such storage" and the composition falls back to an in-memory store (user
+/// connections and tool selections) or leaves the owning server unregistered
+/// (library and automation), never inventing an ad hoc file path.
+final class McpCompositionInputs {
+  const McpCompositionInputs({
+    this.connectionStorage,
+    this.selectionStorage,
+    this.libraryStorage,
+    this.automationStorage,
+    this.automationChatStorage,
+    this.secretVault,
+    this.capabilities,
+    this.localTransportPreference = McpLocalTransportPreference.auto,
+    this.forceDisableStdio = false,
+    this.stdioDisabledReason,
+    this.pauseAutomationInBackground = false,
+    this.legacyDiscoveryTimeout = defaultMcpLegacyDiscoveryTimeout,
+    this.diagnostics = const NoopMcpDiagnosticsSink(),
+    this.arxivHttpAdapter,
+    this.arxivClock,
+    this.automationClock,
+  });
+
+  final JsonlStreamStorage? connectionStorage;
+  final JsonlStreamStorage? selectionStorage;
+  final JsonlStreamStorage? libraryStorage;
+  final JsonlStreamStorage? automationStorage;
+  final JsonlStreamStorage? automationChatStorage;
+  final McpSecretVault? secretVault;
+  final McpPlatformCapabilities? capabilities;
+  final McpLocalTransportPreference localTransportPreference;
+  final bool forceDisableStdio;
+  final String? stdioDisabledReason;
+  final bool pauseAutomationInBackground;
+  final Duration legacyDiscoveryTimeout;
+  final McpDiagnosticsSink diagnostics;
+
+  /// Test seam for the built-in `arxiv` server: controlled HTTP responses and
+  /// a virtual clock so the rate limiter never slows a test down.
+  final ArxivHttpAdapter? arxivHttpAdapter;
+  final ArxivClock? arxivClock;
+
+  /// Test seam for the scheduler clock (catch-up and DST scenarios).
+  final AutomationClock? automationClock;
+}
+
+/// Explicit production composition of the MCP host, the four built-in
+/// servers, the agent bridge, the permission feature and the tasks/library UI.
+///
+/// One instance is created by [DomovoyDependencies.production]; [initialize]
+/// starts the built-in servers, connects every configured client and loads the
+/// B7 permission store. Nothing here is implicit: the composition owns the
+/// lifecycle, and [close] releases scopes, stops the scheduler, the clients
+/// and the local servers in order.
+final class DomovoyMcpComposition {
+  DomovoyMcpComposition._({
+    required this.localServers,
+    required this.host,
+    required this.bridge,
+    required this.feature,
+    required this.connectionRepository,
+    required this.runtimeSecrets,
+    required this.secretVault,
+    required this.pins,
+    required this.runToolContexts,
+    required this.builtInConnectionIds,
+    required Set<String> declaredBuiltInConnectionIds,
+    required Map<String, String> builtInFailures,
+    required this.arxivFactory,
+    this.automation,
+    this.chatDeliveryStore,
+    this.tasks,
+    this.taskEditor,
+    this.library,
+    this.automationObserver,
+  }) : declaredBuiltInConnectionIds = Set<String>.unmodifiable(
+         declaredBuiltInConnectionIds,
+       ),
+       _builtInFailures = Map<String, String>.of(builtInFailures);
+
+  /// Starts the built-ins and connects every enabled saved connection.
+  ///
+  /// Errors from one built-in server are recorded in [builtInFailures] and do
+  /// not stop the others; configuration corruption is rethrown so the caller
+  /// can surface it.
+  static DomovoyMcpComposition build({
+    required AgentRuntime runtime,
+    required AgentToolRegistry tools,
+    required Map<String, ToolPermissionPolicy> policies,
+    required LlmProviderRegistry registry,
+    required AgentSessionRepository sessions,
+    required AgentSessionCatalog catalog,
+    required Set<String> piToolIds,
+    required McpCompositionInputs inputs,
+  }) {
+    final diagnostics = inputs.diagnostics;
+    final capabilities =
+        inputs.capabilities ?? defaultMcpPlatformCapabilities();
+    final secretVault = inputs.secretVault ?? InMemoryMcpSecretVault();
+    final runtimeSecrets = RuntimeMcpSecretResolver(fallback: secretVault);
+    final localServers = LocalMcpServerHost(
+      preference: inputs.localTransportPreference,
+      runtimeSecrets: runtimeSecrets,
+      diagnostics: diagnostics,
+    );
+    final transports = McpSdkTransportFactory(
+      streams: localServers,
+      diagnostics: diagnostics,
+      legacyDiscoveryTimeout: inputs.legacyDiscoveryTimeout,
+      stdioLauncher: createMcpStdioLauncher(
+        forceDisabled: inputs.forceDisableStdio,
+        disabledReason: inputs.stdioDisabledReason,
+        legacyDiscoveryTimeout: inputs.legacyDiscoveryTimeout,
+      ),
+    );
+    const builtInIds = <String>{'arxiv', 'digest', 'library', 'automation'};
+    final connectionRepository = AppOwnedMcpConnectionRepository(
+      userStore: inputs.connectionStorage == null
+          ? InMemoryMcpConnectionRepository()
+          : JsonlMcpConnectionStore(storage: inputs.connectionStorage!),
+      appOwnedConnectionIds: builtInIds,
+    );
+    final host = McpHostManager(
+      transports: transports,
+      repository: connectionRepository,
+      secrets: runtimeSecrets,
+      appOwnedConnectionIds: builtInIds,
+      diagnostics: diagnostics,
+    );
+
+    final pins = DigestModelPinRegistry(
+      scopeKeyOf: (scope) => scope.meta['domovoy/runScope'] as String?,
+    );
+    final runToolContexts = DigestRunToolContextFactory(pins: pins);
+
+    // --- Built-in servers of this device -------------------------------
+    final arxivFactory = ArxivMcpServerFactory(
+      httpAdapter: inputs.arxivHttpAdapter,
+      clock: inputs.arxivClock,
+    );
+    localServers.register(arxivFactory);
+    final digestFactory = DigestMcpServerFactory(
+      registry: registry,
+      pins: pins,
+    );
+    localServers.register(digestFactory);
+    final builtInFailures = <String, String>{};
+    final startedBuiltIns = <String>{'arxiv', 'digest'};
+
+    // Library owns the device library JSONL; without native storage the
+    // server is not registered at all (web/unknown targets).
+    if (inputs.libraryStorage != null) {
+      localServers.register(
+        LibraryMcpServerFactory(storage: inputs.libraryStorage!),
+      );
+      startedBuiltIns.add('library');
+    } else {
+      builtInFailures['library'] =
+          'На этой платформе нет локального хранилища библиотеки.';
+    }
+
+    // --- Automation: one scheduler shared by MCP tools and the UI -------
+    AutomationStack? automation;
+    JsonlAutomationChatDeliveryStore? chatDeliveryStore;
+    AutomationForegroundObserver? automationObserver;
+    AutomationResultDelivery? delivery;
+    if (inputs.automationStorage != null) {
+      final chatStorage = inputs.automationChatStorage;
+      if (chatStorage != null) {
+        chatDeliveryStore = JsonlAutomationChatDeliveryStore(
+          storage: chatStorage,
+        );
+        delivery = AutomationChatDeliverySink(
+          store: chatDeliveryStore,
+          chatExists: SessionRepositoryChatExistence(sessions),
+        );
+      }
+      automation = buildAutomationStack(
+        storage: inputs.automationStorage!,
+        runtime: runtime,
+        policies: policies,
+        models: registry,
+        tools: tools,
+        runToolContexts: runToolContexts,
+        delivery: delivery,
+        clock: inputs.automationClock,
+      );
+      localServers.register(
+        AutomationMcpServerFactory(service: automation.service),
+      );
+      startedBuiltIns.add('automation');
+      automationObserver = AutomationForegroundObserver(
+        service: automation.service,
+        pauseWhenBackgrounded: () => inputs.pauseAutomationInBackground,
+      );
+    } else {
+      builtInFailures['automation'] =
+          'На этой платформе нет локального хранилища задач.';
+    }
+
+    // --- Agent bridge + permissions -------------------------------------
+    final bridge = McpAgentToolBridge(
+      host: host,
+      digestScopeConnectionIds: const <String>{'digest'},
+      libraryRunIdConnectionIds: const <String>{'library'},
+    );
+    bridge.attachTo(tools);
+
+    final feature = McpFeature.build(
+      host: host,
+      repository: connectionRepository,
+      secrets: secretVault,
+      selections: inputs.selectionStorage == null
+          ? InMemoryMcpToolSelectionStore()
+          : JsonlMcpToolSelectionStore(storage: inputs.selectionStorage!),
+      capabilities: capabilities,
+      probeTransports: transports,
+      hostChanges: host,
+      builtInConnectionIds: builtInIds,
+      unavailableReasons: () => bridge.source.unavailableTools,
+    );
+
+    // The stable `allow` id is kept: legacy sessions resolve it without a
+    // migration, but its behavior now separates built-in identities from
+    // explicitly granted MCP routes and denies everything unknown.
+    policies['allow'] = CompositeToolAccessPolicy(
+      id: PolicyId('allow'),
+      piToolIds: piToolIds,
+      catalog: () => host.snapshot.catalog,
+      selectedToolIds: (invocation) => feature.toolAccess.effectiveToolIds(
+        chatId: invocation.sessionId,
+        projectId: invocation.projectId,
+      ),
+    );
+
+    TasksController? tasksController;
+    TaskEditorController? taskEditor;
+    LibraryController? libraryController;
+    if (automation != null) {
+      tasksController = TasksController(
+        service: automation.service,
+        delivery: delivery,
+      );
+      taskEditor = TaskEditorController(
+        service: automation.service,
+        mcpHost: host,
+        hostChanges: host,
+        chats: catalog,
+      );
+    }
+    if (startedBuiltIns.contains('library')) {
+      libraryController = LibraryController(host);
+    }
+
+    return DomovoyMcpComposition._(
+      localServers: localServers,
+      host: host,
+      bridge: bridge,
+      feature: feature,
+      connectionRepository: connectionRepository,
+      runtimeSecrets: runtimeSecrets,
+      secretVault: secretVault,
+      pins: pins,
+      runToolContexts: runToolContexts,
+      builtInConnectionIds: Set<String>.unmodifiable(startedBuiltIns),
+      declaredBuiltInConnectionIds: builtInIds,
+      builtInFailures: builtInFailures,
+      arxivFactory: arxivFactory,
+      automation: automation,
+      chatDeliveryStore: chatDeliveryStore,
+      tasks: tasksController,
+      taskEditor: taskEditor,
+      library: libraryController,
+      automationObserver: automationObserver,
+    );
+  }
+
+  final LocalMcpServerHost localServers;
+  final McpHostManager host;
+  final McpAgentToolBridge bridge;
+  final McpFeature feature;
+  final AppOwnedMcpConnectionRepository connectionRepository;
+  final RuntimeMcpSecretResolver runtimeSecrets;
+  final McpSecretVault secretVault;
+  final DigestModelPinRegistry pins;
+  final DigestRunToolContextFactory runToolContexts;
+
+  /// Ids of built-in servers actually started in this build.
+  final Set<String> builtInConnectionIds;
+
+  /// Every built-in id this build may own, started or not; user settings must
+  /// never be able to shadow any of them.
+  final Set<String> declaredBuiltInConnectionIds;
+
+  final Map<String, String> _builtInFailures;
+
+  /// Human-readable reasons built-ins are unavailable, including failures
+  /// discovered while starting them.
+  Map<String, String> get builtInErrors =>
+      Map<String, String>.unmodifiable(_builtInFailures);
+
+  final ArxivMcpServerFactory arxivFactory;
+  final AutomationStack? automation;
+  final JsonlAutomationChatDeliveryStore? chatDeliveryStore;
+  final TasksController? tasks;
+  final TaskEditorController? taskEditor;
+  final LibraryController? library;
+  final AutomationForegroundObserver? automationObserver;
+  Future<void>? _initializeFuture;
+  Future<void>? _closeFuture;
+
+  Future<void> initialize() => _initializeFuture ??= _initialize();
+
+  Future<void> _initialize() async {
+    for (final id in builtInConnectionIds) {
+      try {
+        await localServers.start(id);
+        connectionRepository.register(localServers.connectionConfig(id));
+      } on McpException catch (error) {
+        _builtInFailures[id] = error.error.message;
+      } on Object {
+        _builtInFailures[id] = 'Встроенный MCP-сервер не запустился.';
+      }
+    }
+    await host.start();
+    await feature.initialize();
+    final stack = automation;
+    if (stack != null) {
+      await stack.service.start();
+      automationObserver?.attach();
+    }
+  }
+
+  Future<void> close() => _closeFuture ??= _close();
+
+  Future<void> _close() async {
+    automationObserver?.detach();
+    try {
+      await automation?.service.stop();
+    } on Object {
+      // Scheduler shutdown is best effort; the app is closing.
+    }
+    pins.clear();
+    tasks?.dispose();
+    taskEditor?.dispose();
+    library?.dispose();
+    chatDeliveryStore?.dispose();
+    feature.dispose();
+    bridge.dispose();
+    try {
+      await host.stop();
+    } on Object {
+      // Connection shutdown is best effort.
+    }
+    host.dispose();
+    try {
+      await localServers.stopAll();
+    } on Object {
+      // Local server shutdown is best effort.
+    }
+    arxivFactory.dispose();
+  }
+}
+
+/// Delivery sink of the automation stack, or null when no durable card store
+/// exists on this platform (the tasks UI then reports delivery unavailable).
 ChatCompletionsDialect _dialectForReasoningFormat(
   ApiKeyProviderReasoningFormat format,
 ) => switch (format) {
@@ -226,6 +642,20 @@ String _newRuntimeNamespace() {
   return 'runtime-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-$nonce';
 }
 
+/// Fail-closed placeholder for the stable `allow` policy id.
+///
+/// `buildProductionAgentStack` publishes it synchronously, so legacy sessions
+/// resolve the same policy id they always used; [DomovoyMcpComposition.build]
+/// replaces the map entry with the composed permission policy before any run
+/// can start. Until then every call is denied.
+final class _McpInteractivePolicySlot implements ToolPermissionPolicy {
+  @override
+  PolicyId get id => PolicyId('allow');
+
+  @override
+  ToolPermission decide(ToolInvocation invocation) => ToolPermission.deny;
+}
+
 final class DomovoyDependencies {
   DomovoyDependencies({
     required this.runtime,
@@ -242,6 +672,7 @@ final class DomovoyDependencies {
     this.memoryInspector,
     this.profileController,
     this.profileInterviewLlm,
+    this.mcp,
     DeepSeekModelSettingsStore? modelSettingsStore,
     http.Client? httpClient,
     this.disposeCallback,
@@ -252,6 +683,7 @@ final class DomovoyDependencies {
   factory DomovoyDependencies.production({
     http.Client? httpClient,
     ProviderCredentialStore? credentialStore,
+    McpCompositionInputs? mcpInputs,
   }) {
     const storage = FlutterSecureStorage();
     final overrideStore = SecureApiKeyOverrideStore(storage);
@@ -291,11 +723,15 @@ final class DomovoyDependencies {
     );
     final projectStack = createPlatformProjectStack();
     final localTools = createLocalWorkspaceTools(projectStack);
+    // The interactive policy starts fail-closed and is replaced by the MCP
+    // composition below; no run can start before that replacement happens.
+    final interactivePolicy = _McpInteractivePolicySlot();
     final stack = buildProductionAgentStack(
       httpClient: client,
       credentials: credentials,
       tools: localTools.registry,
       enabledTools: localTools.enabled,
+      interactivePolicy: interactivePolicy,
       dynamicContextProvider:
           CompositeAgentDynamicContextProvider(<AgentDynamicContextProvider>[
             PersonalizationDynamicContextProvider(catalog: profileCatalog),
@@ -304,6 +740,39 @@ final class DomovoyDependencies {
               toggles: memoryToggles,
             ),
           ]),
+    );
+    final aurora = isAuroraBuildFlavor;
+    final resolvedMcpInputs =
+        mcpInputs ??
+        McpCompositionInputs(
+          connectionStorage: createPlatformMcpJsonlStreamStorage(),
+          selectionStorage: createPlatformMcpJsonlStreamStorage(),
+          libraryStorage: createPlatformLibraryJsonlStreamStorage(),
+          automationStorage: createPlatformAutomationJsonlStreamStorage(),
+          automationChatStorage:
+              createPlatformAutomationChatJsonlStreamStorage(),
+          secretVault: FlutterSecureMcpSecretVault(
+            FlutterSecureStringStore(storage),
+          ),
+          capabilities: aurora
+              ? McpPlatformCapabilities.aurora
+              : defaultMcpPlatformCapabilities(),
+          forceDisableStdio: aurora,
+          stdioDisabledReason: aurora ? auroraStdioDisabledReason : null,
+          pauseAutomationInBackground: aurora,
+          localTransportPreference: aurora
+              ? McpLocalTransportPreference.stream
+              : McpLocalTransportPreference.auto,
+        );
+    final mcp = DomovoyMcpComposition.build(
+      runtime: stack.runtime,
+      tools: stack.runtime.tools,
+      policies: stack.runtime.policies,
+      registry: stack.registry,
+      sessions: stack.repository,
+      catalog: stack.catalog,
+      piToolIds: <String>{for (final id in localTools.enabled) id.value},
+      inputs: resolvedMcpInputs,
     );
     final profileController = ProfileController(
       profiles: profileRepository,
@@ -358,6 +827,7 @@ final class DomovoyDependencies {
       memoryInspector: memoryInspector,
       profileController: profileController,
       profileInterviewLlm: profileInterviewLlm,
+      mcp: mcp,
     );
   }
 
@@ -376,9 +846,22 @@ final class DomovoyDependencies {
   final MemoryInspectorController? memoryInspector;
   final ProfileController? profileController;
   final ProfileInterviewLlm? profileInterviewLlm;
+  final DomovoyMcpComposition? mcp;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
+  Future<void>? _mcpInitializationFuture;
+
+  /// Starts built-in MCP servers, connects configured clients and loads the
+  /// durable permission store. Called by the app shell after the first frame
+  /// so the UI can show statuses while connections settle.
+  Future<void> initializeMcp() {
+    final composition = mcp;
+    if (composition == null) {
+      return Future<void>.value();
+    }
+    return _mcpInitializationFuture ??= composition.initialize();
+  }
 
   Future<void> close() => _closeFuture ??= _close();
 
@@ -389,6 +872,11 @@ final class DomovoyDependencies {
       profileController?.dispose();
     } on Object catch (error) {
       firstError = sanitizeCloseFailure(error);
+    }
+    try {
+      await mcp?.close();
+    } on Object catch (error) {
+      firstError ??= sanitizeCloseFailure(error);
     }
     try {
       await runtime.close();
@@ -445,6 +933,13 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     final dependencies = widget.dependencies;
     unawaited(dependencies.profileController?.initialize());
+    unawaited(
+      dependencies.initializeMcp().catchError((Object error, StackTrace _) {
+        // Connection and configuration failures are visible through the MCP
+        // connection page and host snapshot; the shell stays usable.
+      }),
+    );
+    final mcp = dependencies.mcp;
     _chatController = ChatWorkspaceController(
       runtime: dependencies.runtime,
       definition: dependencies.promptDefinition,
@@ -453,6 +948,8 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
       registry: dependencies.registry,
       providerModelCatalog: dependencies.providerModelCatalog,
       onTurnCompleted: dependencies.memoryInspector?.recordCompletedTurn,
+      chatDeliveries: mcp?.chatDeliveryStore,
+      runToolContexts: mcp?.runToolContexts,
       settingsLauncher: _ApiKeyDialogLauncher(
         navigatorKey: _navigatorKey,
         overrideStore: dependencies.overrideStore,
@@ -536,6 +1033,10 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               themeMode: _themeMode,
               onThemeModeChanged: _setThemeMode,
               providersView: _providersView(),
+              mcpToolAccess: widget.dependencies.mcp?.feature.toolAccess,
+              onOpenTasks: _openTasks,
+              onOpenLibrary: _openLibrary,
+              onOpenMcpConnections: _openMcpConnections,
             )
           : ProjectWorkspacePage(
               controller: _projectController!,
@@ -545,11 +1046,62 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               themeMode: _themeMode,
               onThemeModeChanged: _setThemeMode,
               providersView: _providersView(),
+              mcpToolAccess: widget.dependencies.mcp?.feature.toolAccess,
+              onOpenTasks: _openTasks,
+              onOpenLibrary: _openLibrary,
+              onOpenMcpConnections: _openMcpConnections,
             ),
     );
   }
 
   void _setThemeMode(ThemeMode mode) => setState(() => _themeMode = mode);
+
+  VoidCallback? get _openTasks {
+    final composition = widget.dependencies.mcp;
+    if (composition == null ||
+        composition.tasks == null ||
+        composition.taskEditor == null) {
+      return null;
+    }
+    return () => _pushSection(
+      _TasksSection(
+        dependencies: widget.dependencies,
+        composition: composition,
+      ),
+    );
+  }
+
+  VoidCallback? get _openLibrary {
+    final composition = widget.dependencies.mcp;
+    if (composition == null || composition.library == null) {
+      return null;
+    }
+    return () =>
+        _pushSection(_LibrarySection(controller: composition.library!));
+  }
+
+  VoidCallback? get _openMcpConnections {
+    final composition = widget.dependencies.mcp;
+    if (composition == null) {
+      return null;
+    }
+    return () => _pushSection(
+      Scaffold(
+        appBar: AppBar(title: const Text('MCP-подключения')),
+        body: composition.feature.buildConnectionsPage(),
+      ),
+    );
+  }
+
+  void _pushSection(Widget page) {
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) {
+      return;
+    }
+    navigator
+        .push<void>(MaterialPageRoute<void>(builder: (_) => page))
+        .ignore();
+  }
 
   Widget? _providersView() {
     final dependencies = widget.dependencies;
@@ -606,4 +1158,46 @@ final class _ApiKeyDialogLauncher implements ChatSettingsLauncher {
       modelSettingsStore: modelSettingsStore,
     );
   }
+}
+
+/// Tasks section route: the page keeps the same controller/service instances
+/// as the rest of the application, and [TasksPage.availableModels] is rebuilt
+/// from the live provider catalog on every discovery snapshot.
+class _TasksSection extends StatelessWidget {
+  const _TasksSection({required this.dependencies, required this.composition});
+
+  final DomovoyDependencies dependencies;
+  final DomovoyMcpComposition composition;
+
+  @override
+  Widget build(BuildContext context) {
+    final tasks = composition.tasks!;
+    final editor = composition.taskEditor!;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Задачи')),
+      body: StreamBuilder<ProviderCatalogSnapshot>(
+        stream: dependencies.providerModelCatalog?.updates,
+        builder: (context, snapshot) => TasksPage(
+          controller: tasks,
+          editor: editor,
+          availableModels: <ModelRef>[
+            for (final model in dependencies.registry.models) model.ref,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Library section route over the single `library` MCP read API.
+class _LibrarySection extends StatelessWidget {
+  const _LibrarySection({required this.controller});
+
+  final LibraryController controller;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Библиотека')),
+    body: LibraryPage(controller: controller),
+  );
 }

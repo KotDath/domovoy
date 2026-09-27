@@ -41,6 +41,9 @@ class WorkspaceShell extends StatefulWidget {
     this.onOpenMemory,
     this.memorySelected = false,
     this.headerAction,
+    this.onOpenTasks,
+    this.onOpenLibrary,
+    this.onOpenMcpConnections,
     super.key,
   });
 
@@ -79,6 +82,11 @@ class WorkspaceShell extends StatefulWidget {
 
   /// Optional MCP/feature action rendered in the header next to the title.
   final Widget? headerAction;
+
+  /// Composed sections opened from the sidebar; null hides the entry point.
+  final VoidCallback? onOpenTasks;
+  final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenMcpConnections;
 
   @override
   State<WorkspaceShell> createState() => _WorkspaceShellState();
@@ -125,6 +133,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       usageSelected: widget.usageSelected,
       profilesSelected: widget.profilesSelected,
       providersSelected: widget.providersSelected,
+      onOpenTasks: widget.onOpenTasks,
+      onOpenLibrary: widget.onOpenLibrary,
+      onOpenMcpConnections: widget.onOpenMcpConnections,
     );
     return CallbackShortcuts(
       bindings: shortcuts,
