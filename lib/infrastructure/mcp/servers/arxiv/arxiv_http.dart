@@ -46,11 +46,20 @@ abstract interface class ArxivHttpAdapter {
 ///   to another host;
 /// - invalid UTF-8 is a protocol failure instead of a replacement-character
 ///   soup;
+/// - the request carries `Abortable.abortTrigger` (`package:http` 1.6), so
+///   the deadline aborts the request instead of only abandoning its future;
+///   the adapter then waits for the transport to settle (aborted) before it
+///   reports the timeout, which keeps the caller's single-request queue from
+///   being released while a socket is demonstrably still pending;
+/// - [settleTimeout] bounds that post-abort wait for injected clients that
+///   ignore `abortTrigger`: after it elapses the timeout is reported even
+///   though the connection could not be confirmed as settled;
 /// - no PDF link is ever requested: only the injected query URL is fetched.
 final class HttpArxivHttpAdapter implements ArxivHttpAdapter {
   HttpArxivHttpAdapter({
     http.Client? client,
     this.maxResponseBytes = 2 * 1024 * 1024,
+    this.settleTimeout = const Duration(seconds: 5),
   }) : _client = client ?? http.Client(),
        _ownsClient = client == null;
 
@@ -61,32 +70,51 @@ final class HttpArxivHttpAdapter implements ArxivHttpAdapter {
   final bool _ownsClient;
   final int maxResponseBytes;
 
+  /// Extra time allowed for a timed-out transport to settle before the
+  /// timeout is reported. It is observable only for clients that do not honor
+  /// `Abortable.abortTrigger`; clients that do settle immediately on abort.
+  final Duration settleTimeout;
+
   @override
   Future<ArxivHttpResponse> get(Uri url, {required Duration timeout}) async {
-    try {
-      final request = http.Request('GET', url)
-        ..followRedirects = false
-        ..headers['accept'] = _accept;
-      final response = await _client.send(request).timeout(timeout);
-      final bytes = <int>[];
-      await for (final chunk in response.stream.timeout(timeout)) {
-        bytes.addAll(chunk);
-        if (bytes.length > maxResponseBytes) {
-          throwArxiv(
-            ArxivFailureKind.protocol,
-            'Ответ arXiv превысил $maxResponseBytes байт.',
-          );
-        }
+    final abort = Completer<void>();
+    final deadline = Completer<void>();
+    final timer = Timer(timeout, () {
+      if (!deadline.isCompleted) {
+        deadline.complete();
       }
-      final body = utf8.decode(bytes, allowMalformed: false);
+      if (!abort.isCompleted) {
+        abort.complete();
+      }
+    });
+    Future<Object?>? pending;
+    try {
+      final request =
+          http.AbortableRequest('GET', url, abortTrigger: abort.future)
+            ..followRedirects = false
+            ..headers['accept'] = _accept;
+      final sendFuture = _client.send(request);
+      pending = sendFuture;
+      final response = await _race(deadline.future, sendFuture);
+      final bodyFuture = _readBody(response);
+      pending = bodyFuture;
+      final body = await _race(deadline.future, bodyFuture);
       return ArxivHttpResponse(
         statusCode: response.statusCode,
         body: body,
         headers: response.headers,
       );
+    } on _DeadlineExceeded {
+      await _settle(pending);
+      throwArxiv(
+        ArxivFailureKind.timeout,
+        'arXiv не ответил за ${timeout.inSeconds} с.',
+      );
     } on ArxivFailure {
       rethrow;
-    } on TimeoutException {
+    } on http.RequestAbortedException {
+      // The abort trigger belongs to this adapter, so an aborted request can
+      // only mean that the deadline fired.
       throwArxiv(
         ArxivFailureKind.timeout,
         'arXiv не ответил за ${timeout.inSeconds} с.',
@@ -98,6 +126,63 @@ final class HttpArxivHttpAdapter implements ArxivHttpAdapter {
         ArxivFailureKind.protocol,
         'Ответ arXiv не является текстом UTF-8.',
       );
+    } finally {
+      timer.cancel();
+    }
+  }
+
+  /// Completes with [operation]'s result, or with [_DeadlineExceeded] as soon
+  /// as [deadline] completes.
+  Future<T> _race<T>(Future<void> deadline, Future<T> operation) {
+    final completer = Completer<T>();
+    operation.then(
+      (value) {
+        if (!completer.isCompleted) {
+          completer.complete(value);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      },
+    );
+    deadline.whenComplete(() {
+      if (!completer.isCompleted) {
+        completer.completeError(const _DeadlineExceeded());
+      }
+    });
+    return completer.future;
+  }
+
+  Future<String> _readBody(http.StreamedResponse response) async {
+    final bytes = <int>[];
+    await for (final chunk in response.stream) {
+      bytes.addAll(chunk);
+      if (bytes.length > maxResponseBytes) {
+        throwArxiv(
+          ArxivFailureKind.protocol,
+          'Ответ arXiv превысил $maxResponseBytes байт.',
+        );
+      }
+    }
+    return utf8.decode(bytes, allowMalformed: false);
+  }
+
+  /// Waits, bounded by [settleTimeout], for a timed-out operation to settle.
+  ///
+  /// A client that honors the abort trigger settles almost immediately with
+  /// the abort error; a client that ignores it may never settle, in which
+  /// case the bound keeps the queue from blocking forever.
+  Future<void> _settle(Future<Object?>? pending) async {
+    if (pending == null) {
+      return;
+    }
+    try {
+      await pending.timeout(settleTimeout);
+    } on Object {
+      // Settled with an error (the expected abort) or the bound elapsed; the
+      // timeout failure below is authoritative either way.
     }
   }
 
@@ -107,4 +192,8 @@ final class HttpArxivHttpAdapter implements ArxivHttpAdapter {
       _client.close();
     }
   }
+}
+
+final class _DeadlineExceeded implements Exception {
+  const _DeadlineExceeded();
 }
