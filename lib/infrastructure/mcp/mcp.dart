@@ -1,5 +1,6 @@
 export 'config/jsonl_mcp_connection_store.dart';
 export 'config/jsonl_mcp_storage_factory.dart';
+export 'config/jsonl_mcp_tool_selection_store.dart';
 export 'host/mcp_host_manager.dart';
 export 'local/local_http_launcher.dart';
 export 'local/local_mcp_definition.dart';

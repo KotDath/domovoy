@@ -5,4 +5,5 @@ export 'host.dart';
 export 'ids.dart';
 export 'naming.dart';
 export 'protocol.dart';
+export 'tool_selection.dart';
 export 'transport.dart';
