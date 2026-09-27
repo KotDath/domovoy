@@ -502,6 +502,8 @@ void main() {
       final runs = await harness.repository.listRuns(taskId: task.taskId);
       expect(runs.single.status, AutomationRunStatus.interrupted);
       expect(runs.single.error!.message, contains('в фон'));
+      // An interrupted run is never delivered anywhere.
+      expect(runs.single.delivery, isNull);
 
       // In the background nothing new fires.
       harness.clock.advance(const Duration(minutes: 10));
@@ -863,10 +865,10 @@ final class _RecordingDelivery implements AutomationResultDelivery {
 
   @override
   Future<AutomationDeliveryResult?> deliver({
-    required AutomationTask task,
+    required AutomationDelivery target,
     required AutomationRun run,
   }) async {
-    deliveries.add(task.delivery.chatId!);
+    deliveries.add(target.chatId!);
     return const AutomationDeliveryResult(
       delivered: true,
       reference: 'chat-message-1',

@@ -111,9 +111,13 @@ abstract interface class AutomationResultCancellation {
 /// B8/B9 provide the real implementation; when it is absent, a chat delivery
 /// is recorded as not delivered with a visible reason instead of being
 /// silently dropped.
+///
+/// The [target] is the delivery snapshot pinned when the run started, not the
+/// current task record: editing the task (including its chat) while a run
+/// executes must not reroute that run's result.
 abstract interface class AutomationResultDelivery {
   Future<AutomationDeliveryResult?> deliver({
-    required AutomationTask task,
+    required AutomationDelivery target,
     required AutomationRun run,
   });
 }

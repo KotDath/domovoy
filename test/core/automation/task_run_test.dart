@@ -175,6 +175,7 @@ void main() {
       startedAt: DateTime.utc(2026, 1, 1, 12, 5, 1),
       model: automationModel(),
       allowedToolIds: const <String>['mcp_arxiv__search_papers'],
+      deliveryTarget: const AutomationDelivery.chat('chat-1'),
     );
 
     test('round-trips a terminal run with trace and delivery', () {
@@ -205,11 +206,23 @@ void main() {
       expect(decoded.toolCalls, 1);
       expect(decoded.trace.single.name, 'mcp_arxiv__search_papers');
       expect(decoded.delivery?.delivered, isTrue);
+      expect(decoded.deliveryTarget?.chatId, 'chat-1');
       expect(decoded.revision, 1);
       expect(
         decoded.scheduleKeyValue,
         'atm_00000000000000000000000000000001@2026-01-01T12:05:00.000Z',
       );
+    });
+
+    test('round-trips the pinned delivery target', () {
+      final run = runningRun();
+      final decoded = AutomationRun.fromJson(run.toJson());
+      expect(decoded.deliveryTarget?.kind, AutomationDeliveryKind.chat);
+      expect(decoded.deliveryTarget?.chatId, 'chat-1');
+      // A legacy record without the field stays readable.
+      final legacy = Map<String, Object?>.from(run.toJson())
+        ..remove('deliveryTarget');
+      expect(AutomationRun.fromJson(legacy).deliveryTarget, isNull);
     });
 
     test('rejects inconsistent running and terminal states', () {

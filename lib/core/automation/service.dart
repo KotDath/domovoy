@@ -361,6 +361,72 @@ final class AutomationService {
     );
   }
 
+  /// Edits an existing task from the tasks UI (B8).
+  ///
+  /// Human-only by design: the method has no origin parameter, the MCP server
+  /// exposes no update tool, and a scheduled run can never call it. The draft
+  /// is validated like a new task (cron reachability, IANA zone, limits) and
+  /// the optimistic [expectedRevision] must match the stored revision.
+  ///
+  /// State semantics are explicit:
+  /// - `active` stays active and gets `nextDueAt` strictly after now;
+  /// - `paused` stays paused with no plan; the new schedule takes effect on
+  ///   resume;
+  /// - `proposed` stays a proposal and only updates the preview;
+  /// - `completed` stays completed (use run-now or a new task to run again).
+  ///
+  /// A run that is already executing keeps its starting snapshot: prompt,
+  /// model, tools, limits and delivery of that run do not change.
+  Future<AutomationTask> updateTask(
+    AutomationTaskId taskId,
+    AutomationTaskDraft draft, {
+    int? expectedRevision,
+  }) async {
+    final task = await _requireTask(taskId);
+    draft.schedule.validate(timeZones);
+    final now = clock.nowUtc();
+    final AutomationTaskState state;
+    final DateTime? nextDueAt;
+    switch (task.state) {
+      case AutomationTaskState.active:
+        state = AutomationTaskState.active;
+        nextDueAt = _requireNextOccurrence(draft.schedule, now);
+      case AutomationTaskState.paused:
+        state = AutomationTaskState.paused;
+        nextDueAt = null;
+      case AutomationTaskState.proposed:
+        state = AutomationTaskState.proposed;
+        nextDueAt = _requireNextOccurrence(draft.schedule, now);
+      case AutomationTaskState.completed:
+        state = AutomationTaskState.completed;
+        nextDueAt = null;
+      case AutomationTaskState.deleted:
+        throwAutomation(
+          AutomationErrorKind.notFound,
+          'Задача ${taskId.value} не найдена.',
+        );
+    }
+    final next = task
+        .copyWith(
+          name: draft.name,
+          prompt: draft.prompt,
+          schedule: draft.schedule,
+          model: draft.model,
+          allowedToolIds: draft.allowedToolIds,
+          delivery: draft.delivery,
+          state: state,
+          nextDueAt: nextDueAt,
+          revision: task.revision + 1,
+          updatedAt: now,
+        )
+        .validateAgainst(limits);
+    return _saveTask(
+      task,
+      next,
+      expectedRevision: expectedRevision ?? task.revision,
+    );
+  }
+
   /// Starts a manual run now; the planned `nextDueAt` does not move and the
   /// `(taskId, scheduledAt)` period key stays free for the scheduled run.
   ///
@@ -831,6 +897,7 @@ final class AutomationService {
       finishedAt: finishedAt,
       model: task.model,
       allowedToolIds: task.allowedToolIds,
+      deliveryTarget: task.delivery,
       error: error,
       aggregatedSkippedCount: aggregatedSkippedCount,
       skippedFrom: skippedFrom,
@@ -1040,15 +1107,16 @@ final class AutomationService {
     return terminal;
   }
 
+  /// Routes the result by the delivery target pinned when the run started.
+  ///
+  /// The current task record is never consulted: editing a task while its run
+  /// executes (including changing the chat) changes only later runs.
   Future<AutomationDeliveryResult?> _deliver(
     AutomationRun persisted,
     AutomationRun reference,
   ) async {
-    final task = await tasks.findTask(persisted.taskId);
-    if (task == null) {
-      return null;
-    }
-    if (task.delivery.kind == AutomationDeliveryKind.tasks) {
+    final target = reference.deliveryTarget;
+    if (target == null || target.kind == AutomationDeliveryKind.tasks) {
       return AutomationDeliveryResult(
         delivered: true,
         reference: persisted.runId.runRef,
@@ -1064,7 +1132,7 @@ final class AutomationService {
       );
     }
     try {
-      return await sink.deliver(task: task, run: reference);
+      return await sink.deliver(target: target, run: reference);
     } on Object {
       return const AutomationDeliveryResult(
         delivered: false,

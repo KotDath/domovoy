@@ -253,8 +253,10 @@ final class AutomationDeliveryResult {
 ///
 /// The first record of a run stream holds status `running`; the terminal record
 /// replaces it after the executor settles. `(taskId, scheduledAt)` is the
-/// idempotency identity: a period is never executed twice, including after a
-/// crash, and history is never rewritten by a later run.
+/// idempotency identity of a **period**: a scheduled, catch-up or skipped
+/// period is never executed twice, including after a crash, and history is
+/// never rewritten by a later run. Manual runs do not occupy a period: they are
+/// distinct by [runId] and never consume the schedule.
 final class AutomationRun {
   AutomationRun({
     required String runId,
@@ -267,6 +269,7 @@ final class AutomationRun {
     DateTime? finishedAt,
     required this.model,
     Iterable<String> allowedToolIds = const <String>[],
+    this.deliveryTarget,
     this.resultText,
     this.error,
     this.aggregatedSkippedCount = 0,
@@ -348,6 +351,9 @@ final class AutomationRun {
       finishedAt: _optionalUtc(finishedRaw, 'finishedAt'),
       model: _modelRefFromJson(map['model']),
       allowedToolIds: _toolIdsFromJson(map['allowedToolIds']),
+      deliveryTarget: map['deliveryTarget'] == null
+          ? null
+          : AutomationDelivery.fromJson(map['deliveryTarget']),
       resultText: _optionalText(map['resultText'], 'resultText'),
       error: map['error'] == null
           ? null
@@ -392,6 +398,13 @@ final class AutomationRun {
   /// Tools pinned when the run started.
   final List<String> allowedToolIds;
 
+  /// Delivery target pinned when the run started.
+  ///
+  /// An edit of the task while the run executes changes only later runs; the
+  /// result is routed by this snapshot, not by the current task record. Null
+  /// only for legacy records written before the field existed.
+  final AutomationDelivery? deliveryTarget;
+
   final String? resultText;
   final AutomationRunError? error;
 
@@ -410,7 +423,10 @@ final class AutomationRun {
   final AutomationDeliveryResult? delivery;
   final int revision;
 
-  /// Stable `(taskId, scheduledAt)` identity used for idempotency checks.
+  /// Stable `(taskId, scheduledAt)` identity of a **period**.
+  ///
+  /// Only scheduled, catch-up and skipped runs share this identity; manual
+  /// runs are distinct by [runId] and never consume a period.
   static String scheduleKey(AutomationTaskId taskId, DateTime scheduledAt) =>
       '${taskId.value}@${scheduledAt.toUtc().toIso8601String()}';
 
@@ -431,6 +447,7 @@ final class AutomationRun {
       'modelId': model.modelId.value,
     },
     'allowedToolIds': allowedToolIds,
+    if (deliveryTarget != null) 'deliveryTarget': deliveryTarget!.toJson(),
     if (resultText != null) 'resultText': resultText,
     if (error != null) 'error': error!.toJson(),
     'aggregatedSkippedCount': aggregatedSkippedCount,
@@ -474,6 +491,7 @@ final class AutomationRun {
           : finishedAt as DateTime?,
       model: model,
       allowedToolIds: allowedToolIds,
+      deliveryTarget: deliveryTarget,
       resultText: identical(resultText, _unset)
           ? this.resultText
           : resultText as String?,
