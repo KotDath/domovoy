@@ -2,11 +2,13 @@ import 'dart:async';
 
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/automation/automation.dart';
+import 'package:domovoy/core/mcp/mcp.dart';
 import 'package:domovoy/infrastructure/mcp/servers/automation/automation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mcp_dart/mcp_dart.dart' as sdk;
 
 import '../../../../support/automation_fakes.dart';
+import '../../../../support/mcp_fakes.dart';
 
 /// `McpServer` that captures the registered tools so their schemas and
 /// callbacks can be exercised directly.
@@ -60,7 +62,7 @@ final class _AutomationHarness {
   });
 
   final AutomationService service;
-  final InMemoryAutomationRepository repository;
+  final AutomationRepository repository;
   final FakeAutomationClock clock;
   final ScriptedAutomationExecutor executor;
   final AutomationMcpServerFactory factory;
@@ -69,13 +71,14 @@ final class _AutomationHarness {
   static Future<_AutomationHarness> start({
     AutomationLimits limits = const AutomationLimits(),
     DateTime? now,
+    AutomationRepository? repository,
   }) async {
-    final repository = InMemoryAutomationRepository();
+    final resolved = repository ?? InMemoryAutomationRepository();
     final clock = FakeAutomationClock(now ?? DateTime.utc(2026, 1, 1, 12));
     final executor = ScriptedAutomationExecutor();
     final service = AutomationService(
-      tasks: repository,
-      runs: repository,
+      tasks: resolved,
+      runs: resolved,
       executor: executor,
       timeZones: automationTestZones(),
       clock: clock,
@@ -91,7 +94,7 @@ final class _AutomationHarness {
     factory.create().registerTools(server);
     return _AutomationHarness._(
       service: service,
-      repository: repository,
+      repository: resolved,
       clock: clock,
       executor: executor,
       factory: factory,
@@ -518,6 +521,212 @@ void main() {
     );
     expect(result.isError, isTrue);
     expect(resultText(result), startsWith('[automation:cancelled]'));
+  });
+
+  group('cancellation at the mutation boundary', () {
+    Future<void> pump([int rounds = 12]) async {
+      for (var index = 0; index < rounds; index += 1) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    Future<_AutomationHarness> gatedHarness(
+      GatedAutomationRepository repository,
+    ) => _AutomationHarness.start(repository: repository);
+
+    Map<String, Object?> createArgs() => <String, Object?>{
+      'name': 'Сводка',
+      'prompt': 'Собери.',
+      'cron': '*/5 * * * *',
+      'timeZone': 'Europe/Moscow',
+      'model': 'deepseek/deepseek-v4-flash',
+    };
+
+    test('create_task reports the committed proposal after an abort', () async {
+      final repository = GatedAutomationRepository(
+        InMemoryAutomationRepository(),
+      );
+      final gated = await gatedHarness(repository);
+      final controller = sdk.BasicAbortController();
+      repository.gate('createTask');
+
+      final call = gated.call(
+        automationCreateTaskToolName,
+        createArgs(),
+        signal: controller.signal,
+      );
+      await pump();
+      expect(repository.callsFor('createTask'), 1);
+      controller.abort('client cancelled');
+      repository.release('createTask');
+
+      final result = await call;
+      // The committed record is the truth: no fabricated cancellation error.
+      expect(result.isError, isFalse);
+      expect(result.structuredContent!['state'], 'proposed');
+      expect(await repository.listTasks(), hasLength(1));
+      await gated.dispose();
+    });
+
+    test('create_task aborts before the commit without a proposal', () async {
+      final repository = GatedAutomationRepository(
+        InMemoryAutomationRepository(),
+      );
+      final gated = await gatedHarness(repository);
+      final controller = sdk.BasicAbortController();
+      final before = repository.callsFor('listTasks');
+      repository.gate('listTasks');
+
+      final call = gated.call(
+        automationCreateTaskToolName,
+        createArgs(),
+        signal: controller.signal,
+      );
+      await pump();
+      expect(repository.callsFor('listTasks'), before + 1);
+      controller.abort('client cancelled');
+      repository.release('listTasks');
+
+      final result = await call;
+      expect(result.isError, isTrue);
+      expect(resultText(result), startsWith('[automation:cancelled]'));
+      expect(await repository.listTasks(), isEmpty);
+      await gated.dispose();
+    });
+
+    test(
+      'pause_task aborts before the commit without changing the task',
+      () async {
+        final repository = GatedAutomationRepository(
+          InMemoryAutomationRepository(),
+        );
+        final gated = await gatedHarness(repository);
+        final task = await gated.service.createTask(automationDraft());
+        final controller = sdk.BasicAbortController();
+        repository.gate('findTask');
+
+        final call = gated.call(automationPauseTaskToolName, <String, Object?>{
+          'taskId': task.taskId.value,
+          'paused': true,
+        }, signal: controller.signal);
+        await pump();
+        expect(repository.callsFor('findTask'), greaterThanOrEqualTo(1));
+        controller.abort('client cancelled');
+        repository.release('findTask');
+
+        final result = await call;
+        expect(result.isError, isTrue);
+        expect(resultText(result), startsWith('[automation:cancelled]'));
+        final stored = await repository.findTask(task.taskId);
+        expect(stored!.state, AutomationTaskState.active);
+        await gated.dispose();
+      },
+    );
+
+    test(
+      'run_task_now reports the committed interrupted record after an abort',
+      () async {
+        final repository = GatedAutomationRepository(
+          InMemoryAutomationRepository(),
+        );
+        final gated = await gatedHarness(repository);
+        final task = await gated.service.createTask(automationDraft());
+        final controller = sdk.BasicAbortController();
+        repository.gate('appendRun');
+
+        final call = gated.call(automationRunTaskNowToolName, <String, Object?>{
+          'taskId': task.taskId.value,
+        }, signal: controller.signal);
+        await pump();
+        expect(repository.callsFor('appendRun'), 1);
+        controller.abort('client cancelled');
+        repository.release('appendRun');
+
+        final result = await call;
+        expect(result.isError, isFalse);
+        expect(result.structuredContent!['status'], 'interrupted');
+        expect(
+          firstToolSchemaValueProblem(
+            _schemaMap(gated.tool(automationRunTaskNowToolName).outputSchema!),
+            _schemaMap(result.structuredContent!),
+          ),
+          isNull,
+        );
+        expect(gated.executor.requests, isEmpty);
+        final runs = await repository.listRuns(taskId: task.taskId);
+        expect(runs, hasLength(1));
+        expect(runs.single.status, AutomationRunStatus.interrupted);
+        await gated.dispose();
+      },
+    );
+
+    test('run_task_now aborts before the commit without launching', () async {
+      final repository = GatedAutomationRepository(
+        InMemoryAutomationRepository(),
+      );
+      final gated = await gatedHarness(repository);
+      final task = await gated.service.createTask(automationDraft());
+      final controller = sdk.BasicAbortController();
+      repository.gate('findTask');
+
+      final call = gated.call(automationRunTaskNowToolName, <String, Object?>{
+        'taskId': task.taskId.value,
+      }, signal: controller.signal);
+      await pump();
+      expect(repository.callsFor('findTask'), greaterThanOrEqualTo(1));
+      controller.abort('client cancelled');
+      repository.release('findTask');
+
+      final result = await call;
+      expect(result.isError, isTrue);
+      expect(resultText(result), startsWith('[automation:cancelled]'));
+      expect(gated.executor.requests, isEmpty);
+      expect(repository.inner.runs, isEmpty);
+      await gated.dispose();
+    });
+  });
+
+  group('annotations', () {
+    test('run_task_now is conservatively destructive', () {
+      expect(
+        harness.tool(automationRunTaskNowToolName).annotations!.destructiveHint,
+        isTrue,
+      );
+      expect(
+        harness.tool(automationCreateTaskToolName).annotations!.destructiveHint,
+        isFalse,
+      );
+      expect(
+        harness.tool(automationListTasksToolName).annotations!.destructiveHint,
+        isFalse,
+      );
+      expect(
+        harness.tool(automationPauseTaskToolName).annotations!.destructiveHint,
+        isFalse,
+      );
+    });
+
+    test('an interactive catalog grant makes run_task_now require approval', () {
+      final builder = McpCatalogBuilder();
+      builder.addConnection(McpConnectionId('automation'), <McpToolDescriptor>[
+        scriptedTool(
+          'automation',
+          'run_task_now',
+          annotations: const <String, Object?>{'destructiveHint': true},
+        ),
+      ]);
+      final grant = ToolAccessGrant.forMcpCatalog(
+        catalog: builder.build(),
+        allowedToolIds: <String>['mcp_automation__run_task_now'],
+      );
+      // The annotation only adds approval; the allowlist is still the authority.
+      expect(
+        grant.permissionFor('mcp_automation__run_task_now'),
+        ToolPermission.ask,
+      );
+      expect(grant.permits('mcp_automation__run_task_now'), isFalse);
+      expect(grant.permits('mcp_automation__other'), isFalse);
+    });
   });
 }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../llm/cancellation.dart';
 import 'clock.dart';
 import 'errors.dart';
 import 'events.dart';
@@ -127,6 +128,20 @@ final class AutomationService {
     }
   }
 
+  /// Pre-commit check of an MCP client cancellation token.
+  ///
+  /// The check happens at the mutation boundary, before the durable write.
+  /// After a write committed, the committed record is the truth and is
+  /// reported as success even when the client aborted mid-flight.
+  void _throwIfCancelled(CancellationToken? cancellation, String action) {
+    if (cancellation?.isCancelled ?? false) {
+      throwAutomation(
+        AutomationErrorKind.cancelled,
+        '$action отменён клиентом до сохранения.',
+      );
+    }
+  }
+
   /// Rechecks the live task record after a durable `running` record exists.
   ///
   /// Returns true when the agent session may still start for [planned]: the
@@ -246,10 +261,12 @@ final class AutomationService {
   ///
   /// [AutomationCallOrigin.agentTool] always produces a `proposed` task that
   /// waits for a human confirmation; [AutomationCallOrigin.scheduledRun] is
-  /// denied intrinsically.
+  /// denied intrinsically. [cancellation] is checked before the durable write;
+  /// once the task is committed it is returned as the committed truth.
   Future<AutomationTask> createTask(
     AutomationTaskDraft draft, {
     AutomationCallOrigin origin = AutomationCallOrigin.human,
+    CancellationToken? cancellation,
   }) async {
     _requireCreationOrigin(origin);
     draft.schedule.validate(timeZones);
@@ -281,6 +298,7 @@ final class AutomationService {
       createdAt: now,
       updatedAt: now,
     ).validateAgainst(limits);
+    _throwIfCancelled(cancellation, 'Создание задачи');
     final created = await tasks.createTask(task);
     _emitTask(created);
     await _armTimer();
@@ -291,6 +309,7 @@ final class AutomationService {
   Future<AutomationTask> confirmTask(
     AutomationTaskId taskId, {
     int? expectedRevision,
+    CancellationToken? cancellation,
   }) async {
     final task = await _requireTask(taskId);
     if (task.state != AutomationTaskState.proposed) {
@@ -302,6 +321,7 @@ final class AutomationService {
     }
     final now = clock.nowUtc();
     final nextDueAt = _requireNextOccurrence(task.schedule, now);
+    _throwIfCancelled(cancellation, 'Подтверждение задачи');
     return _saveTask(
       task,
       task.nextRevision(
@@ -342,6 +362,7 @@ final class AutomationService {
     AutomationTaskId taskId,
     bool paused, {
     int? expectedRevision,
+    CancellationToken? cancellation,
   }) async {
     final task = await _requireTask(taskId);
     final now = clock.nowUtc();
@@ -356,6 +377,7 @@ final class AutomationService {
           '${task.state.name}.',
         );
       }
+      _throwIfCancelled(cancellation, 'Приостановка задачи');
       return _saveTask(
         task,
         task.nextRevision(
@@ -377,6 +399,7 @@ final class AutomationService {
       );
     }
     final nextDueAt = _requireNextOccurrence(task.schedule, now);
+    _throwIfCancelled(cancellation, 'Возобновление задачи');
     return _saveTask(
       task,
       task.nextRevision(
@@ -392,10 +415,12 @@ final class AutomationService {
   Future<AutomationTask> deleteTask(
     AutomationTaskId taskId, {
     int? expectedRevision,
+    CancellationToken? cancellation,
   }) async {
     final task = await _requireTask(taskId);
     _active[task.taskId.value]?.cancel(reason: _CancellationReason.deleted);
     final now = clock.nowUtc();
+    _throwIfCancelled(cancellation, 'Удаление задачи');
     return _saveTask(
       task,
       task.nextRevision(
@@ -427,6 +452,7 @@ final class AutomationService {
     AutomationTaskId taskId,
     AutomationTaskDraft draft, {
     int? expectedRevision,
+    CancellationToken? cancellation,
   }) async {
     final task = await _requireTask(taskId);
     draft.schedule.validate(timeZones);
@@ -470,6 +496,7 @@ final class AutomationService {
           updatedAt: now,
         )
         .validateAgainst(limits);
+    _throwIfCancelled(cancellation, 'Изменение задачи');
     return _saveTask(
       task,
       next,
@@ -486,10 +513,15 @@ final class AutomationService {
   /// taken synchronously before the first store call and covers the whole
   /// start boundary, so two overlapping calls cannot both launch.
   ///
+  /// [cancellation] is the caller's abort token (MCP client). It is checked
+  /// before the durable commit; when the commit already happened and the caller
+  /// aborted, the committed record is closed as `interrupted` and returned
+  /// instead of a fabricated cancellation error.
   Future<AutomationRunHandle> runTaskNow(
     AutomationTaskId taskId, {
     AutomationCallOrigin origin = AutomationCallOrigin.human,
     int? expectedRevision,
+    CancellationToken? cancellation,
   }) async {
     if (origin == AutomationCallOrigin.scheduledRun) {
       throwAutomation(
@@ -514,6 +546,7 @@ final class AutomationService {
     try {
       final task = await _requireTask(taskId);
       _requireRunnable('Ручной запуск отменён');
+      _throwIfCancelled(cancellation, 'Ручной запуск');
       if (task.state == AutomationTaskState.deleted) {
         throwAutomation(AutomationErrorKind.notFound, 'Задача удалена.');
       }
@@ -535,6 +568,7 @@ final class AutomationService {
       // was awaiting; the live record decides.
       final current = await tasks.findTask(taskId);
       _requireRunnable('Ручной запуск отменён');
+      _throwIfCancelled(cancellation, 'Ручной запуск');
       if (current == null || !current.isAlive) {
         throwAutomation(
           AutomationErrorKind.notFound,
@@ -550,12 +584,32 @@ final class AutomationService {
       }
       final now = clock.nowUtc();
       _requireRunnable('Ручной запуск отменён');
+      _throwIfCancelled(cancellation, 'Ручной запуск');
       final run = await _createRunRecord(
         current,
         scheduledAt: now,
         trigger: AutomationRunTrigger.manual,
         startedAt: now,
       );
+      // The caller may have aborted while the record was being published. The
+      // committed record is the truth: close it as interrupted without
+      // starting an agent and report the committed outcome.
+      if (cancellation?.isCancelled ?? false) {
+        final terminal = await _abandonCommittedRun(
+          run,
+          message:
+              'Ручной запуск отменён клиентом после сохранения записи; агент '
+              'не запускался.',
+        );
+        return AutomationRunHandle(
+          runId: terminal.runId,
+          taskId: terminal.taskId,
+          trigger: terminal.trigger,
+          status: terminal.status,
+          scheduledAt: terminal.scheduledAt,
+          done: Future<AutomationRun>.value(terminal),
+        );
+      }
       if (!await _postCommitStartReady(current, requireActive: false)) {
         await _abandonCommittedRun(
           run,

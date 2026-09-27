@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:domovoy/core/automation/automation.dart';
+import 'package:domovoy/core/llm/llm.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/automation_fakes.dart';
@@ -301,6 +302,66 @@ void main() {
     expect(runs, hasLength(1));
     expect(runs.single.status, AutomationRunStatus.interrupted);
     expect(runs.single.trigger, AutomationRunTrigger.manual);
+    await harness.service.dispose();
+  });
+
+  test(
+    'an aborted manual start reports the committed interrupted record',
+    () async {
+      final harness = build();
+      await harness.service.start();
+      final task = await harness.service.createTask(automationDraft());
+      final cancellation = CancellationSource();
+      harness.repository.gate('appendRun');
+
+      final manual = harness.service.runTaskNow(
+        task.taskId,
+        cancellation: cancellation.token,
+      );
+      await pump();
+      expect(harness.repository.callsFor('appendRun'), 1);
+      cancellation.cancel();
+      harness.repository.release('appendRun');
+
+      final handle = await manual;
+      expect(handle.status, AutomationRunStatus.interrupted);
+      final terminal = await handle.done;
+      expect(terminal.status, AutomationRunStatus.interrupted);
+      expect(terminal.error!.kind, AutomationRunErrorKind.interrupted);
+      expect(harness.executor.requests, isEmpty);
+      expect(harness.repository.inner.runs, hasLength(1));
+      await harness.service.dispose();
+    },
+  );
+
+  test('an aborted manual start before the commit creates no record', () async {
+    final harness = build();
+    await harness.service.start();
+    final task = await harness.service.createTask(automationDraft());
+    final cancellation = CancellationSource();
+    harness.repository.gate('findTask');
+
+    final manual = harness.service.runTaskNow(
+      task.taskId,
+      cancellation: cancellation.token,
+    );
+    await pump();
+    expect(harness.repository.callsFor('findTask'), greaterThanOrEqualTo(1));
+    cancellation.cancel();
+    harness.repository.release('findTask');
+
+    await expectLater(
+      manual,
+      throwsA(
+        isA<AutomationException>().having(
+          (error) => error.error.kind,
+          'kind',
+          AutomationErrorKind.cancelled,
+        ),
+      ),
+    );
+    expect(harness.repository.inner.runs, isEmpty);
+    expect(harness.executor.requests, isEmpty);
     await harness.service.dispose();
   });
 

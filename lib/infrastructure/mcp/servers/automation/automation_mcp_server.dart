@@ -134,6 +134,7 @@ final class AutomationMcpServerFactory implements LocalMcpServerFactory {
       final task = await service.createTask(
         draft,
         origin: AutomationCallOrigin.agentTool,
+        cancellation: cancellation.token,
       );
       return _proposalSuccess(task);
     } on AutomationFailure catch (failure) {
@@ -202,6 +203,7 @@ final class AutomationMcpServerFactory implements LocalMcpServerFactory {
         request.taskId,
         request.paused,
         expectedRevision: request.expectedRevision,
+        cancellation: cancellation.token,
       );
       return _pauseSuccess(task, request.paused);
     } on AutomationFailure catch (failure) {
@@ -242,6 +244,7 @@ final class AutomationMcpServerFactory implements LocalMcpServerFactory {
         request.taskId,
         origin: AutomationCallOrigin.agentTool,
         expectedRevision: request.expectedRevision,
+        cancellation: cancellation.token,
       );
       return _runNowSuccess(handle);
     } on AutomationFailure catch (failure) {
@@ -691,15 +694,15 @@ final class AutomationMcpServerFactory implements LocalMcpServerFactory {
   }
 
   sdk.CallToolResult _runNowSuccess(AutomationRunHandle handle) {
-    return sdk.CallToolResult(
-      content: <sdk.Content>[
-        sdk.TextContent(
-          text:
-              'Запуск ${handle.runId.value} задачи ${handle.taskId.value} '
+    final text = handle.status == AutomationRunStatus.interrupted
+        ? 'Запуск ${handle.runId.value} задачи ${handle.taskId.value} был '
+              'отменён клиентом после сохранения записи: агент не запускался, '
+              'запись закрыта как interrupted и не повторяется.'
+        : 'Запуск ${handle.runId.value} задачи ${handle.taskId.value} '
               'создан сейчас; плановый момент не сдвигается. Статус можно '
-              'прочитать в разделе «Задачи» по runId.',
-        ),
-      ],
+              'прочитать в разделе «Задачи» по runId.';
+    return sdk.CallToolResult(
+      content: <sdk.Content>[sdk.TextContent(text: text)],
       structuredContent: <String, Object?>{
         'schemaVersion': 1,
         'taskId': handle.taskId.value,
@@ -789,9 +792,14 @@ final class AutomationMcpServerFactory implements LocalMcpServerFactory {
     openWorldHint: false,
   );
 
+  /// `run_task_now` starts another saved task whose own allowed tools may
+  /// write or delete data. The annotation is therefore conservative:
+  /// interactive grants built with `ToolAccessGrant.forMcpCatalog` add it to
+  /// the approval set, while the task's stable allowlist remains the actual
+  /// authority and scheduled grants already deny the tool intrinsically.
   static const _runNowAnnotations = sdk.ToolAnnotations(
     readOnlyHint: false,
-    destructiveHint: false,
+    destructiveHint: true,
     idempotentHint: false,
     openWorldHint: false,
   );
@@ -1058,7 +1066,9 @@ final class AutomationMcpServerFactory implements LocalMcpServerFactory {
         maxLength: 256,
         format: 'uri',
       ),
-      'status': sdk.JsonSchema.string(enumValues: const <String>['running']),
+      'status': sdk.JsonSchema.string(
+        enumValues: const <String>['running', 'interrupted'],
+      ),
       'trigger': sdk.JsonSchema.string(enumValues: const <String>['manual']),
       'scheduledAt': sdk.JsonSchema.string(format: 'date-time'),
     },
