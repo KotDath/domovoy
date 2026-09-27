@@ -124,6 +124,27 @@ void main() {
       expect(storage.keys, hasLength(1));
     });
 
+    test('keeps runId idempotency across a store restart', () async {
+      final first = await save(runId: 'run_1');
+      final reopened = JsonlLibraryStore(
+        storage: storage,
+        clock: clock,
+        ids: SequentialLibraryIdGenerator(),
+      );
+
+      final repeated = await reopened.save(
+        topic: 'Research topic',
+        papers: <Paper>[libraryPaper()],
+        digest: libraryDigest(),
+        runId: 'run_1',
+        cancellation: token,
+      );
+
+      expect(repeated.created, isFalse);
+      expect(repeated.record.libraryId, first.record.libraryId);
+      expect(storage.keys, hasLength(1));
+    });
+
     test('returns the same record when the paper order differs', () async {
       final first = await save(
         papers: <Paper>[
