@@ -72,6 +72,38 @@ class _TasksPageState extends State<TasksPage> {
     if (mounted) await widget.controller.refresh();
   }
 
+  Future<void> _delete(AutomationTask task) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить задачу?'),
+        content: Text(
+          '«${task.name}» больше не будет запускаться. История запусков останется на этом устройстве.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final result = await widget.controller.deleteTask(task.taskId);
+    if (!mounted) return;
+    if (result.isSuccess) {
+      setState(() => _showDetail = false);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.message ?? 'Не удалось удалить задачу.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = widget.controller.state;
@@ -127,6 +159,7 @@ class _TasksPageState extends State<TasksPage> {
             controller: widget.controller,
             task: selected,
             onEdit: () => _edit(selected),
+            onDelete: () => _delete(selected),
           );
     return Scaffold(
       appBar: AppBar(
@@ -183,10 +216,12 @@ class _TaskDetail extends StatelessWidget {
     required this.controller,
     required this.task,
     required this.onEdit,
+    required this.onDelete,
   });
   final TasksController controller;
   final AutomationTask task;
   final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -234,6 +269,11 @@ class _TaskDetail extends StatelessWidget {
                 child: const Text('Подтвердить задачу'),
               ),
             TextButton(onPressed: onEdit, child: const Text('Изменить')),
+            TextButton.icon(
+              onPressed: state.busy ? null : onDelete,
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Удалить'),
+            ),
           ],
         ),
         const Divider(),
@@ -265,7 +305,9 @@ class _TaskDetail extends StatelessWidget {
           ),
           if (run.resultText != null) SelectableText(run.resultText!),
           if (run.error != null) Text(run.error!.message),
-          if (run.deliveryTarget?.kind == AutomationDeliveryKind.chat)
+          if (run.deliveryTarget?.kind == AutomationDeliveryKind.chat &&
+              (run.status == AutomationRunStatus.succeeded ||
+                  run.status == AutomationRunStatus.failed))
             ListTile(
               title: Text(
                 run.delivery?.delivered == true

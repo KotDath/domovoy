@@ -17,19 +17,23 @@ final class LibraryController extends ChangeNotifier {
   bool loading = false;
   bool loadingDetail = false;
   int _generation = 0;
+  int _detailGeneration = 0;
+  bool _disposed = false;
 
   Future<void> refresh({String? search}) async {
+    if (_disposed) return;
     if (search != null) query = search;
     final generation = ++_generation;
+    final requestedQuery = query.trim();
     loading = true;
     error = null;
     notifyListeners();
     try {
       final payload = await _read('list_saved', {
-        if (query.trim().isNotEmpty) 'query': query.trim(),
+        if (requestedQuery.isNotEmpty) 'query': requestedQuery,
         'limit': 30,
       });
-      if (generation != _generation) return;
+      if (!_isCurrent(generation)) return;
       final records = payload['records'];
       if (payload['schemaVersion'] != 1 || records is! List) {
         throw const FormatException('Ответ списка библиотеки повреждён.');
@@ -37,9 +41,9 @@ final class LibraryController extends ChangeNotifier {
       cards = List<LibraryCard>.unmodifiable(records.map(LibraryCard.fromJson));
       nextCursor = payload['nextCursor'] as String?;
     } on Object catch (failure) {
-      if (generation == _generation) error = _message(failure);
+      if (_isCurrent(generation)) error = _message(failure);
     } finally {
-      if (generation == _generation) {
+      if (_isCurrent(generation)) {
         loading = false;
         notifyListeners();
       }
@@ -47,18 +51,22 @@ final class LibraryController extends ChangeNotifier {
   }
 
   Future<void> loadMore() async {
+    if (_disposed) return;
     final cursor = nextCursor;
     if (cursor == null || loading) return;
+    final generation = _generation;
+    final requestedQuery = query.trim();
     loading = true;
     error = null;
     notifyListeners();
     try {
       final payload = await _read('list_saved', {
-        if (query.trim().isNotEmpty) 'query': query.trim(),
+        if (requestedQuery.isNotEmpty) 'query': requestedQuery,
         'limit': 30,
         'cursor': cursor,
       });
       final records = payload['records'];
+      if (!_isCurrent(generation)) return;
       if (payload['schemaVersion'] != 1 || records is! List) {
         throw const FormatException('Ответ списка библиотеки повреждён.');
       }
@@ -68,31 +76,41 @@ final class LibraryController extends ChangeNotifier {
       ]);
       nextCursor = payload['nextCursor'] as String?;
     } on Object catch (failure) {
-      error = _message(failure);
+      if (_isCurrent(generation)) error = _message(failure);
     } finally {
-      loading = false;
-      notifyListeners();
+      if (_isCurrent(generation)) {
+        loading = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> open(LibraryId id) async {
+    if (_disposed) return;
+    final generation = ++_detailGeneration;
     loadingDetail = true;
     error = null;
     selected = null;
     notifyListeners();
     try {
-      selected = LibraryRecord.fromJson(
+      final record = LibraryRecord.fromJson(
         await _read('get_saved', {'libraryId': id.value}),
       );
+      if (_isCurrentDetail(generation)) selected = record;
     } on Object catch (failure) {
-      error = _message(failure);
+      if (_isCurrentDetail(generation)) error = _message(failure);
     } finally {
-      loadingDetail = false;
-      notifyListeners();
+      if (_isCurrentDetail(generation)) {
+        loadingDetail = false;
+        notifyListeners();
+      }
     }
   }
 
   void closeDetail() {
+    if (_disposed) return;
+    _detailGeneration += 1;
+    loadingDetail = false;
     selected = null;
     notifyListeners();
   }
@@ -133,4 +151,17 @@ final class LibraryController extends ChangeNotifier {
   String _message(Object failure) => failure is FormatException
       ? failure.message
       : 'Не удалось прочитать библиотеку на этом устройстве.';
+
+  bool _isCurrent(int generation) => !_disposed && generation == _generation;
+
+  bool _isCurrentDetail(int generation) =>
+      !_disposed && generation == _detailGeneration;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _generation += 1;
+    _detailGeneration += 1;
+    super.dispose();
+  }
 }

@@ -165,14 +165,20 @@ class _LibraryDetail extends StatelessWidget {
           Card(
             child: ListTile(
               title: Text(item.arxivId.value),
-              subtitle: Text(
-                '${item.finding}${item.limitation == null ? '' : '\nОграничение: ${item.limitation}'}',
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${item.finding}${item.limitation == null ? '' : '\nОграничение: ${item.limitation}'}',
+                  ),
+                  SelectableText(item.abstractUrl.toString()),
+                ],
               ),
-              isThreeLine: item.limitation != null,
+              isThreeLine: true,
               trailing: IconButton(
                 tooltip: 'Открыть аннотацию',
                 icon: const Icon(Icons.open_in_new),
-                onPressed: () => launchUrl(item.abstractUrl),
+                onPressed: () => _openAbstract(context, item.abstractUrl),
               ),
             ),
           ),
@@ -196,8 +202,9 @@ class _LibraryDetail extends StatelessWidget {
                   Text('Категории: ${paper.categories.join(', ')}'),
                   const SizedBox(height: 8),
                   SelectableText(paper.abstractText),
+                  SelectableText(paper.abstractUrl.toString()),
                   TextButton.icon(
-                    onPressed: () => launchUrl(paper.abstractUrl),
+                    onPressed: () => _openAbstract(context, paper.abstractUrl),
                     icon: const Icon(Icons.open_in_new),
                     label: const Text('Аннотация arXiv'),
                   ),
@@ -206,6 +213,24 @@ class _LibraryDetail extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+Future<void> _openAbstract(BuildContext context, Uri uri) async {
+  var opened = false;
+  try {
+    opened = await launchUrl(uri);
+  } on Object {
+    // The selectable URL in the card remains usable on unsupported platforms.
+  }
+  if (!opened && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Не удалось открыть аннотацию. Скопируйте адрес под статьёй.',
+        ),
+      ),
     );
   }
 }

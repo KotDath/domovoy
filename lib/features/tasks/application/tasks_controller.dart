@@ -218,6 +218,13 @@ final class TasksController extends ChangeNotifier {
       if (run == null) {
         throwAutomation(AutomationErrorKind.notFound, 'Запуск не найден.');
       }
+      if (run.status != AutomationRunStatus.succeeded &&
+          run.status != AutomationRunStatus.failed) {
+        throwAutomation(
+          AutomationErrorKind.invalidInput,
+          'Карточку можно доставить только после успешного или неуспешного завершения запуска.',
+        );
+      }
       if (run.delivery?.delivered == true) {
         throwAutomation(
           AutomationErrorKind.conflict,
@@ -314,9 +321,21 @@ final class TasksController extends ChangeNotifier {
           final next = _state.tasks
               .where((candidate) => candidate.taskId != task.taskId)
               .toList(growable: false);
+          final deletedSelected = _state.selectedTaskId == task.taskId;
+          final selection = deletedSelected
+              ? (next.isEmpty ? null : next.first.taskId)
+              : _state.selectedTaskId;
           _emit(
-            _state.copyWith(tasks: next, selectedTaskId: _liveSelection(next)),
+            _state.copyWith(
+              tasks: next,
+              selectedTaskId: selection,
+              runs: deletedSelected ? const <AutomationRun>[] : null,
+              selectedRunId: deletedSelected ? null : _state.selectedRunId,
+            ),
           );
+          if (deletedSelected && selection != null) {
+            unawaited(_reloadRunsAfterExternalDelete(selection));
+          }
         } else {
           _upsertTask(task);
         }
@@ -326,6 +345,31 @@ final class TasksController extends ChangeNotifier {
         _emit(_state.copyWith(foreground: foreground));
       case AutomationServiceErrorEvent(:final message):
         _emit(_state.copyWith(error: message));
+    }
+  }
+
+  Future<void> _reloadRunsAfterExternalDelete(AutomationTaskId taskId) async {
+    try {
+      final runs = await service.listRuns(taskId);
+      if (_disposed || _state.selectedTaskId != taskId) return;
+      _emit(
+        _state.copyWith(
+          runs: runs,
+          selectedRunId: runs.isEmpty ? null : runs.first.runId,
+        ),
+      );
+    } on AutomationException catch (error) {
+      if (!_disposed && _state.selectedTaskId == taskId) {
+        _emit(_state.copyWith(error: error.error.message));
+      }
+    } on Object {
+      if (!_disposed && _state.selectedTaskId == taskId) {
+        _emit(
+          _state.copyWith(
+            error: 'Не удалось загрузить историю выбранной задачи.',
+          ),
+        );
+      }
     }
   }
 

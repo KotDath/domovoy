@@ -60,6 +60,18 @@ void main() {
     expect(repository.tasks, isEmpty);
   });
 
+  test('arXiv preset has a concrete editable topic and no invented run ID', () {
+    editor.applyArxivPreset();
+    expect(editor.state.draft.prompt, contains(arxivPresetDefaultTopic));
+    expect(editor.state.draft.prompt, isNot(contains('которую я укажу')));
+    expect(editor.state.draft.prompt, isNot(contains('runId')));
+    editor.setPrompt('Собери работы по моей собственной теме.');
+    expect(
+      editor.state.draft.prompt,
+      'Собери работы по моей собственной теме.',
+    );
+  });
+
   test('pause and reopen show durable status, run and trace', () async {
     (service.executor as ScriptedAutomationExecutor).handler =
         (request, cancellation) async => AutomationRunOutcome(
@@ -95,4 +107,73 @@ void main() {
     expect(reopened.state.lastRun?.trace.single.name, 'arxiv.search_papers');
     reopened.dispose();
   });
+
+  test(
+    'external task deletion clears old runs and selects live task',
+    () async {
+      final first = await service.createTask(automationDraft(name: 'Первая'));
+      final second = await service.createTask(automationDraft(name: 'Вторая'));
+      await (await service.runTaskNow(first.taskId)).done;
+      await (await service.runTaskNow(second.taskId)).done;
+      final controller = TasksController(service: service);
+      await controller.initialize();
+      await controller.selectTask(first.taskId);
+      expect(controller.state.runs, hasLength(1));
+
+      await service.deleteTask(first.taskId);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.state.selectedTaskId, second.taskId);
+      expect(controller.state.runs, hasLength(1));
+      expect(controller.state.runs.single.taskId, second.taskId);
+      expect(
+        controller.state.selectedRunId,
+        controller.state.runs.single.runId,
+      );
+      controller.dispose();
+    },
+  );
+
+  test('retry refuses running, skipped and interrupted records', () async {
+    final delivery = _CountingDelivery();
+    final controller = TasksController(service: service, delivery: delivery);
+    for (final (index, status) in AutomationRunStatus.values.indexed) {
+      if (status == AutomationRunStatus.succeeded ||
+          status == AutomationRunStatus.failed) {
+        continue;
+      }
+      final run = AutomationRun(
+        runId: 'ran_${index.toRadixString(16).padLeft(16, '0')}',
+        taskId: 'atm_0000000000000001',
+        taskRevision: 0,
+        trigger: AutomationRunTrigger.manual,
+        status: status,
+        scheduledAt: DateTime.utc(2026, 1, 1, 12),
+        startedAt: status == AutomationRunStatus.running
+            ? DateTime.utc(2026, 1, 1, 12)
+            : null,
+        finishedAt: status == AutomationRunStatus.running
+            ? null
+            : DateTime.utc(2026, 1, 1, 12, 1),
+        model: automationModel(),
+        deliveryTarget: const AutomationDelivery.chat('chat-one'),
+      );
+      await repository.appendRun(run, expectedRevision: 0);
+      expect((await controller.retryDelivery(run.runId)).isSuccess, isFalse);
+    }
+    expect(delivery.calls, 0);
+    controller.dispose();
+  });
+}
+
+final class _CountingDelivery implements AutomationResultDelivery {
+  int calls = 0;
+
+  @override
+  Future<AutomationDeliveryResult?> deliver({
+    required AutomationDelivery target,
+    required AutomationRun run,
+  }) async {
+    calls += 1;
+    return const AutomationDeliveryResult(delivered: true);
+  }
 }

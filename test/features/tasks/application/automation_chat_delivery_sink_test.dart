@@ -1,3 +1,4 @@
+import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/automation/automation.dart';
 import 'package:domovoy/features/tasks/tasks.dart';
 import 'package:domovoy/infrastructure/automation_chat/automation_chat.dart';
@@ -10,6 +11,13 @@ final class _ChatExistence implements TasksChatExistence {
   bool exists = true;
   @override
   Future<bool> chatExists(String chatId) async => exists;
+}
+
+final class _FailingSessionRepository extends Fake
+    implements AgentSessionRepository {
+  @override
+  Future<AgentSessionRecord?> load(AgentSessionId id) async =>
+      throw StateError('storage unavailable');
 }
 
 void main() {
@@ -54,6 +62,13 @@ void main() {
       );
       expect(retried?.delivered, isTrue);
       expect(await cards.deliveriesForChat('chat-one'), hasLength(1));
+
+      final unavailable = await AutomationChatDeliverySink(
+        store: cards,
+        chatExists: SessionRepositoryChatExistence(_FailingSessionRepository()),
+      ).deliver(target: const AutomationDelivery.chat('chat-one'), run: first);
+      expect(unavailable?.delivered, isFalse);
+      expect(unavailable?.error, contains('Не удалось проверить чат'));
 
       existence.exists = false;
       final missing = await (await service.runTaskNow(task.taskId)).done;

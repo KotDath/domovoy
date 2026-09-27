@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import '../../core/automation/automation.dart';
 import '../agents/jsonl/jsonl_stream_storage.dart';
@@ -155,7 +156,7 @@ final class JsonlAutomationChatDeliveryStore
     if (chunks == null) {
       return null;
     }
-    final buffer = StringBuffer();
+    final buffer = BytesBuilder(copy: false);
     var length = 0;
     try {
       await for (final chunk in chunks) {
@@ -166,7 +167,7 @@ final class JsonlAutomationChatDeliveryStore
             'Поток карточки результата превышает допустимый размер.',
           );
         }
-        buffer.write(utf8.decode(chunk, allowMalformed: true));
+        buffer.add(chunk);
       }
     } on AutomationException {
       rethrow;
@@ -176,9 +177,22 @@ final class JsonlAutomationChatDeliveryStore
         'Поток карточки результата не удалось прочитать.',
       );
     }
-    final text = buffer.toString();
-    if (text.isEmpty) {
+    final bytes = buffer.takeBytes();
+    if (bytes.isEmpty) {
       return null;
+    }
+    if (!bytes.contains(0x0a)) {
+      // A trailing partial write is not observable until its newline arrives.
+      return null;
+    }
+    final String text;
+    try {
+      text = utf8.decode(bytes);
+    } on FormatException {
+      throwAutomation(
+        AutomationErrorKind.corruption,
+        'Поток карточки результата содержит повреждённый UTF-8.',
+      );
     }
     final lineEnd = text.indexOf('\n');
     if (lineEnd < 0) {

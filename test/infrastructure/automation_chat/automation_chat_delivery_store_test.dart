@@ -1,5 +1,6 @@
 import 'package:domovoy/core/automation/automation.dart';
 import 'package:domovoy/infrastructure/automation_chat/automation_chat.dart';
+import 'package:domovoy/infrastructure/agents/jsonl/jsonl_stream_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/memory_jsonl_storage.dart';
@@ -51,4 +52,44 @@ void main() {
     );
     store.dispose();
   });
+
+  test('replay accepts UTF-8 characters split across storage chunks', () async {
+    final storage = FakeMemoryJsonlStorage();
+    final writer = JsonlAutomationChatDeliveryStore(storage: storage);
+    await writer.saveIfAbsent(card());
+    final reader = JsonlAutomationChatDeliveryStore(
+      storage: _ByteChunks(storage),
+    );
+    final replayed = await reader.deliveriesForChat('chat-one');
+    expect(replayed.single.taskName, 'Исследование');
+    expect(replayed.single.resultText, 'Готовая подборка');
+    writer.dispose();
+    reader.dispose();
+  });
+}
+
+final class _ByteChunks implements JsonlStreamStorage {
+  _ByteChunks(this.inner);
+  final JsonlStreamStorage inner;
+
+  @override
+  Future<List<String>> listKeys() => inner.listKeys();
+
+  @override
+  Future<Stream<List<int>>?> read(String key) async {
+    final stream = await inner.read(key);
+    if (stream == null) return null;
+    final bytes = <int>[];
+    await for (final chunk in stream) {
+      bytes.addAll(chunk);
+    }
+    return Stream<List<int>>.fromIterable(bytes.map((byte) => <int>[byte]));
+  }
+
+  @override
+  Future<void> publish(String key, List<int> contents) =>
+      inner.publish(key, contents);
+
+  @override
+  Future<void> cleanup(String key) => inner.cleanup(key);
 }

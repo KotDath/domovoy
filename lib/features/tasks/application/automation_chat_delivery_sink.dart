@@ -13,13 +13,8 @@ final class SessionRepositoryChatExistence implements TasksChatExistence {
   final AgentSessionRepository repository;
 
   @override
-  Future<bool> chatExists(String chatId) async {
-    try {
-      return await repository.load(AgentSessionId(chatId)) != null;
-    } on Object {
-      return false;
-    }
-  }
+  Future<bool> chatExists(String chatId) async =>
+      await repository.load(AgentSessionId(chatId)) != null;
 }
 
 /// Durable delivery of a finished run as a card in the chosen chat.

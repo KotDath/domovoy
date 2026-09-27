@@ -11,12 +11,16 @@ const arxivPresetDescription =
     'Готовый сценарий дня 19: arxiv.search_papers → digest.summarize_papers → '
     'library.save_digest. Сводка строится только по аннотациям arXiv.';
 
+/// Concrete starting topic; the entire prompt remains editable in the form.
+const arxivPresetDefaultTopic = 'агенты на основе больших языковых моделей';
+
 /// Prompt of the built-in arXiv collection preset.
 const arxivPresetPrompt =
-    'Собери подборку свежих статей arXiv по теме, которую я укажу. '
+    'Тема: $arxivPresetDefaultTopic. Собери подборку свежих статей arXiv '
+    'по этой теме. '
     'Вызови arxiv.search_papers, затем передай найденные статьи в '
     'digest.summarize_papers и сохрани готовую сводку через '
-    'library.save_digest с этим же runId. В ответе перечисли ID статей, '
+    'library.save_digest. В ответе перечисли ID статей, '
     'тему подборки и ссылку на сохранённую запись.';
 
 /// Tools the preset pins, in pipeline order.
