@@ -296,7 +296,11 @@ final class ArxivAtomParser {
 }
 
 final class _XmlElement {
-  _XmlElement(this.localName);
+  _XmlElement(this.qualifiedName) : localName = _localName(qualifiedName);
+
+  /// Tag name exactly as written, including any namespace prefix. Closing
+  /// tags must match it code point for code point.
+  final String qualifiedName;
 
   /// Tag name without the namespace prefix, for example `entry`.
   final String localName;
@@ -364,6 +368,7 @@ final class _XmlScanner {
   int _textCount = 0;
 
   _XmlElement parse() {
+    _validateXmlCharacters(_source);
     _skipMisc();
     if (!_startsWith('<') || _startsWith('</')) {
       throwArxiv(ArxivFailureKind.protocol, 'Ответ arXiv не является XML.');
@@ -423,7 +428,7 @@ final class _XmlScanner {
         'Ответ arXiv содержит слишком много элементов.',
       );
     }
-    final element = _XmlElement(_localName(nameMatch.group(0)!));
+    final element = _XmlElement(nameMatch.group(0)!);
     if (_readAttributes(element)) {
       return element;
     }
@@ -512,7 +517,7 @@ final class _XmlScanner {
           );
         }
         _index += 1;
-        if (_localName(nameMatch.group(0)!) != element.localName) {
+        if (nameMatch.group(0)! != element.qualifiedName) {
           throwArxiv(
             ArxivFailureKind.protocol,
             'Ответ arXiv содержит несовпадающие теги.',
@@ -622,7 +627,10 @@ final class _XmlScanner {
           'Ответ arXiv содержит управляющий символ.',
         );
       }
-      if (code > 0x10FFFF) {
+      if (code > 0x10FFFF ||
+          (code >= 0xD800 && code <= 0xDFFF) ||
+          code == 0xFFFE ||
+          code == 0xFFFF) {
         throwArxiv(
           ArxivFailureKind.protocol,
           'Ответ arXiv содержит некорректную XML-сущность.',
@@ -673,11 +681,44 @@ final class _XmlScanner {
       _index = match.end;
     }
   }
+}
 
-  static String _localName(String name) {
-    final separator = name.indexOf(':');
-    return separator < 0 ? name : name.substring(separator + 1);
+/// Rejects code points XML 1.0 forbids anywhere in a document.
+///
+/// The check runs before tokenizing, so raw text, CDATA and attribute values
+/// all go through it; legal supplementary characters (a valid surrogate pair)
+/// stay accepted.
+void _validateXmlCharacters(String source) {
+  for (var index = 0; index < source.length; index++) {
+    final code = source.codeUnitAt(index);
+    if (code == 0x09 || code == 0x0A || code == 0x0D) {
+      continue;
+    }
+    if (code < 0x20 || code == 0xFFFE || code == 0xFFFF) {
+      throwArxiv(
+        ArxivFailureKind.protocol,
+        'Ответ arXiv содержит недопустимые для XML символы.',
+      );
+    }
+    if (code >= 0xD800 && code <= 0xDFFF) {
+      final hasPair =
+          index + 1 < source.length &&
+          source.codeUnitAt(index + 1) >= 0xDC00 &&
+          source.codeUnitAt(index + 1) <= 0xDFFF;
+      if (!hasPair) {
+        throwArxiv(
+          ArxivFailureKind.protocol,
+          'Ответ arXiv содержит недопустимые для XML символы.',
+        );
+      }
+      index += 1;
+    }
   }
+}
+
+String _localName(String name) {
+  final separator = name.indexOf(':');
+  return separator < 0 ? name : name.substring(separator + 1);
 }
 
 String _collapseWhitespace(String value) =>

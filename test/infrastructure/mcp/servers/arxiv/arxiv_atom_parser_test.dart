@@ -255,6 +255,97 @@ void main() {
       final paper = parser.parse(feed).papers.single;
       expect(paper.authors, <String>['A. Researcher', 'D. Author']);
     });
+
+    test('rejects mismatched qualified closing tags', () {
+      for (final body in <String>[
+        '<a:feed></b:feed>',
+        '<a:feed></a:entry>',
+        '<feed></atom:feed>',
+        '<atom:entry></entry>',
+      ]) {
+        expect(
+          () => parser.parse(body),
+          throwsA(
+            isA<ArxivFailure>().having(
+              (failure) => failure.kind,
+              'kind',
+              ArxivFailureKind.protocol,
+            ),
+          ),
+          reason: body,
+        );
+      }
+    });
+
+    test('rejects XML-illegal code points in text, CDATA and attributes', () {
+      for (final body in <String>[
+        atomFeed(
+          entries: <String>[atomEntry(title: 'bad\u0001title', escape: false)],
+        ),
+        atomFeed(
+          entries: <String>[
+            atomEntry(title: '<![CDATA[bad\u0001title]]>', escape: false),
+          ],
+        ),
+        atomFeed(
+          entries: <String>[
+            atomEntry(
+              extra:
+                  '<link rel="bad\u0001rel" '
+                  'href="http://arxiv.org/abs/2501.01234v1"/>',
+            ),
+          ],
+        ),
+        atomFeed(
+          entries: <String>[
+            atomEntry(title: 'bad\u{FFFE}title', escape: false),
+          ],
+        ),
+        atomFeed(
+          entries: <String>[atomEntry(title: 'lone\uD800title', escape: false)],
+        ),
+      ]) {
+        expect(
+          () => parser.parse(body),
+          throwsA(
+            isA<ArxivFailure>().having(
+              (failure) => failure.kind,
+              'kind',
+              ArxivFailureKind.protocol,
+            ),
+          ),
+          reason: body,
+        );
+      }
+    });
+
+    test('parses a valid namespaced Atom feed with supplementary text', () {
+      const feed = '''
+<?xml version="1.0" encoding="utf-8"?>
+<atom:feed xmlns:atom="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <atom:title>ArXiv Query</atom:title>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <atom:entry>
+    <atom:id>http://arxiv.org/abs/2501.01234v2</atom:id>
+    <atom:published>2025-01-03T12:00:00Z</atom:published>
+    <atom:updated>2025-01-06T12:00:00Z</atom:updated>
+    <atom:title>Namespaced \u{1F680} title</atom:title>
+    <atom:summary>Namespaced abstract</atom:summary>
+    <atom:author><atom:name>A. Researcher</atom:name></atom:author>
+    <arxiv:primary_category term="cs.AI"/>
+    <atom:category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </atom:entry>
+</atom:feed>
+''';
+
+      final parsed = parser.parse(feed);
+
+      expect(parsed.totalResults, 1);
+      expect(parsed.papers, hasLength(1));
+      expect(parsed.papers.single.title, 'Namespaced \u{1F680} title');
+      expect(parsed.papers.single.version, 'v2');
+      expect(parsed.papers.single.categories, <String>['cs.AI']);
+    });
   });
 }
 
