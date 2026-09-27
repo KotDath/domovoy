@@ -1296,6 +1296,191 @@ void main() {
       await harness.dispose();
     });
 
+    test(
+      'an allow policy replaced by ask during hooks denies unapproved calls',
+      () async {
+        final alpha = ScriptedMcpConnection(
+          connectionId: McpConnectionId('alpha'),
+          pages: <McpToolPage>[pageOf('alpha', 'work')],
+        );
+        harness = ScriptedMcpAgentHarness(
+          connections: <String, ScriptedMcpConnection>{'alpha': alpha},
+        );
+        await harness.start();
+        final hook = _GatedBeforeToolHook();
+        final approval = _RecordingApproval();
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[
+            toolTurn(
+              name: 'mcp_alpha__work',
+              callId: 'c1',
+              arguments: '{"query":"q"}',
+            ),
+            textTurn('done'),
+          ],
+        );
+        final runtime = testRuntime(
+          provider: provider,
+          tools: harness.tools,
+          policies: <String, ToolPermissionPolicy>{
+            'allow': const AllowAllPolicy(),
+          },
+          hooks: <AgentLifecycleHook>[hook],
+          approval: approval,
+        );
+        final run = runtime
+            .agent(testDefinition(tools: <ToolId>[ToolId('mcp_alpha__work')]))
+            .run('go');
+        await hook.entered.future;
+        // Rights narrow from allow to ask while the hook is running: the call
+        // must not execute without an approval for this call.
+        runtime.policies['allow'] = _AskingPolicy();
+        hook.release.complete();
+        final events = await run.events.toList();
+        expect(events.last, isA<AgentRunCompleted>());
+        expect(alpha.calledTools, isEmpty);
+        expect(approval.calls, 0);
+        expect(
+          _decode(
+            _toolResults(provider.requests.last).single,
+          )['error'].toString(),
+          contains('require approval'),
+        );
+        expect(events.whereType<AgentToolFinished>().single.success, isFalse);
+        await harness.dispose();
+      },
+    );
+
+    test(
+      'an ask policy replaced by another ask keeps a fresh approval',
+      () async {
+        final alpha = ScriptedMcpConnection(
+          connectionId: McpConnectionId('alpha'),
+          pages: <McpToolPage>[pageOf('alpha', 'guarded')],
+        );
+        harness = ScriptedMcpAgentHarness(
+          connections: <String, ScriptedMcpConnection>{'alpha': alpha},
+        );
+        await harness.start();
+        final approval = _GatedApproval();
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[
+            toolTurn(
+              name: 'mcp_alpha__guarded',
+              callId: 'c1',
+              arguments: '{"query":"q"}',
+            ),
+            textTurn('done'),
+          ],
+        );
+        final runtime = testRuntime(
+          provider: provider,
+          tools: harness.tools,
+          policies: <String, ToolPermissionPolicy>{
+            'chat': ToolAccessPolicy(
+              id: PolicyId('chat'),
+              grant: ToolAccessGrant(
+                allowedToolIds: <String>['mcp_alpha__guarded'],
+                askToolIds: <String>['mcp_alpha__guarded'],
+              ),
+            ),
+          },
+          approval: approval,
+        );
+        final run = runtime
+            .agent(
+              testDefinition(
+                tools: <ToolId>[ToolId('mcp_alpha__guarded')],
+                policy: PolicyId('chat'),
+              ),
+            )
+            .run('go');
+        await approval.requested.future;
+        // A new policy object still asks for the same call: the approval the
+        // user already gave for this invocation stays valid.
+        runtime.policies['chat'] = _AskingPolicy();
+        approval.complete(true);
+        final events = await run.events.toList();
+        expect(events.last, isA<AgentRunCompleted>());
+        expect(alpha.calledTools, <String>['guarded']);
+        expect(events.whereType<AgentToolFinished>().single.success, isTrue);
+        await harness.dispose();
+      },
+    );
+
+    test(
+      'an unbounded pattern makes the MCP tool visibly unavailable',
+      () async {
+        final alpha = ScriptedMcpConnection(
+          connectionId: McpConnectionId('alpha'),
+          pages: <McpToolPage>[
+            McpToolPage(
+              tools: <McpToolDescriptor>[
+                scriptedTool(
+                  'alpha',
+                  'risky',
+                  inputSchema: <String, Object?>{
+                    'type': 'object',
+                    'properties': <String, Object?>{
+                      'query': <String, Object?>{
+                        'type': 'string',
+                        'pattern': r'(a+)+$',
+                      },
+                    },
+                    'required': <String>['query'],
+                  },
+                ),
+              ],
+            ),
+          ],
+        );
+        harness = ScriptedMcpAgentHarness(
+          connections: <String, ScriptedMcpConnection>{'alpha': alpha},
+        );
+        await harness.start();
+        expect(harness.tools.lookup('mcp_alpha__risky'), isNotNull);
+        expect(harness.tools.unavailableReason('mcp_alpha__risky'), isNotNull);
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: <List<LlmEvent>>[
+            toolTurn(
+              name: 'mcp_alpha__risky',
+              callId: 'c1',
+              arguments: '{"query":"aaaa"}',
+            ),
+            textTurn('done'),
+          ],
+        );
+        final events =
+            await testRuntime(provider: provider, tools: harness.tools)
+                .agent(
+                  testDefinition(tools: <ToolId>[ToolId('mcp_alpha__risky')]),
+                )
+                .run('go')
+                .events
+                .toList();
+        expect(events.last, isA<AgentRunCompleted>());
+        expect(alpha.calledTools, isEmpty);
+        expect(provider.requests.first.context.tools, isEmpty);
+        final notice = events.whereType<AgentToolUnavailable>().single;
+        expect(notice.toolId, ToolId('mcp_alpha__risky'));
+        expect(notice.reason, contains('bounded work'));
+        expect(
+          _decode(
+            _toolResults(provider.requests.last).single,
+          )['error'].toString(),
+          contains('bounded work'),
+        );
+        expect(events.whereType<AgentToolFinished>().single.success, isFalse);
+        await harness.dispose();
+      },
+    );
+
     test('tool descriptions stay labeled, sanitized data', () async {
       final alpha = ScriptedMcpConnection(
         connectionId: McpConnectionId('alpha'),

@@ -70,6 +70,58 @@ void main() {
       );
     });
 
+    test('only tools advertised by the run view can execute', () async {
+      var executions = 0;
+      final tools = AgentToolRegistry()
+        ..register(
+          AgentTool(
+            descriptor: LlmToolDescriptor(name: 'withheld'),
+            descriptorProjector: (profile) => const UnavailableToolDescriptor(
+              'not representable for this provider',
+            ),
+            executor: ScriptedToolExecutor((
+              invocation, {
+              required cancellation,
+              required liveness,
+            }) async {
+              executions += 1;
+              return ToolExecutionResult.success(<String, Object?>{});
+            }),
+          ),
+        );
+      final provider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[
+          toolTurn(name: 'withheld', callId: 'c1'),
+          textTurn('done'),
+        ],
+      );
+      final events = await testRuntime(provider: provider, tools: tools)
+          .agent(testDefinition(tools: <ToolId>[ToolId('withheld')]))
+          .run('go')
+          .events
+          .toList();
+      expect(events.last, isA<AgentRunCompleted>());
+      expect(executions, 0);
+      // The provider never saw the tool...
+      expect(provider.requests.first.context.tools, isEmpty);
+      final notice = events.whereType<AgentToolUnavailable>().single;
+      expect(notice.toolId, ToolId('withheld'));
+      expect(notice.reason, contains('not representable'));
+      // ...and the call fails visibly instead of executing.
+      expect(events.whereType<AgentToolFinished>().single.success, isFalse);
+      final toolParts = <LlmToolResultPart>[
+        for (final message in provider.requests.last.context.messages)
+          if (message.role == LlmMessageRole.tool)
+            ...message.parts.whereType<LlmToolResultPart>(),
+      ];
+      expect(
+        toolParts.single.content,
+        contains('not representable for this provider'),
+      );
+    });
+
     test('rejects unsupported schemas at registration', () {
       expect(
         () => AgentTool(

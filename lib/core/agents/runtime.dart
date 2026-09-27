@@ -3078,6 +3078,7 @@ final class _LiveRun implements AgentRun {
   late final LlmGenerationConfig _generation;
   late final AgentToolView _toolView;
   late final Map<String, AgentTool> _toolSnapshot;
+  late final Map<String, String> _withheldTools;
   LlmGenerationConfig? _snapshotGeneration;
   AgentDynamicContext? _dynamicContext;
   var _runModelTurns = 0;
@@ -3276,21 +3277,28 @@ final class _LiveRun implements AgentRun {
   /// The snapshot is taken once, before the first model turn: a catalog
   /// refresh that happens while the run is active replaces the registry view
   /// but cannot change what this run advertises or which identities it may
-  /// execute. Every call is still re-checked against the live registry and the
-  /// current policy immediately before execution.
+  /// execute. Only the names actually advertised by [AgentToolView.descriptors]
+  /// become callable; an enabled tool that the selected provider profile
+  /// cannot represent, or that the source marks unavailable, is recorded with
+  /// its visible reason instead. Every call is still re-checked against the
+  /// live registry and the current policy immediately before execution.
   void _resolveTools() {
     _toolView = session.runtime.tools.view(
       session.definition.enabledTools,
       profile: session.toolSchemaProfileFor(selection.model),
     );
-    final snapshot = <String, AgentTool>{};
-    for (final id in session.definition.enabledTools) {
-      final tool = session.runtime.tools.lookup(id.value);
+    final advertised = <String, AgentTool>{};
+    for (final descriptor in _toolView.descriptors) {
+      final tool = session.runtime.tools.lookup(descriptor.name);
       if (tool != null) {
-        snapshot[id.value] = tool;
+        advertised[descriptor.name] = tool;
       }
     }
-    _toolSnapshot = Map<String, AgentTool>.unmodifiable(snapshot);
+    _toolSnapshot = Map<String, AgentTool>.unmodifiable(advertised);
+    _withheldTools = Map<String, String>.unmodifiable(<String, String>{
+      for (final notice in _toolView.unavailable)
+        notice.id.value: notice.reason,
+    });
     for (final notice in _toolView.unavailable) {
       _emit(AgentToolUnavailable(toolId: notice.id, reason: notice.reason));
     }
@@ -3627,9 +3635,15 @@ final class _LiveRun implements AgentRun {
       );
     }
     // Only tools advertised when the run started may execute. A catalog
-    // refresh that added or republished a tool cannot extend this run.
+    // refresh that added or republished a tool cannot extend this run, and a
+    // tool the run view withheld (per-provider projection or source-level
+    // unavailability) stays rejected with its visible reason.
     final advertised = _toolSnapshot[call.name];
     if (advertised == null) {
+      final withheld = _withheldTools[call.name];
+      if (withheld != null) {
+        return _denyTool(call.callId, 'Tool is unavailable: $withheld');
+      }
       return _denyTool(
         call.callId,
         'Tool was not available when this run started, so it is not '
@@ -3727,7 +3741,10 @@ final class _LiveRun implements AgentRun {
       // The user answered while the catalog or the grants could have changed.
       // Resolve the policy from the live map again: B7 replaces the entry when
       // rights change, so the object captured before the await is stale.
-      denialReason = _recheckCurrentPolicy(invocation);
+      denialReason = _recheckCurrentPolicy(
+        invocation,
+        approvedInteractively: true,
+      );
     }
     final denial = denialReason;
     if (denial != null) {
@@ -3744,10 +3761,13 @@ final class _LiveRun implements AgentRun {
     // Hooks are an await point too: rights and routes can be revoked while
     // they run. Recheck the live binding and the current policy immediately
     // before the executor, so a call already in flight is never reported as a
-    // success after its permission was withdrawn.
+    // success after its permission was withdrawn or narrowed to an approval.
     denialReason =
         _recheckLiveTool(call.name, advertised) ??
-        _recheckCurrentPolicy(invocation);
+        _recheckCurrentPolicy(
+          invocation,
+          approvedInteractively: approvedInteractively,
+        );
     if (denialReason != null) {
       return _denyTool(call.callId, denialReason);
     }
@@ -3841,24 +3861,45 @@ final class _LiveRun implements AgentRun {
     return null;
   }
 
-  /// Resolves the current policy by id and refuses when it is gone or denies.
+  /// Resolves the current policy by id and refuses when the call is no longer
+  /// authorized.
   ///
   /// The policy object is never cached across an await: the composition may
   /// replace the map entry when rights change, so only the decision of the
-  /// policy that is registered right now can authorize the call.
-  String? _recheckCurrentPolicy(ToolInvocation invocation) {
+  /// policy registered right now can authorize the call. A current `ask`
+  /// requires an approval that happened for this very call; otherwise the call
+  /// fails closed instead of executing unapproved. Unattended runs deny `ask`
+  /// outright.
+  String? _recheckCurrentPolicy(
+    ToolInvocation invocation, {
+    required bool approvedInteractively,
+  }) {
     final policy = session.runtime.policies[session.definition.policy.value];
     if (policy == null) {
       return 'Tool policy is no longer available.';
     }
+    final ToolPermission permission;
     try {
-      if (policy.decide(invocation) == ToolPermission.deny) {
-        return 'Tool denied.';
-      }
+      permission = policy.decide(invocation);
     } on Object {
       return 'Tool denied.';
     }
-    return null;
+    switch (permission) {
+      case ToolPermission.deny:
+        return 'Tool denied.';
+      case ToolPermission.allow:
+        return null;
+      case ToolPermission.ask:
+        if (!session.definition.interactiveApproval) {
+          return 'Tool requires interactive approval, but this run cannot wait '
+              'for it.';
+        }
+        if (!approvedInteractively) {
+          return 'Tool policy changed to require approval; the call was '
+              'rejected.';
+        }
+        return null;
+    }
   }
 
   LlmToolResultPart _toolResult({
