@@ -215,6 +215,88 @@ void main() {
       expect(limitation, endsWith('…'));
     });
 
+    test('accepts a truthfully negated caveat in a limitation', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              items: <Map<String, Object?>>[
+                digestAnswerItem(
+                  '2501.01234',
+                  limitation:
+                      'The full text was not reviewed; only the abstract '
+                      'was used.',
+                ),
+              ],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(provider);
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      final limitation = digest.items.single.limitation!;
+      expect(limitation, startsWith(digestAbstractOnlyLimitation));
+      expect(limitation, contains('was not reviewed'));
+    });
+
+    test('accepts a negated full-text statement in a finding', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              items: <Map<String, Object?>>[
+                digestAnswerItem(
+                  '2501.01234',
+                  finding: 'Полный текст не изучен, вывод сделан по аннотации.',
+                ),
+              ],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(provider);
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      expect(digest.items.single.finding, contains('не изучен'));
+    });
+
+    test('accepts a negated caveat whose negation follows the verb', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              items: <Map<String, Object?>>[
+                digestAnswerItem(
+                  '2501.01234',
+                  finding: 'Полный текст проверен не был, вывод по аннотации.',
+                ),
+              ],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(provider);
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      expect(digest.items.single.finding, contains('проверен не был'));
+    });
+
     test('uses the pinned model and never another catalog model', () async {
       final provider = digestProvider()
         ..script(
@@ -603,6 +685,47 @@ void main() {
       );
       expect(failure.kind, DigestFailureKind.modelResponse);
     });
+
+    test('rejects a full-text claim in the overview', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          overview: 'The full text was reviewed before this summary.',
+          items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('overview'));
+    });
+
+    test('rejects a full-text claim in a finding', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem(
+              '2501.01234',
+              finding: 'Полный PDF изучен: метод работает.',
+            ),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('finding'));
+    });
+
+    test('a later sentence negation does not hide a claim', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem(
+              '2501.01234',
+              finding: 'Полный текст проверен. Другие данные не сверялись.',
+            ),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('finding'));
+    });
   });
 
   group('provider failures and budgets', () {
@@ -790,6 +913,64 @@ void main() {
       expect(failure.mcpText, startsWith('[digest:provider] '));
       expect(failure.message, isNot(contains('\n')));
       expect(failure.message.length, lessThanOrEqualTo(401));
+    });
+
+    test('rejects a limitation limit that cannot hold the server note', () {
+      for (final limit in <int>[1, digestAbstractOnlyLimitation.length - 1]) {
+        expect(
+          () => DigestLimits(maxLimitationCharacters: limit).validate(),
+          throwsA(isA<McpException>()),
+          reason: 'maxLimitationCharacters=$limit',
+        );
+      }
+    });
+
+    test('accepts a limitation limit exactly the size of the server note', () {
+      final limits = DigestLimits(
+        maxLimitationCharacters: digestAbstractOnlyLimitation.length,
+      );
+      expect(limits.validate(), limits);
+    });
+
+    test('a tiny limitation limit cannot build a synthesizer', () {
+      expect(
+        () => synthesizerFor(
+          digestProvider(),
+          limits: const DigestLimits(maxLimitationCharacters: 1),
+        ),
+        throwsA(isA<McpException>()),
+      );
+    });
+
+    test('a boundary-sized limit keeps the complete server note', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              items: <Map<String, Object?>>[
+                digestAnswerItem(
+                  '2501.01234',
+                  limitation: 'Нет данных о воспроизводимости.',
+                ),
+              ],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(
+        provider,
+        limits: DigestLimits(
+          maxLimitationCharacters: digestAbstractOnlyLimitation.length,
+        ),
+      );
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      expect(digest.items.single.limitation, digestAbstractOnlyLimitation);
     });
   });
 

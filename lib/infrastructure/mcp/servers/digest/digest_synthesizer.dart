@@ -7,14 +7,6 @@ import '../../../../core/research/research.dart';
 import 'digest_failure.dart';
 import 'digest_limits.dart';
 
-/// Server-authored source boundary that starts every `DigestItem.limitation`.
-///
-/// It is always true for this tool: only the supplied abstracts were reviewed.
-/// The note leads the field regardless of model output, so a model caveat can
-/// neither replace it nor make an unverified full-text claim look verified.
-const digestAbstractOnlyLimitation =
-    'Изучена только аннотация arXiv; полный текст не проверялся.';
-
 /// Validated parameters of one `summarize_papers` invocation.
 final class DigestSynthesisRequest {
   DigestSynthesisRequest({
@@ -496,6 +488,7 @@ final class DigestSynthesizer {
       );
     }
     _requireNoForeignReferences(overview, 'overview', expected);
+    _rejectFullTextClaim(overview, 'overview');
     final itemsRaw = json['items'];
     if (itemsRaw is! List || itemsRaw.isEmpty) {
       throwDigest(
@@ -552,6 +545,7 @@ final class DigestSynthesizer {
         );
       }
       _requireNoForeignReferences(finding, 'finding', expected);
+      _rejectFullTextClaim(finding, 'finding');
       String? modelLimitation;
       final limitationRaw = item['limitation'];
       if (limitationRaw != null) {
@@ -569,13 +563,7 @@ final class DigestSynthesizer {
         );
         if (cleaned.isNotEmpty) {
           _requireNoForeignReferences(cleaned, 'limitation', expected);
-          if (_claimsFullTextReview(cleaned)) {
-            throwDigest(
-              DigestFailureKind.modelResponse,
-              'Поле "limitation" для $id заявляет проверку полного текста, '
-              'хотя инструмент получает только аннотации.',
-            );
-          }
+          _rejectFullTextClaim(cleaned, 'limitation');
           modelLimitation = cleaned;
         }
       }
@@ -762,31 +750,78 @@ final class DigestSynthesizer {
   static bool _looksLikeIdentifierToken(String token) =>
       RegExp(r'\d').hasMatch(token);
 
-  /// True when [text] claims that the full paper (not the abstract) was read.
+  /// Rejects a model-authored claim that the full text was reviewed.
   ///
-  /// Only unambiguous assertions are rejected; ambiguous phrasing stays
-  /// allowed because [digestAbstractOnlyLimitation] always leads the field
-  /// and therefore keeps the true source boundary visible.
+  /// Applied to every accepted model-authored field (`overview`, `finding`
+  /// and `limitation`), because any of them could otherwise contradict the
+  /// source boundary of a successful Digest.
+  void _rejectFullTextClaim(String text, String field) {
+    if (_claimsFullTextReview(text)) {
+      throwDigest(
+        DigestFailureKind.modelResponse,
+        'Поле "$field" заявляет проверку полного текста, хотя инструмент '
+        'получает только аннотации.',
+      );
+    }
+  }
+
+  /// True when [text] makes an unambiguous positive full-text claim.
+  ///
+  /// Truthful negated caveats ("The full text was not reviewed",
+  /// "полный текст не изучен") are recognized through a bounded negation
+  /// window and stay accepted; "not only the abstract ..." remains a claim.
+  /// Ambiguous phrasing is not guessed: [digestAbstractOnlyLimitation] always
+  /// leads every `limitation` and keeps the true boundary visible.
   bool _claimsFullTextReview(String text) {
     for (final pattern in _fullTextClaimPatterns) {
-      if (pattern.hasMatch(text)) {
-        return true;
+      for (final match in pattern.allMatches(text)) {
+        if (!_isNegatedClaim(_negationWindow(text, match))) {
+          return true;
+        }
       }
     }
     return false;
   }
 
+  static const _negationWindowCharacters = 16;
+
+  /// Bounded window around [match] used to recognize truthful negations.
+  ///
+  /// The window never crosses a sentence delimiter after the match, so an
+  /// unrelated negation in the next sentence ("Полный текст проверен.
+  /// Другие данные не сверялись.") cannot hide a positive claim.
+  String _negationWindow(String text, RegExpMatch match) {
+    final start = match.start - _negationWindowCharacters;
+    var end = match.end + _negationWindowCharacters;
+    if (end > text.length) {
+      end = text.length;
+    }
+    final tail = text.substring(match.end, end);
+    final stop = tail.indexOf(RegExp(r'[.;!?\n]'));
+    if (stop >= 0) {
+      end = match.end + stop;
+    }
+    return text.substring(start < 0 ? 0 : start, end);
+  }
+
+  bool _isNegatedClaim(String window) {
+    if (_notOnlyPattern.hasMatch(window)) {
+      return false;
+    }
+    return _negationPattern.hasMatch(window);
+  }
+
   /// Builds the limitation of one item.
   ///
-  /// The server-authored abstract-only note always comes first, so a Digest
-  /// item can never present a model caveat as if the full text had been
-  /// verified. A model limitation may only be appended inside the field limit.
+  /// The server-authored abstract-only note always comes first, complete:
+  /// `DigestLimits.validate` rejects a `maxLimitationCharacters` shorter than
+  /// the note, and an accepted model caveat is only appended when it fits
+  /// inside the remaining field limit. The disclaimer is never truncated.
   String _limitationWithAbstractNote(String? modelLimitation) {
     final base = digestAbstractOnlyLimitation;
     final limit = limits.maxLimitationCharacters;
-    if (base.length >= limit) {
-      return base.substring(0, limit);
-    }
+    // Guaranteed by DigestLimits.validate on this synthesizer's limits.
+    assert(base.length <= limit);
     if (modelLimitation == null || modelLimitation.isEmpty) {
       return base;
     }
@@ -858,6 +893,26 @@ final List<RegExp> _fullTextClaimPatterns = <RegExp>[
     caseSensitive: false,
   ),
 ];
+
+/// Negation words that turn a full-text phrase into a truthful caveat.
+///
+/// Only the bounded window around a match is inspected, so an unrelated
+/// negation elsewhere in the field cannot hide a positive claim. Boundaries
+/// use explicit classes because `\b`/`\w` are ASCII-only in Dart and would
+/// not see Cyrillic words at all.
+final RegExp _negationPattern = RegExp(
+  r"(?<![A-Za-zА-Яа-яЁё0-9])(?:not|never|without|no)(?![A-Za-z])"
+  r"|(?<![A-Za-zА-Яа-яЁё0-9])(?:не|ни|без|никогда)(?![А-Яа-яЁёA-Za-z])"
+  r"|n't\b",
+  caseSensitive: false,
+);
+
+/// `not only` / `не только` negate the *exclusivity*, not the claim.
+final RegExp _notOnlyPattern = RegExp(
+  r"(?:not\s+only(?![A-Za-z]))"
+  r"|(?:(?<![A-Za-zА-Яа-яЁё0-9])не\s+только(?![А-Яа-яЁёA-Za-z]))",
+  caseSensitive: false,
+);
 
 /// Cleans model-authored text before it becomes part of a `Digest`.
 String _cleanText(String value) => value

@@ -464,6 +464,40 @@ void main() {
       expect(provider.requests, hasLength(1));
     });
 
+    test('rejects a full-text claim in the overview', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              overview: 'The full text was reviewed for this summary.',
+              items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+            ),
+          ),
+        );
+      final harness = await DigestHarness.start(
+        registry: digestRegistryWith(provider),
+        provider: provider,
+        pins: QueueDigestPinResolver(<DigestModelPin?>[
+          DigestModelPin(model: digestModelA),
+        ]),
+        clock: clock,
+      );
+      addTearDown(harness.close);
+
+      final result = await harness.call(
+        digestSummarizeToolName,
+        arguments: <String, Object?>{
+          'topic': 'Research topic',
+          'papers': <Object?>[digestPaper().toJson()],
+        },
+      );
+
+      expect(result.isError, isTrue);
+      expect(result.textContent, startsWith('[digest:model_response]'));
+      expect(result.structuredContent, isNull);
+    });
+
     test('reports provider failures as isError results', () async {
       final provider = digestProvider()
         ..script(digestModelAId, <LlmEvent>[

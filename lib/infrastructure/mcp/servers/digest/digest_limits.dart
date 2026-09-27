@@ -1,5 +1,17 @@
 import '../../../../core/mcp/mcp.dart';
 
+/// Server-authored source boundary that starts every `DigestItem.limitation`.
+///
+/// It is always true for this tool: only the supplied abstracts were reviewed.
+/// The note leads the field regardless of model output, so a model caveat can
+/// neither replace it nor make an unverified full-text claim look verified.
+///
+/// [DigestLimits.maxLimitationCharacters] must be able to hold the complete
+/// note; a smaller limit is an invalid configuration, not a reason to truncate
+/// the disclaimer.
+const digestAbstractOnlyLimitation =
+    'Изучена только аннотация arXiv; полный текст не проверялся.';
+
 /// Hard limits enforced by the local `digest` MCP server.
 ///
 /// The limits bound every dimension of one `summarize_papers` invocation:
@@ -55,6 +67,9 @@ final class DigestLimits {
 
   final int maxOverviewCharacters;
   final int maxFindingCharacters;
+
+  /// Cap for `DigestItem.limitation`; must be at least as long as
+  /// [digestAbstractOnlyLimitation] so the server note is never truncated.
   final int maxLimitationCharacters;
 
   /// Requested provider output-token ceiling for the single model turn.
@@ -99,6 +114,15 @@ final class DigestLimits {
     positive('maxOverviewCharacters', maxOverviewCharacters);
     positive('maxFindingCharacters', maxFindingCharacters);
     positive('maxLimitationCharacters', maxLimitationCharacters);
+    if (maxLimitationCharacters < digestAbstractOnlyLimitation.length) {
+      throwMcp(
+        McpErrorKind.configuration,
+        'Digest limit "maxLimitationCharacters" must be at least '
+        '${digestAbstractOnlyLimitation.length} characters to hold the '
+        'complete server-authored abstract-only note; truncating it would '
+        'misstate the source boundary.',
+      );
+    }
     positive('maxOutputTokens', maxOutputTokens);
     positive('maxTotalTokens', maxTotalTokens);
     if (invocationTimeout <= Duration.zero) {
