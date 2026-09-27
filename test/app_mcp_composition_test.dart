@@ -11,7 +11,6 @@ import 'infrastructure/mcp/servers/arxiv/arxiv_test_support.dart';
 import 'support/agent_harness.dart';
 import 'support/automation_fakes.dart';
 import 'support/mcp_composition_harness.dart';
-import 'support/mcp_fakes.dart';
 import 'support/memory_jsonl_storage.dart';
 
 void main() {

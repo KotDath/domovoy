@@ -31,6 +31,17 @@ Future<void> main() async {
     stderr.writeln('noise-${index.toString().padLeft(4, '0')} ${token ?? ''}');
   }
 
+  // Simulates a cold `dart run` child that needs longer than the SDK's
+  // default 5 s discovery probe to start answering protocol frames.
+  final startupDelayMs =
+      int.tryParse(
+        Platform.environment['MCP_FIXTURE_STARTUP_DELAY_MS'] ?? '',
+      ) ??
+      0;
+  if (startupDelayMs > 0) {
+    await Future<void>.delayed(Duration(milliseconds: startupDelayMs));
+  }
+
   final server = sdk.McpServer(
     sdk.Implementation(name: serverId, version: '1.0.0'),
   );
