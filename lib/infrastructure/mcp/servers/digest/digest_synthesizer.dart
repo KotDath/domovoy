@@ -787,21 +787,30 @@ final class DigestSynthesizer {
 
   /// Bounded window around [match] used to recognize truthful negations.
   ///
-  /// The window never crosses a sentence delimiter after the match, so an
-  /// unrelated negation in the next sentence ("Полный текст проверен.
-  /// Другие данные не сверялись.") cannot hide a positive claim.
+  /// The window never crosses a sentence delimiter on either side, so neither
+  /// a negation in the next sentence ("Полный текст проверен. Другие данные
+  /// не сверялись.") nor in the previous one ("Не читали. Полный текст
+  /// проверен.") can hide a positive claim.
   String _negationWindow(String text, RegExpMatch match) {
-    final start = match.start - _negationWindowCharacters;
+    var start = match.start - _negationWindowCharacters;
+    if (start < 0) {
+      start = 0;
+    }
     var end = match.end + _negationWindowCharacters;
     if (end > text.length) {
       end = text.length;
+    }
+    final head = text.substring(start, match.start);
+    final headStop = head.lastIndexOf(RegExp(r'[.;!?\n]'));
+    if (headStop >= 0) {
+      start = start + headStop + 1;
     }
     final tail = text.substring(match.end, end);
     final stop = tail.indexOf(RegExp(r'[.;!?\n]'));
     if (stop >= 0) {
       end = match.end + stop;
     }
-    return text.substring(start < 0 ? 0 : start, end);
+    return text.substring(start, end);
   }
 
   bool _isNegatedClaim(String window) {

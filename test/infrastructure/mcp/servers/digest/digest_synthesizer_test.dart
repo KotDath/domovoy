@@ -726,6 +726,32 @@ void main() {
       expect(failure.kind, DigestFailureKind.modelResponse);
       expect(failure.message, contains('finding'));
     });
+
+    test('a prior sentence negation does not hide an English claim', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          overview: 'Not reviewed. Full text was reviewed.',
+          items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('overview'));
+    });
+
+    test('a prior sentence negation does not hide a Russian claim', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem(
+              '2501.01234',
+              finding: 'Не читали. Полный текст проверен.',
+            ),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('finding'));
+    });
   });
 
   group('provider failures and budgets', () {
