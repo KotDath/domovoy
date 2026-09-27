@@ -8,6 +8,40 @@ const digestSchemaVersion = 1;
 /// The only v1 source scope: the digest was produced from abstracts.
 const digestSourceScopeAbstract = 'abstract';
 
+/// Field names of the complete Digest v1 wire contract.
+const digestV1Fields = <String>{
+  'schemaVersion',
+  'topic',
+  'sourceScope',
+  'overview',
+  'items',
+  'generatedAt',
+};
+
+/// Field names of one Digest v1 item.
+const digestItemV1Fields = <String>{
+  'arxivId',
+  'abstractUrl',
+  'finding',
+  'limitation',
+};
+
+/// Rejects a Digest v1 payload, and every item inside it, that carries a field
+/// outside the version 1 contract.
+///
+/// [Digest.fromJson] stays tolerant of additional fields for existing
+/// consumers; boundaries that must fail closed on smuggled data - the
+/// `library` tool input and the library JSONL replay - call this explicitly.
+void verifyDigestV1Fields(Object? json) {
+  final map = verifyResearchFields(json, digestV1Fields, 'Digest v1');
+  final items = map['items'];
+  if (items is List) {
+    for (final item in items) {
+      verifyResearchFields(item, digestItemV1Fields, 'Digest v1 item');
+    }
+  }
+}
+
 /// One grounded finding inside a [Digest].
 final class DigestItem {
   DigestItem({

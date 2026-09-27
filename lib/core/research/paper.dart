@@ -7,6 +7,31 @@ import 'errors.dart';
 /// versions instead of partially accepting a new shape.
 const paperSchemaVersion = 1;
 
+/// Field names of the complete Paper v1 wire contract.
+///
+/// [Paper.fromJson] stays tolerant of additional fields so existing consumers
+/// keep working; boundaries that must reject smuggled data - the `library`
+/// tool input and the library JSONL replay - call [verifyPaperV1Fields]
+/// explicitly.
+const paperV1Fields = <String>{
+  'schemaVersion',
+  'arxivId',
+  'version',
+  'title',
+  'authors',
+  'abstract',
+  'categories',
+  'publishedAt',
+  'updatedAt',
+  'abstractUrl',
+};
+
+/// Rejects [json] when it is not an object or carries a field outside
+/// [paperV1Fields], for example a smuggled `pdfUrl` or `apiKey`.
+void verifyPaperV1Fields(Object? json) {
+  verifyResearchFields(json, paperV1Fields, 'Paper v1');
+}
+
 /// Versioned, SDK-independent description of one arXiv paper.
 ///
 /// This is the boundary type shared by the `arxiv`, `digest` and `library`

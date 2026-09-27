@@ -191,4 +191,75 @@ void main() {
       );
     });
   });
+
+  group('strict v1 field sets', () {
+    ResearchErrorKind errorKindOf(Object? Function() action) {
+      try {
+        action();
+      } on ResearchException catch (error) {
+        return error.error.kind;
+      }
+      fail('expected a ResearchException');
+    }
+
+    test('Paper.fromJson stays tolerant while the strict check rejects', () {
+      final json = samplePaper().toJson();
+      json['pdfUrl'] = 'https://example.com/paper.pdf';
+
+      expect(
+        Paper.fromJson(json).toJson().containsKey('pdfUrl'),
+        isFalse,
+        reason: 'the shared reader intentionally ignores extra fields',
+      );
+      expect(
+        errorKindOf(() => verifyPaperV1Fields(json)),
+        ResearchErrorKind.invalidField,
+      );
+      expect(
+        () => verifyPaperV1Fields(samplePaper().toJson()),
+        returnsNormally,
+      );
+      expect(
+        errorKindOf(() => verifyPaperV1Fields(<Object?>[])),
+        ResearchErrorKind.format,
+      );
+    });
+
+    test('Digest strict check rejects top-level and item extra fields', () {
+      final withTopLevel = sampleDigest().toJson();
+      withTopLevel['pdfUrl'] = 'https://example.com/paper.pdf';
+      expect(
+        errorKindOf(() => verifyDigestV1Fields(withTopLevel)),
+        ResearchErrorKind.invalidField,
+      );
+
+      final withItem = sampleDigest().toJson();
+      final items = withItem['items']! as List<Object?>;
+      (items.first! as Map<String, Object?>)['apiKey'] = 'secret';
+      expect(
+        errorKindOf(() => verifyDigestV1Fields(withItem)),
+        ResearchErrorKind.invalidField,
+      );
+
+      expect(
+        () => verifyDigestV1Fields(sampleDigest().toJson()),
+        returnsNormally,
+      );
+    });
+
+    test('strict field sets cover the complete v1 contracts', () {
+      expect(
+        samplePaper().toJson().keys.toSet(),
+        paperV1Fields,
+        reason: 'Paper v1 fields must match the serialized shape',
+      );
+      final digest = sampleDigest().toJson();
+      expect(digest.keys.toSet(), digestV1Fields);
+      final items = digest['items']! as List<Object?>;
+      expect(
+        (items.first! as Map<String, Object?>).keys.toSet(),
+        digestItemV1Fields,
+      );
+    });
+  });
 }

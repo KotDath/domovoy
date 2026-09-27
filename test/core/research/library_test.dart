@@ -6,6 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../infrastructure/mcp/servers/library/library_test_support.dart';
 
+/// Deep, mutable copy of a record JSON for corruption-style tests.
+Map<String, Object?> _mutableRecordJson(LibraryRecord record) =>
+    jsonDecode(jsonEncode(record.toJson())) as Map<String, Object?>;
+
 void main() {
   group('LibraryId', () {
     test('generates unpredictable well-formed identities', () {
@@ -104,6 +108,70 @@ void main() {
             'kind',
             LibraryErrorKind.invalidInput,
           ),
+        ),
+      );
+    });
+
+    test('rejects unexpected fields nested inside a stored paper snapshot', () {
+      final json = _mutableRecordJson(
+        LibraryRecord(
+          libraryId: 'lib_0123456789abcdef0123456789abcdef',
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          savedAt: DateTime.utc(2025, 1, 6, 12, 5),
+        ),
+      );
+      final papers = json['papers']! as List<Object?>;
+      (papers.first! as Map<String, Object?>)['pdfUrl'] =
+          'https://example.com/paper.pdf';
+
+      expect(
+        () => LibraryRecord.fromJson(json),
+        throwsA(
+          isA<LibraryException>()
+              .having(
+                (error) => error.error.kind,
+                'kind',
+                LibraryErrorKind.invalidInput,
+              )
+              .having(
+                (error) => error.error.message,
+                'message',
+                contains('pdfUrl'),
+              ),
+        ),
+      );
+    });
+
+    test('rejects unexpected fields nested inside a stored digest item', () {
+      final json = _mutableRecordJson(
+        LibraryRecord(
+          libraryId: 'lib_0123456789abcdef0123456789abcdef',
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          savedAt: DateTime.utc(2025, 1, 6, 12, 5),
+        ),
+      );
+      final digest = json['digest']! as Map<String, Object?>;
+      final items = digest['items']! as List<Object?>;
+      (items.first! as Map<String, Object?>)['apiKey'] = 'secret';
+
+      expect(
+        () => LibraryRecord.fromJson(json),
+        throwsA(
+          isA<LibraryException>()
+              .having(
+                (error) => error.error.kind,
+                'kind',
+                LibraryErrorKind.invalidInput,
+              )
+              .having(
+                (error) => error.error.message,
+                'message',
+                contains('apiKey'),
+              ),
         ),
       );
     });

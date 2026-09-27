@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:domovoy/core/llm/cancellation.dart';
@@ -25,6 +26,94 @@ final class _FailingPublishStorage implements JsonlStreamStorage {
   @override
   Future<void> publish(String key, List<int> contents) async {
     throw StateError('publish failed');
+  }
+
+  @override
+  Future<Stream<List<int>>?> read(String key) => inner.read(key);
+}
+
+/// Identity generator that replays a scripted list, repeating the last value.
+final class _ScriptedIdGenerator implements LibraryIdGenerator {
+  _ScriptedIdGenerator(this._ids);
+
+  final List<LibraryId> _ids;
+  var calls = 0;
+
+  @override
+  LibraryId next() {
+    calls += 1;
+    final index = calls <= _ids.length ? calls - 1 : _ids.length - 1;
+    return _ids[index];
+  }
+}
+
+/// Generator that counts how many identities a save actually allocates.
+final class _CountingIdGenerator implements LibraryIdGenerator {
+  _CountingIdGenerator(this.inner);
+
+  final LibraryIdGenerator inner;
+  var calls = 0;
+
+  @override
+  LibraryId next() {
+    calls += 1;
+    return inner.next();
+  }
+}
+
+/// Storage that can hold [listKeys] or [publish] open for a controlled abort.
+final class _GatedStorage implements JsonlStreamStorage {
+  _GatedStorage(this.inner);
+
+  final FakeMemoryJsonlStorage inner;
+  final listEntered = Completer<void>();
+  final publishEntered = Completer<void>();
+  Completer<void>? _listGate;
+  Completer<void>? _publishGate;
+
+  void gateList() => _listGate = Completer<void>();
+
+  void gatePublish() => _publishGate = Completer<void>();
+
+  void releaseList() {
+    final gate = _listGate;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  void releasePublish() {
+    final gate = _publishGate;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  @override
+  Future<void> cleanup(String key) => inner.cleanup(key);
+
+  @override
+  Future<List<String>> listKeys() async {
+    final gate = _listGate;
+    if (gate != null) {
+      if (!listEntered.isCompleted) {
+        listEntered.complete();
+      }
+      await gate.future;
+    }
+    return inner.listKeys();
+  }
+
+  @override
+  Future<void> publish(String key, List<int> contents) async {
+    final gate = _publishGate;
+    if (gate != null) {
+      if (!publishEntered.isCompleted) {
+        publishEntered.complete();
+      }
+      await gate.future;
+    }
+    await inner.publish(key, contents);
   }
 
   @override
@@ -335,6 +424,236 @@ void main() {
     });
   });
 
+  group('identity allocation', () {
+    final collidingId = LibraryId('lib_0000000000000000000000000000000a');
+    final freshId = LibraryId('lib_0000000000000000000000000000000b');
+
+    test(
+      'never overwrites an existing record on a generator collision',
+      () async {
+        final generator = _ScriptedIdGenerator(<LibraryId>[
+          collidingId,
+          collidingId,
+          freshId,
+        ]);
+        final colliding = JsonlLibraryStore(
+          storage: storage,
+          clock: clock,
+          ids: generator,
+        );
+
+        final first = await colliding.save(
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          cancellation: token,
+        );
+        clock.advance(const Duration(minutes: 1));
+        final second = await colliding.save(
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          cancellation: token,
+        );
+
+        expect(first.record.libraryId, collidingId);
+        expect(second.record.libraryId, freshId);
+        expect(second.record.libraryId, isNot(first.record.libraryId));
+        expect(storage.keys.toSet(), <String>{
+          collidingId.value,
+          freshId.value,
+        });
+        expect(generator.calls, 3);
+
+        final preserved = await colliding.find(
+          collidingId,
+          cancellation: token,
+        );
+        expect(preserved, first.record);
+      },
+    );
+
+    test(
+      'fails without data loss when no unique identity can be produced',
+      () async {
+        final generator = _ScriptedIdGenerator(<LibraryId>[collidingId]);
+        final stuck = JsonlLibraryStore(
+          storage: storage,
+          clock: clock,
+          ids: generator,
+        );
+        final first = await stuck.save(
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          cancellation: token,
+        );
+
+        await expectLater(
+          stuck.save(
+            topic: 'Research topic',
+            papers: <Paper>[libraryPaper()],
+            digest: libraryDigest(),
+            cancellation: token,
+          ),
+          throwsA(
+            isA<LibraryException>()
+                .having(
+                  (error) => error.error.kind,
+                  'kind',
+                  LibraryErrorKind.persistence,
+                )
+                .having(
+                  (error) => error.error.message,
+                  'message',
+                  contains('nothing was written'),
+                ),
+          ),
+        );
+
+        expect(generator.calls, 1 + JsonlLibraryStore.maxIdentityAttempts);
+        expect(storage.keys, hasLength(1));
+        expect(
+          await stuck.find(collidingId, cancellation: token),
+          first.record,
+        );
+      },
+    );
+
+    test(
+      'does not allocate an identity for an idempotent runId retry',
+      () async {
+        final counting = _CountingIdGenerator(SequentialLibraryIdGenerator());
+        final countingStore = JsonlLibraryStore(
+          storage: storage,
+          clock: clock,
+          ids: counting,
+        );
+
+        final first = await countingStore.save(
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          runId: 'run_1',
+          cancellation: token,
+        );
+        final repeated = await countingStore.save(
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          runId: 'run_1',
+          cancellation: token,
+        );
+        expect(repeated.created, isFalse);
+        expect(repeated.record.libraryId, first.record.libraryId);
+        expect(
+          counting.calls,
+          1,
+          reason: 'the retry returned before allocating',
+        );
+
+        await expectLater(
+          countingStore.save(
+            topic: 'Research topic',
+            papers: <Paper>[libraryPaper()],
+            digest: libraryDigest(overview: 'Different synthesis'),
+            runId: 'run_1',
+            cancellation: token,
+          ),
+          throwsA(isA<LibraryException>()),
+        );
+        expect(
+          counting.calls,
+          1,
+          reason: 'a conflict is reported before allocating an identity',
+        );
+        expect(storage.keys, hasLength(1));
+      },
+    );
+
+    test('normalizes a padded runId before comparing', () async {
+      final first = await save(runId: 'run_1');
+      final padded = await save(runId: '  run_1  ');
+
+      expect(padded.created, isFalse);
+      expect(padded.record.libraryId, first.record.libraryId);
+      expect(storage.keys, hasLength(1));
+    });
+  });
+
+  group('cancellation boundary', () {
+    test(
+      'commits and stays idempotent when cancelled during publish',
+      () async {
+        final gated = _GatedStorage(storage)..gatePublish();
+        final gatedStore = JsonlLibraryStore(
+          storage: gated,
+          clock: clock,
+          ids: SequentialLibraryIdGenerator(),
+        );
+        final cancellation = CancellationSource();
+
+        final future = gatedStore.save(
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          runId: 'run_1',
+          cancellation: cancellation.token,
+        );
+        await gated.publishEntered.future;
+        cancellation.cancel();
+        gated.releasePublish();
+
+        final committed = await future;
+        expect(committed.created, isTrue);
+        expect(storage.keys, hasLength(1));
+
+        final retry = await gatedStore.save(
+          topic: 'Research topic',
+          papers: <Paper>[libraryPaper()],
+          digest: libraryDigest(),
+          runId: 'run_1',
+          cancellation: CancellationSource().token,
+        );
+        expect(retry.created, isFalse);
+        expect(retry.record.libraryId, committed.record.libraryId);
+        expect(storage.keys, hasLength(1));
+      },
+    );
+
+    test('cancellation before publish prevents the write', () async {
+      final gated = _GatedStorage(storage)..gateList();
+      final gatedStore = JsonlLibraryStore(
+        storage: gated,
+        clock: clock,
+        ids: SequentialLibraryIdGenerator(),
+      );
+      final cancellation = CancellationSource();
+
+      final future = gatedStore.save(
+        topic: 'Research topic',
+        papers: <Paper>[libraryPaper()],
+        digest: libraryDigest(),
+        cancellation: cancellation.token,
+      );
+      await gated.listEntered.future;
+      cancellation.cancel();
+      gated.releaseList();
+
+      await expectLater(
+        future,
+        throwsA(
+          isA<LibraryException>().having(
+            (error) => error.error.kind,
+            'kind',
+            LibraryErrorKind.cancelled,
+          ),
+        ),
+      );
+      expect(storage.keys, isEmpty);
+    });
+  });
+
   group('find', () {
     test('returns null for an unknown identity', () async {
       expect(
@@ -388,6 +707,67 @@ void main() {
         ),
       );
     });
+
+    test('rejects a persisted record with a nested paper field', () async {
+      final saved = await save();
+      final key = JsonlLibraryStore.streamKeyFor(saved.record.libraryId);
+      final envelope =
+          jsonDecode((await rawStream(saved.record.libraryId)).trim())
+              as Map<String, Object?>;
+      final record = envelope['record']! as Map<String, Object?>;
+      final papers = record['papers']! as List<Object?>;
+      (papers.first! as Map<String, Object?>)['pdfUrl'] =
+          'https://example.com/paper.pdf';
+      storage.replaceText(key, '${jsonEncode(envelope)}\n');
+
+      await expectLater(
+        store.find(saved.record.libraryId, cancellation: token),
+        throwsA(
+          isA<LibraryException>().having(
+            (error) => error.error.kind,
+            'kind',
+            LibraryErrorKind.corruption,
+          ),
+        ),
+      );
+      await expectLater(
+        store.list(limit: 10, cancellation: token),
+        throwsA(
+          isA<LibraryException>().having(
+            (error) => error.error.kind,
+            'kind',
+            LibraryErrorKind.corruption,
+          ),
+        ),
+      );
+    });
+
+    test(
+      'rejects a persisted record with a nested digest item field',
+      () async {
+        final saved = await save();
+        final key = JsonlLibraryStore.streamKeyFor(saved.record.libraryId);
+        final envelope =
+            jsonDecode((await rawStream(saved.record.libraryId)).trim())
+                as Map<String, Object?>;
+        final record = envelope['record']! as Map<String, Object?>;
+        final digest = record['digest']! as Map<String, Object?>;
+        final items = digest['items']! as List<Object?>;
+        (items.first! as Map<String, Object?>)['apiKey'] = 'secret';
+        storage.replaceText(key, '${jsonEncode(envelope)}\n');
+
+        await expectLater(
+          store.find(saved.record.libraryId, cancellation: token),
+          throwsA(
+            isA<LibraryException>().having(
+              (error) => error.error.kind,
+              'kind',
+              LibraryErrorKind.corruption,
+            ),
+          ),
+        );
+      },
+    );
   });
 
   group('list', () {

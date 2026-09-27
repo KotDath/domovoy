@@ -95,38 +95,16 @@ final class LibraryRecord {
     required DateTime savedAt,
     int revision = 0,
   }) : libraryId = LibraryId(libraryId),
-       runId = _normalizeRunId(runId),
+       runId = normalizeLibraryRunId(runId),
        topic = _requireTopic(topic),
        papers = List<Paper>.unmodifiable(papers),
        savedAt = savedAt.toUtc(),
        revision = _requireRevision(revision) {
-    if (this.papers.isEmpty) {
-      throwLibrary(
-        LibraryErrorKind.invalidInput,
-        'A library record requires at least one paper snapshot.',
-      );
-    }
-    if (digest.topic != this.topic) {
-      throwLibrary(
-        LibraryErrorKind.invalidInput,
-        'Library topic must match the digest topic.',
-      );
-    }
-    final seen = <String>{};
-    for (final paper in this.papers) {
-      if (!seen.add(paper.arxivId.value)) {
-        throwLibrary(
-          LibraryErrorKind.invalidInput,
-          'Paper snapshot ${paper.arxivId.value} is repeated; each normalized '
-          'arXiv ID may appear once.',
-        );
-      }
-    }
-    try {
-      verifyDigestItemsBelongToPapers(digest, this.papers);
-    } on ResearchException catch (error) {
-      throwLibrary(LibraryErrorKind.invalidInput, error.error.message);
-    }
+    validateLibraryPayload(
+      topic: this.topic,
+      papers: this.papers,
+      digest: digest,
+    );
     payloadFingerprint = libraryPayloadFingerprint(
       topic: this.topic,
       papers: this.papers,
@@ -169,6 +147,7 @@ final class LibraryRecord {
     final papers = <Paper>[];
     for (final raw in rawPapers) {
       try {
+        verifyPaperV1Fields(raw);
         papers.add(Paper.fromJson(raw));
       } on ResearchException catch (error) {
         throwLibrary(
@@ -179,6 +158,7 @@ final class LibraryRecord {
     }
     final Digest digest;
     try {
+      verifyDigestV1Fields(map['digest']);
       digest = Digest.fromJson(map['digest']);
     } on ResearchException catch (error) {
       throwLibrary(
@@ -419,6 +399,48 @@ String _requireText(Map<String, Object?> map, String key) {
   return value;
 }
 
+/// Validates the payload of one library record before an identity exists.
+///
+/// `save` calls this before comparing an existing `runId` or allocating a new
+/// identity, so invalid input never burns an ID and never reports a conflict
+/// for a payload that could not be stored at all. [LibraryRecord] calls the
+/// same function from its constructor, so the tool boundary, the store and the
+/// replay path share one contract.
+void validateLibraryPayload({
+  required String topic,
+  required List<Paper> papers,
+  required Digest digest,
+}) {
+  final normalizedTopic = _requireTopic(topic);
+  if (papers.isEmpty) {
+    throwLibrary(
+      LibraryErrorKind.invalidInput,
+      'A library record requires at least one paper snapshot.',
+    );
+  }
+  if (digest.topic != normalizedTopic) {
+    throwLibrary(
+      LibraryErrorKind.invalidInput,
+      'Library topic must match the digest topic.',
+    );
+  }
+  final seen = <String>{};
+  for (final paper in papers) {
+    if (!seen.add(paper.arxivId.value)) {
+      throwLibrary(
+        LibraryErrorKind.invalidInput,
+        'Paper snapshot ${paper.arxivId.value} is repeated; each normalized '
+        'arXiv ID may appear once.',
+      );
+    }
+  }
+  try {
+    verifyDigestItemsBelongToPapers(digest, papers);
+  } on ResearchException catch (error) {
+    throwLibrary(LibraryErrorKind.invalidInput, error.error.message);
+  }
+}
+
 String _requireTopic(String value) {
   final trimmed = value.trim();
   if (trimmed.isEmpty) {
@@ -430,7 +452,12 @@ String _requireTopic(String value) {
   return trimmed;
 }
 
-String? _normalizeRunId(String? value) {
+/// Normalizes a `runId` for idempotency comparison, or returns null.
+///
+/// A supplied `runId` is trimmed and must not contain control characters; the
+/// same normalized value is used by the record, by the `runId` lookup and by
+/// the conflict message, so a padded retry cannot create a duplicate record.
+String? normalizeLibraryRunId(String? value) {
   if (value == null) {
     return null;
   }

@@ -78,6 +78,12 @@ final class JsonlLibraryStore implements LibraryRepository {
   final _JsonlLibraryStoreCoordinator _coordinator;
   late final JsonlLibraryReplay replay;
 
+  /// Upper bound of fresh-identity attempts per save.
+  ///
+  /// An injected generator that keeps returning an already used identity
+  /// fails the save instead of overwriting an existing record.
+  static const maxIdentityAttempts = 16;
+
   @override
   Future<LibrarySaveResult> save({
     required String topic,
@@ -91,30 +97,40 @@ final class JsonlLibraryStore implements LibraryRepository {
     }
     return _coordinator.run(() async {
       _throwIfCancelled(cancellation);
-      final candidate = LibraryRecord(
-        libraryId: ids.next().value,
-        runId: runId,
-        topic: topic,
-        papers: papers,
-        digest: digest,
-        savedAt: clock.nowUtc(),
-      );
-      _assertRecordFits(candidate);
-      if (candidate.runId != null) {
-        final existing = await _findByRunId(candidate.runId!, cancellation);
+      // Validate the payload before any identity is allocated or compared, so
+      // invalid input never burns an ID and never reports a conflict for a
+      // payload that could not be stored at all.
+      validateLibraryPayload(topic: topic, papers: papers, digest: digest);
+      final normalizedRunId = normalizeLibraryRunId(runId);
+      _throwIfCancelled(cancellation);
+      if (normalizedRunId != null) {
+        final existing = await _findByRunId(normalizedRunId, cancellation);
         if (existing != null) {
-          if (existing.payloadFingerprint == candidate.payloadFingerprint) {
+          final incomingFingerprint = libraryPayloadFingerprint(
+            topic: topic,
+            papers: papers,
+            digest: digest,
+          );
+          if (existing.payloadFingerprint == incomingFingerprint) {
             return LibrarySaveResult(record: existing, created: false);
           }
           throwLibrary(
             LibraryErrorKind.conflict,
-            'runId "${candidate.runId}" is already bound to record '
+            'runId "$normalizedRunId" is already bound to record '
             '${existing.libraryId.value} with a different topic, paper '
             'snapshot or digest; nothing was written. Read the existing '
             'record with get_saved or retry with the original payload.',
           );
         }
       }
+      final candidate = await _allocateCandidate(
+        topic: topic,
+        papers: papers,
+        digest: digest,
+        runId: normalizedRunId,
+        cancellation: cancellation,
+      );
+      _assertRecordFits(candidate);
       final envelope = JsonlLibraryEnvelope(
         libraryId: candidate.libraryId.value,
         sequence: 0,
@@ -128,6 +144,43 @@ final class JsonlLibraryStore implements LibraryRepository {
       await _publish(candidate.libraryId.value, contents);
       return LibrarySaveResult(record: candidate, created: true);
     });
+  }
+
+  /// Allocates a fresh record whose stream key is not used yet.
+  ///
+  /// The existence check reads the key list once and then retries the injected
+  /// [LibraryIdGenerator] a bounded number of times. A colliding identity is
+  /// skipped, never overwritten; when no fresh identity can be produced the
+  /// save fails with `[library:persistence]` and leaves storage untouched.
+  Future<LibraryRecord> _allocateCandidate({
+    required String topic,
+    required List<Paper> papers,
+    required Digest digest,
+    required String? runId,
+    required CancellationToken cancellation,
+  }) async {
+    final existingKeys = await _existingKeys();
+    final savedAt = clock.nowUtc();
+    for (var attempt = 0; attempt < maxIdentityAttempts; attempt += 1) {
+      _throwIfCancelled(cancellation);
+      final id = ids.next();
+      if (existingKeys.contains(id.value)) {
+        continue;
+      }
+      return LibraryRecord(
+        libraryId: id.value,
+        runId: runId,
+        topic: topic,
+        papers: papers,
+        digest: digest,
+        savedAt: savedAt,
+      );
+    }
+    throwLibrary(
+      LibraryErrorKind.persistence,
+      'Could not allocate a unique library identity after '
+      '$maxIdentityAttempts attempts; nothing was written.',
+    );
   }
 
   @override
@@ -230,16 +283,10 @@ final class JsonlLibraryStore implements LibraryRepository {
   }
 
   Future<List<LibraryRecord>> _readAll(CancellationToken cancellation) async {
-    final List<String> listed;
-    try {
-      listed = await storage.listKeys();
-    } on Object {
-      throw _persistence('library stream list could not be read.');
-    }
-    _throwIfCancelled(cancellation);
-    final keys = listed.toSet().toList()..sort();
+    final keys = (await _existingKeys()).toList()..sort();
     final records = <LibraryRecord>[];
     for (final key in keys) {
+      _throwIfCancelled(cancellation);
       final id = LibraryId.tryParse(key);
       if (id == null) {
         throw _corruption(
@@ -253,6 +300,17 @@ final class JsonlLibraryStore implements LibraryRepository {
       records.add(state!.record!);
     }
     return records;
+  }
+
+  /// Snapshot of the stream keys currently present in the library namespace.
+  Future<Set<String>> _existingKeys() async {
+    final List<String> listed;
+    try {
+      listed = await storage.listKeys();
+    } on Object {
+      throw _persistence('library stream list could not be read.');
+    }
+    return listed.toSet();
   }
 
   Future<JsonlLibraryReplayResult?> _read(LibraryId id) async {

@@ -30,38 +30,6 @@ const _serverInstructions =
     'и get_saved читают сохранённое. PDF, ключи и произвольные файлы не '
     'сохраняются, путь файловой системы не принимается.';
 
-/// Fields accepted inside one Paper v1 snapshot.
-const _paperFields = <String>{
-  'schemaVersion',
-  'arxivId',
-  'version',
-  'title',
-  'authors',
-  'abstract',
-  'categories',
-  'publishedAt',
-  'updatedAt',
-  'abstractUrl',
-};
-
-/// Fields accepted at the top level of one Digest v1 payload.
-const _digestFields = <String>{
-  'schemaVersion',
-  'topic',
-  'sourceScope',
-  'overview',
-  'items',
-  'generatedAt',
-};
-
-/// Fields accepted inside one Digest v1 item.
-const _digestItemFields = <String>{
-  'arxivId',
-  'abstractUrl',
-  'finding',
-  'limitation',
-};
-
 /// `LocalMcpServerFactory` of the built-in `library` server.
 ///
 /// B9 composes it explicitly, for example:
@@ -178,9 +146,10 @@ final class LibraryMcpServerFactory implements LocalMcpServerFactory {
         runId: request.runId,
         cancellation: cancellation.token,
       );
-      if (extra.signal.aborted) {
-        return _failure(_cancelledFailure());
-      }
+      // The save may have committed while the client was cancelling. The
+      // committed record is the truth: the tool reports it instead of
+      // fabricating a post-commit cancellation failure. Cancellation before
+      // the commit is still enforced by the repository token.
       return _saveSuccess(result);
     } on LibraryFailure catch (failure) {
       return _failure(failure);
@@ -390,14 +359,13 @@ final class LibraryMcpServerFactory implements LocalMcpServerFactory {
   }
 
   Digest _parseDigest(Object? raw) {
-    _rejectUnknownKeys(raw, _digestFields, label: 'digest');
-    if (raw is Map) {
-      final items = raw['items'];
-      if (items is List) {
-        for (final item in items) {
-          _rejectUnknownKeys(item, _digestItemFields, label: 'digest item');
-        }
-      }
+    try {
+      verifyDigestV1Fields(raw);
+    } on ResearchException catch (error) {
+      throwLibraryFailure(
+        LibraryFailureKind.invalidInput,
+        'Digest v1 не прошёл проверку: ${error.error.message}',
+      );
     }
     try {
       return Digest.fromJson(raw);
@@ -416,7 +384,15 @@ final class LibraryMcpServerFactory implements LocalMcpServerFactory {
   }
 
   Paper _parsePaper(Object? raw, int index) {
-    _rejectUnknownKeys(raw, _paperFields, label: 'paper #${index + 1}');
+    try {
+      verifyPaperV1Fields(raw);
+    } on ResearchException catch (error) {
+      throwLibraryFailure(
+        LibraryFailureKind.invalidInput,
+        'Статья #${index + 1} не является полным Paper v1: '
+        '${error.error.message}',
+      );
+    }
     try {
       return Paper.fromJson(raw);
     } on ResearchException catch (error) {

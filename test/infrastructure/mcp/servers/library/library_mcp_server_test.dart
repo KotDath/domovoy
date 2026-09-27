@@ -4,6 +4,7 @@ import 'package:domovoy/core/mcp/mcp.dart';
 import 'package:domovoy/core/research/research.dart';
 import 'package:domovoy/infrastructure/mcp/servers/library/library.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mcp_dart/mcp_dart.dart' as sdk;
 
 import '../../../../support/memory_jsonl_storage.dart';
 import 'library_test_support.dart';
@@ -37,6 +38,131 @@ final class _FailingRepository implements LibraryRepository {
     required CancellationToken cancellation,
   }) async => throw LibraryException(error);
 }
+
+/// Repository that records a commit and can fire a side effect mid-save.
+///
+/// It models a store that committed before it observed the transport
+/// cancellation, which is exactly the state the handler must report honestly.
+final class _CommitThenAbortRepository implements LibraryRepository {
+  _CommitThenAbortRepository({required this.onSaved});
+
+  final void Function() onSaved;
+  var saveCalls = 0;
+  LibrarySaveResult? committed;
+
+  @override
+  Future<LibrarySaveResult> save({
+    required String topic,
+    required List<Paper> papers,
+    required Digest digest,
+    String? runId,
+    required CancellationToken cancellation,
+  }) async {
+    saveCalls += 1;
+    committed = LibrarySaveResult(
+      record: LibraryRecord(
+        libraryId: 'lib_0000000000000000000000000000000c',
+        runId: runId,
+        topic: topic,
+        papers: papers,
+        digest: digest,
+        savedAt: DateTime.utc(2025, 1, 6, 12, 5),
+      ),
+      created: true,
+    );
+    onSaved();
+    return committed!;
+  }
+
+  @override
+  Future<LibraryRecord?> find(
+    LibraryId id, {
+    required CancellationToken cancellation,
+  }) async => committed?.record;
+
+  @override
+  Future<LibraryPage> list({
+    String? query,
+    required int limit,
+    String? cursor,
+    required CancellationToken cancellation,
+  }) async => LibraryPage(cards: const <LibraryCard>[], totalCount: 0);
+}
+
+/// `McpServer` that captures the registered tool callbacks.
+///
+/// The SDK drops the response of a request whose signal aborted, so the
+/// post-commit handler contract is pinned here by invoking the callback
+/// directly with a controlled [sdk.RequestHandlerExtra].
+final class _RecordingMcpServer extends sdk.McpServer {
+  _RecordingMcpServer()
+    : super(
+        const sdk.Implementation(name: 'library-recording', version: '1.0.0'),
+      );
+
+  final Map<String, sdk.ToolFunction> tools = <String, sdk.ToolFunction>{};
+
+  @override
+  sdk.RegisteredTool registerTool(
+    String name, {
+    String? title,
+    String? description,
+    sdk.ToolInputSchema? inputSchema,
+    sdk.ToolOutputSchema? outputSchema,
+    sdk.ToolAnnotations? annotations,
+    Map<String, dynamic>? meta,
+    required sdk.ToolFunction callback,
+  }) {
+    tools[name] = callback;
+    return super.registerTool(
+      name,
+      title: title,
+      description: description,
+      inputSchema: inputSchema,
+      outputSchema: outputSchema,
+      annotations: annotations,
+      meta: meta,
+      callback: callback,
+    );
+  }
+}
+
+/// Invokes one registered tool with a controlled abort signal.
+Future<sdk.CallToolResult> _callToolDirectly({
+  required LibraryMcpServerFactory factory,
+  required String tool,
+  required Map<String, Object?> arguments,
+  required sdk.AbortSignal signal,
+}) {
+  final server = _RecordingMcpServer();
+  factory.create().registerTools(server);
+  final callback = server.tools[tool];
+  if (callback == null) {
+    throw StateError('Tool "$tool" was not registered.');
+  }
+  return Future<sdk.CallToolResult>.sync(
+    () => callback(
+      Map<String, dynamic>.from(arguments),
+      sdk.RequestHandlerExtra(
+        signal: signal,
+        requestId: 1,
+        sendNotification: (notification, {relatedTask}) async {},
+        sendRequest:
+            <T extends sdk.BaseResultData>(
+              request,
+              resultFactory,
+              options,
+            ) async => throw UnsupportedError('no outgoing requests'),
+      ),
+    ),
+  );
+}
+
+/// Concatenated text blocks of an SDK tool result.
+String _resultText(sdk.CallToolResult result) => result.content
+    .whereType<sdk.TextContent>()
+    .map((block) => block.text)
+    .join('\n');
 
 void main() {
   late FakeMemoryJsonlStorage storage;
@@ -107,6 +233,126 @@ void main() {
 
       expect(factory.repository, same(repository));
     });
+  });
+
+  group('handler cancellation contract', () {
+    test('reports a save committed while the signal aborts', () async {
+      final controller = sdk.BasicAbortController();
+      final repository = _CommitThenAbortRepository(
+        onSaved: () => controller.abort('client cancelled'),
+      );
+      final factory = LibraryMcpServerFactory.withRepository(
+        repository: repository,
+      );
+
+      final result = await _callToolDirectly(
+        factory: factory,
+        tool: librarySaveToolName,
+        arguments: librarySaveArgs(runId: 'run_1'),
+        signal: controller.signal,
+      );
+
+      expect(controller.signal.aborted, isTrue);
+      expect(repository.saveCalls, 1);
+      expect(repository.committed, isNotNull);
+      expect(result.isError, isFalse);
+      expect(_resultText(result), isNot(contains('cancelled')));
+      final structured = result.structuredContent! as Map<String, Object?>;
+      expect(structured['created'], isTrue);
+      expect(
+        structured['libraryId'],
+        repository.committed!.record.libraryId.value,
+      );
+      expect(structured['runId'], 'run_1');
+    });
+
+    test('does not save when the signal is already aborted', () async {
+      final controller = sdk.BasicAbortController()..abort('client cancelled');
+      final repository = _CommitThenAbortRepository(onSaved: () {});
+      final factory = LibraryMcpServerFactory.withRepository(
+        repository: repository,
+      );
+
+      final result = await _callToolDirectly(
+        factory: factory,
+        tool: librarySaveToolName,
+        arguments: librarySaveArgs(runId: 'run_1'),
+        signal: controller.signal,
+      );
+
+      expect(result.isError, isTrue);
+      expect(_resultText(result), startsWith('[library:cancelled]'));
+      expect(result.structuredContent, isNull);
+      expect(repository.saveCalls, 0);
+    });
+  });
+
+  group('handler nested strictness', () {
+    test(
+      'rejects a nested paper field before the repository sees it',
+      () async {
+        final repository = _CommitThenAbortRepository(onSaved: () {});
+        final factory = LibraryMcpServerFactory.withRepository(
+          repository: repository,
+        );
+        final arguments = librarySaveArgs();
+        final papers = <Object?>[
+          <String, Object?>{
+            ...(arguments['papers']! as List<Object?>).single
+                as Map<String, Object?>,
+            'pdfUrl': 'https://example.com/paper.pdf',
+          },
+        ];
+
+        final result = await _callToolDirectly(
+          factory: factory,
+          tool: librarySaveToolName,
+          arguments: <String, Object?>{...arguments, 'papers': papers},
+          signal: sdk.BasicAbortController().signal,
+        );
+
+        expect(result.isError, isTrue);
+        expect(_resultText(result), startsWith('[library:invalid_input]'));
+        expect(_resultText(result), contains('pdfUrl'));
+        expect(repository.saveCalls, 0);
+      },
+    );
+
+    test(
+      'rejects a nested digest item field before the repository sees it',
+      () async {
+        final repository = _CommitThenAbortRepository(onSaved: () {});
+        final factory = LibraryMcpServerFactory.withRepository(
+          repository: repository,
+        );
+        final arguments = librarySaveArgs();
+        final digest = Map<String, Object?>.from(
+          arguments['digest']! as Map<String, Object?>,
+        );
+        final items = <Object?>[
+          <String, Object?>{
+            ...(digest['items']! as List<Object?>).single
+                as Map<String, Object?>,
+            'apiKey': 'secret',
+          },
+        ];
+
+        final result = await _callToolDirectly(
+          factory: factory,
+          tool: librarySaveToolName,
+          arguments: <String, Object?>{
+            ...arguments,
+            'digest': {...digest, 'items': items},
+          },
+          signal: sdk.BasicAbortController().signal,
+        );
+
+        expect(result.isError, isTrue);
+        expect(_resultText(result), startsWith('[library:invalid_input]'));
+        expect(_resultText(result), contains('apiKey'));
+        expect(repository.saveCalls, 0);
+      },
+    );
   });
 
   group('tool catalog', () {
