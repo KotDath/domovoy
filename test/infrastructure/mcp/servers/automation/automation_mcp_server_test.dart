@@ -317,14 +317,23 @@ void main() {
             });
         final taskId = created.structuredContent!['taskId']! as String;
 
+        // A second, active task with a finished manual run.
+        final active = await harness.service.createTask(automationDraft());
+        final handle = await harness.service.runTaskNow(active.taskId);
+        await handle.done;
+
         final list = await harness.call(automationListTasksToolName, const {});
         expect(list.isError, isFalse);
         final tasks = list.structuredContent!['tasks']! as List<Object?>;
-        expect(tasks, hasLength(1));
-        final record = tasks.single! as Map<String, Object?>;
+        expect(tasks, hasLength(2));
+        final record = tasks.first! as Map<String, Object?>;
         expect(record['taskId'], taskId);
         expect(record['state'], 'proposed');
         expect(record['cron'], '*/5 * * * *');
+        final withRun = tasks.last! as Map<String, Object?>;
+        final lastRun = withRun['lastRun']! as Map<String, Object?>;
+        expect(lastRun['status'], 'succeeded');
+        expect(lastRun['trigger'], 'manual');
         expect(
           firstToolSchemaValueProblem(
             _schemaMap(harness.tool(automationListTasksToolName).outputSchema!),
@@ -339,7 +348,7 @@ void main() {
         );
         expect(
           (filtered.structuredContent!['tasks']! as List<Object?>),
-          isEmpty,
+          hasLength(1),
         );
         final bad = await harness.call(
           automationListTasksToolName,

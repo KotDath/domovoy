@@ -1128,7 +1128,7 @@ String _clip(String value, int limit) {
   if (value.length <= limit) {
     return value;
   }
-  return '${value.substring(0, limit)}…';
+  return '${value.substring(0, limit - 1)}…';
 }
 
 String _clipText(String value, [int limit = 4000]) {
