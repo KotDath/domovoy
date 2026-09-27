@@ -197,7 +197,8 @@ class McpConnectionsPage extends StatelessWidget {
           const SizedBox(height: DomovoyDimensions.space1),
           Text(
             '${entry.id} · ${entry.transportLabel} · '
-            'инструментов: ${entry.toolCount}',
+            'инструментов: ${entry.toolCount}'
+            '${entry.processId == null ? '' : ' · PID ${entry.processId}'}',
             key: ValueKey('mcp-meta-${entry.id}'),
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
               fontFamily: 'monospace',

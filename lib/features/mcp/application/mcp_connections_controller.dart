@@ -37,6 +37,7 @@ final class McpConnectionsController extends ChangeNotifier {
     required McpConnectionProbe probe,
     Listenable? hostChanges,
     Set<String> builtInConnectionIds = const <String>{},
+    int? Function(String connectionId)? builtInProcessId,
     String Function()? secretRefIds,
   }) : _host = host,
        _repository = repository,
@@ -45,6 +46,7 @@ final class McpConnectionsController extends ChangeNotifier {
        _probe = probe,
        _hostChanges = hostChanges,
        _builtInConnectionIds = Set<String>.unmodifiable(builtInConnectionIds),
+       _builtInProcessId = builtInProcessId,
        _secretRefIds = secretRefIds ?? _defaultSecretRefId;
 
   final McpHost _host;
@@ -54,6 +56,7 @@ final class McpConnectionsController extends ChangeNotifier {
   final McpConnectionProbe _probe;
   final Listenable? _hostChanges;
   final Set<String> _builtInConnectionIds;
+  final int? Function(String connectionId)? _builtInProcessId;
 
   /// Unique suffix factory for versioned secret references (test seam).
   final String Function() _secretRefIds;
@@ -1125,6 +1128,7 @@ final class McpConnectionsController extends ChangeNotifier {
                 const <McpToolRoute>[],
           ),
           isBuiltIn: _isBuiltIn(config),
+          processId: _builtInProcessId?.call(config.connectionId.value),
         ),
       );
     }

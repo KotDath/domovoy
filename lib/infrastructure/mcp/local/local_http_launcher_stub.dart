@@ -2,8 +2,9 @@ import '../../../core/mcp/mcp.dart';
 import 'local_http_launcher.dart';
 import 'local_mcp_definition.dart';
 
-McpHttpServerLauncher createMcpHttpServerLauncher() =>
-    const _UnsupportedMcpHttpServerLauncher();
+McpHttpServerLauncher createMcpHttpServerLauncher({
+  bool useDesktopSidecar = false,
+}) => const _UnsupportedMcpHttpServerLauncher();
 
 final class _UnsupportedMcpHttpServerLauncher implements McpHttpServerLauncher {
   const _UnsupportedMcpHttpServerLauncher();

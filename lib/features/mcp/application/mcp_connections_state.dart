@@ -13,12 +13,14 @@ final class McpConnectionEntry {
     required this.status,
     required this.routes,
     required this.isBuiltIn,
+    this.processId,
   });
 
   final McpConnectionConfig config;
   final McpConnectionStatus? status;
   final List<McpToolRoute> routes;
   final bool isBuiltIn;
+  final int? processId;
 
   String get id => config.connectionId.value;
   String get alias => config.alias;

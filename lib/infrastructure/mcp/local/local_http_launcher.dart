@@ -5,9 +5,14 @@ import 'local_http_launcher_stub.dart'
 
 /// Loopback HTTP endpoint of a running local MCP server.
 final class McpHttpServerHandle {
-  const McpHttpServerHandle({required this.url, required this.stop});
+  const McpHttpServerHandle({
+    required this.url,
+    required this.stop,
+    this.processId,
+  });
 
   final Uri url;
+  final int? processId;
 
   /// Stops the listener and closes every active MCP session.
   final Future<void> Function() stop;
@@ -25,5 +30,7 @@ abstract interface class McpHttpServerLauncher {
 }
 
 /// Returns the platform launcher: real on IO, unsupported on web.
-McpHttpServerLauncher createMcpHttpServerLauncher() =>
-    platform.createMcpHttpServerLauncher();
+McpHttpServerLauncher createMcpHttpServerLauncher({
+  bool useDesktopSidecar = false,
+}) =>
+    platform.createMcpHttpServerLauncher(useDesktopSidecar: useDesktopSidecar);

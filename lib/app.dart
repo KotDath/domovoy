@@ -260,6 +260,7 @@ final class McpCompositionInputs {
     this.secretVault,
     this.capabilities,
     this.localTransportPreference = McpLocalTransportPreference.auto,
+    this.useDesktopSidecar = false,
     this.forceDisableStdio = false,
     this.stdioDisabledReason,
     this.pauseAutomationInBackground = false,
@@ -278,6 +279,10 @@ final class McpCompositionInputs {
   final McpSecretVault? secretVault;
   final McpPlatformCapabilities? capabilities;
   final McpLocalTransportPreference localTransportPreference;
+
+  /// Desktop production hosts expose each built-in MCP endpoint from its own
+  /// child process; tests and mobile builds keep the in-process launcher.
+  final bool useDesktopSidecar;
   final bool forceDisableStdio;
   final String? stdioDisabledReason;
   final bool pauseAutomationInBackground;
@@ -351,6 +356,9 @@ final class DomovoyMcpComposition {
       preference: inputs.localTransportPreference,
       runtimeSecrets: runtimeSecrets,
       diagnostics: diagnostics,
+      httpLauncher: createMcpHttpServerLauncher(
+        useDesktopSidecar: inputs.useDesktopSidecar,
+      ),
     );
     final transports = McpSdkTransportFactory(
       streams: localServers,
@@ -466,6 +474,10 @@ final class DomovoyMcpComposition {
       probeTransports: transports,
       hostChanges: host,
       builtInConnectionIds: builtInIds,
+      builtInProcessId: (id) => switch (localServers.endpointFor(id)) {
+        LocalMcpHttpEndpoint(:final processId) => processId,
+        _ => null,
+      },
       unavailableReasons: () => bridge.source.unavailableTools,
     );
 
@@ -763,6 +775,12 @@ final class DomovoyDependencies {
           localTransportPreference: aurora
               ? McpLocalTransportPreference.stream
               : McpLocalTransportPreference.auto,
+          useDesktopSidecar:
+              !aurora &&
+              !kIsWeb &&
+              (defaultTargetPlatform == TargetPlatform.linux ||
+                  defaultTargetPlatform == TargetPlatform.windows ||
+                  defaultTargetPlatform == TargetPlatform.macOS),
         );
     final mcp = DomovoyMcpComposition.build(
       runtime: stack.runtime,
@@ -1182,17 +1200,14 @@ class _TasksSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final tasks = composition.tasks!;
     final editor = composition.taskEditor!;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Задачи')),
-      body: StreamBuilder<ProviderCatalogSnapshot>(
-        stream: dependencies.providerModelCatalog?.updates,
-        builder: (context, snapshot) => TasksPage(
-          controller: tasks,
-          editor: editor,
-          availableModels: <ModelRef>[
-            for (final model in dependencies.registry.models) model.ref,
-          ],
-        ),
+    return StreamBuilder<ProviderCatalogSnapshot>(
+      stream: dependencies.providerModelCatalog?.updates,
+      builder: (context, snapshot) => TasksPage(
+        controller: tasks,
+        editor: editor,
+        availableModels: <ModelRef>[
+          for (final model in dependencies.registry.models) model.ref,
+        ],
       ),
     );
   }
@@ -1205,8 +1220,5 @@ class _LibrarySection extends StatelessWidget {
   final LibraryController controller;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Библиотека')),
-    body: LibraryPage(controller: controller),
-  );
+  Widget build(BuildContext context) => LibraryPage(controller: controller);
 }

@@ -87,9 +87,13 @@ final class LocalMcpHttpEndpoint extends LocalMcpServerEndpoint {
     required super.serverId,
     required this.url,
     required this.bearerToken,
+    this.processId,
   }) : super(kind: McpTransportKind.streamableHttp);
 
   final Uri url;
+
+  /// PID of the desktop MCP sidecar, or null for in-process HTTP.
+  final int? processId;
 
   /// Short-lived token, kept only in memory for in-process clients.
   final String bearerToken;
@@ -232,6 +236,7 @@ final class LocalMcpServerHost implements LocalMcpStreamRegistry {
         serverId: definition.id,
         url: handle.url,
         bearerToken: token,
+        processId: handle.processId,
       );
       _running[definition.id] = _RunningLocalServer(
         definition: definition,

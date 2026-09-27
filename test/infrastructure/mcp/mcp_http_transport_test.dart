@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:domovoy/core/llm/cancellation.dart';
 import 'package:domovoy/core/mcp/mcp.dart';
 import 'package:domovoy/infrastructure/mcp/mcp.dart';
@@ -133,6 +135,57 @@ void main() {
           McpErrorKind.configuration,
         ),
       ),
+    );
+    await connection.close();
+  });
+
+  test('desktop sidecar serves MCP from a separate loopback process', () async {
+    final sidecarHost = LocalMcpServerHost(
+      preference: McpLocalTransportPreference.http,
+      runtimeSecrets: secrets,
+      diagnostics: diagnostics,
+      httpLauncher: createMcpHttpServerLauncher(useDesktopSidecar: true),
+    );
+    addTearDown(sidecarHost.stopAll);
+    sidecarHost.register(
+      FixtureMcpServerFactory(
+        serverId: 'sidecar-fixture',
+        tools: fixtureToolsFor('sidecar-fixture'),
+      ),
+    );
+    final endpoint = await sidecarHost.start('sidecar-fixture');
+    expect(endpoint, isA<LocalMcpHttpEndpoint>());
+    expect((endpoint as LocalMcpHttpEndpoint).processId, greaterThan(0));
+    expect(endpoint.processId, isNot(pid));
+    final sidecarFactory = McpSdkTransportFactory(
+      streams: sidecarHost,
+      diagnostics: diagnostics,
+    );
+    final connection = await sidecarFactory.create(
+      sidecarHost.connectionConfig('sidecar-fixture'),
+      secrets: secrets,
+    );
+    final handshake = await connection.connect(
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(handshake.serverName, 'sidecar-fixture');
+    expect(
+      (await connection.listTools(
+        timeout: const Duration(seconds: 10),
+        cancellation: token,
+      )).tools.length,
+      3,
+    );
+    final result = await connection.callTool(
+      originalToolName: 'echo',
+      arguments: const <String, Object?>{'value': 'sidecar'},
+      timeout: const Duration(seconds: 10),
+      cancellation: token,
+    );
+    expect(
+      (result.structuredContent as Map<String, Object?>)['value'],
+      'sidecar',
     );
     await connection.close();
   });

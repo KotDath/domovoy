@@ -1,13 +1,17 @@
 import 'package:mcp_dart/mcp_dart.dart' as sdk;
 
 import 'local_http_launcher.dart';
+import 'local_http_sidecar_io.dart';
 import 'local_mcp_definition.dart';
 
-McpHttpServerLauncher createMcpHttpServerLauncher() =>
-    const _IoMcpHttpServerLauncher();
+McpHttpServerLauncher createMcpHttpServerLauncher({
+  bool useDesktopSidecar = false,
+}) => _IoMcpHttpServerLauncher(useDesktopSidecar: useDesktopSidecar);
 
 final class _IoMcpHttpServerLauncher implements McpHttpServerLauncher {
-  const _IoMcpHttpServerLauncher();
+  const _IoMcpHttpServerLauncher({required this.useDesktopSidecar});
+
+  final bool useDesktopSidecar;
 
   @override
   bool get isSupported => true;
@@ -34,7 +38,7 @@ final class _IoMcpHttpServerLauncher implements McpHttpServerLauncher {
       },
     );
     await server.start();
-    return McpHttpServerHandle(
+    final backend = McpHttpServerHandle(
       url: Uri(
         scheme: 'http',
         host: '127.0.0.1',
@@ -43,6 +47,30 @@ final class _IoMcpHttpServerLauncher implements McpHttpServerLauncher {
       ),
       stop: server.stop,
     );
+    if (!useDesktopSidecar) {
+      return backend;
+    }
+    try {
+      final sidecar = await launchMcpHttpSidecar(
+        serverId: definition.id,
+        backendUrl: backend.url,
+        bearerToken: bearerToken,
+      );
+      return McpHttpServerHandle(
+        url: sidecar.url,
+        processId: sidecar.processId,
+        stop: () async {
+          try {
+            await sidecar.stop();
+          } finally {
+            await backend.stop();
+          }
+        },
+      );
+    } on Object {
+      await backend.stop();
+      rethrow;
+    }
   }
 }
 

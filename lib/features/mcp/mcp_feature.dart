@@ -47,6 +47,7 @@ final class McpFeature {
     Listenable? hostChanges,
     McpTimeouts timeouts = const McpTimeouts(),
     Set<String> builtInConnectionIds = const <String>{},
+    int? Function(String connectionId)? builtInProcessId,
     Map<String, String> Function()? unavailableReasons,
   }) {
     return McpFeature._(
@@ -62,6 +63,7 @@ final class McpFeature {
         ),
         hostChanges: hostChanges,
         builtInConnectionIds: builtInConnectionIds,
+        builtInProcessId: builtInProcessId,
       ),
       toolAccess: McpToolAccessController(
         host: host,
