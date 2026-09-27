@@ -24,6 +24,54 @@ final class McpProbeResult {
   final String? error;
 }
 
+/// Sanitizes an untrusted failure message before it reaches the UI.
+///
+/// Any exact occurrence of a submitted secret (bearer token or secure env
+/// value) forces the generic [fallback] instead of a partial redaction, so no
+/// fragment of a credential can reach probe results, UI state, transcripts or
+/// diagnostics. [secretValues] may be a live set that a
+/// [McpRecordingSecretResolver] fills while the probe runs.
+String sanitizeMcpFailureForUi(
+  String? raw, {
+  required Iterable<String> secretValues,
+  required String fallback,
+}) {
+  final trimmed = raw?.trim() ?? '';
+  if (trimmed.isEmpty) {
+    return fallback;
+  }
+  for (final secret in secretValues) {
+    final value = secret.trim();
+    if (value.isNotEmpty && trimmed.contains(value)) {
+      // Never risk showing a partially redacted credential.
+      return fallback;
+    }
+  }
+  return sanitizeMcpText(trimmed, fallback: fallback);
+}
+
+/// Adds every non-empty value it resolves to [redactions].
+///
+/// The probe reads draft overrides and stored vault values through this
+/// wrapper, so a server that echoes a secret in an error is redacted even when
+/// the value came from secure storage rather than the form.
+final class McpRecordingSecretResolver implements McpSecretResolver {
+  McpRecordingSecretResolver({required this.inner, Set<String>? redactions})
+    : redactions = redactions ?? <String>{};
+
+  final McpSecretResolver inner;
+  final Set<String> redactions;
+
+  @override
+  Future<String?> read(McpSecretReference reference) async {
+    final value = await inner.read(reference);
+    if (value != null && value.isNotEmpty) {
+      redactions.add(value);
+    }
+    return value;
+  }
+}
+
 /// Resolver layered over the stored vault for a check of unsaved form values.
 ///
 /// Draft values win over stored ones; [removed] makes a reference explicitly
@@ -74,6 +122,7 @@ final class McpConnectionProbe {
   Future<McpProbeResult> run(
     McpConnectionConfig config, {
     required McpSecretResolver secrets,
+    Iterable<String> redactions = const <String>[],
     CancellationToken? cancellation,
   }) async {
     final token = cancellation ?? CancellationSource().token;
@@ -116,16 +165,18 @@ final class McpConnectionProbe {
     } on McpException catch (error) {
       return McpProbeResult.failure(
         errorKind: error.error.kind,
-        error: sanitizeMcpText(
+        error: sanitizeMcpFailureForUi(
           error.error.message,
+          secretValues: redactions,
           fallback: sanitizedMcpUnavailableMessage(),
         ),
       );
     } on Object catch (error) {
       return McpProbeResult.failure(
         errorKind: McpErrorKind.transport,
-        error: sanitizeMcpText(
+        error: sanitizeMcpFailureForUi(
           error.toString(),
+          secretValues: redactions,
           fallback: sanitizedMcpUnavailableMessage(),
         ),
       );

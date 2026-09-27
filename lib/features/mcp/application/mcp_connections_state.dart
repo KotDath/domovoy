@@ -52,6 +52,7 @@ final class McpConnectionsState {
     this.saving = false,
     this.editorError,
     this.configurationError,
+    this.secretCleanupFailures = const <String, int>{},
     this.revision = 0,
   });
 
@@ -69,6 +70,10 @@ final class McpConnectionsState {
   /// Stored configuration could not be read; shown instead of a silent empty
   /// list.
   final McpError? configurationError;
+
+  /// Removed connections whose secure values could not be deleted, mapped to
+  /// the number of remaining references. The user can retry the cleanup.
+  final Map<String, int> secretCleanupFailures;
 
   final int revision;
 
@@ -112,6 +117,7 @@ final class McpConnectionsState {
     bool clearEditorError = false,
     McpError? configurationError,
     bool clearConfigurationError = false,
+    Map<String, int>? secretCleanupFailures,
     int? revision,
   }) {
     return McpConnectionsState(
@@ -130,6 +136,8 @@ final class McpConnectionsState {
       configurationError: clearConfigurationError
           ? null
           : configurationError ?? this.configurationError,
+      secretCleanupFailures:
+          secretCleanupFailures ?? this.secretCleanupFailures,
       revision: revision ?? this.revision,
     );
   }

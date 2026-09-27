@@ -105,6 +105,11 @@ class McpConnectionsPage extends StatelessWidget {
                     ),
                     const SizedBox(height: DomovoyDimensions.space3),
                   ],
+                  for (final cleanup
+                      in state.secretCleanupFailures.entries) ...[
+                    _secretCleanupNotice(context, cleanup.key, cleanup.value),
+                    const SizedBox(height: DomovoyDimensions.space3),
+                  ],
                   if (state.isLoading)
                     const Padding(
                       padding: EdgeInsets.all(DomovoyDimensions.space5),
@@ -394,6 +399,41 @@ class McpConnectionsPage extends StatelessWidget {
       child: Text(
         message,
         style: Theme.of(context).textTheme.bodySmall?.copyWith(color: tone),
+      ),
+    );
+  }
+
+  Widget _secretCleanupNotice(
+    BuildContext context,
+    String connectionId,
+    int count,
+  ) {
+    final tokens = context.domovoyTheme;
+    return Container(
+      key: ValueKey('mcp-secret-cleanup-$connectionId'),
+      padding: DomovoyDimensions.controlInsets,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(DomovoyDimensions.radiusControl),
+        border: Border.all(color: tokens.danger),
+      ),
+      child: Wrap(
+        spacing: DomovoyDimensions.space2,
+        runSpacing: DomovoyDimensions.space2,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            'Секреты подключения «$connectionId» не удалены '
+            '(осталось: $count). Повторите очистку.',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: tokens.danger),
+          ),
+          DomovoyQuietButton(
+            key: ValueKey('mcp-secret-cleanup-retry-$connectionId'),
+            onPressed: () => controller.retrySecretCleanup(connectionId),
+            child: const Text('Повторить'),
+          ),
+        ],
       ),
     );
   }

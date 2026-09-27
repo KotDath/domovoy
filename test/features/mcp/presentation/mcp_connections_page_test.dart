@@ -320,4 +320,53 @@ void main() {
     expect(find.byKey(const ValueKey('mcp-edit-arxiv')), findsNothing);
     expect(find.byKey(const ValueKey('mcp-enabled-arxiv')), findsOneWidget);
   });
+
+  testWidgets('a failed secret cleanup is visible and retryable', (
+    tester,
+  ) async {
+    await setSize(tester, const Size(1200, 800));
+    final vault = FlakyDeleteMcpSecretVault();
+    final fixture = await McpFeatureFixture.create(
+      builders: <String, ScriptedMcpConnection Function()>{
+        'remote': () => remoteConnection('remote'),
+      },
+      vault: vault,
+    );
+    addTearDown(fixture.dispose);
+    final bearer = McpSecretReference.bearer(McpConnectionId('remote'));
+    await fixture.saveConnection(
+      McpConnectionConfig(
+        connectionId: McpConnectionId('remote'),
+        alias: 'Remote',
+        transport: McpHttpTransportConfig(
+          url: 'https://mcp.example.com/mcp',
+          bearerSecret: bearer,
+        ),
+      ),
+      connect: true,
+    );
+    await vault.write(bearer, 'stored-token');
+    vault.failDelete = true;
+    expect(await fixture.connections.removeConnection('remote'), isTrue);
+
+    await tester.pumpWidget(app(fixture.connections));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mcp-secret-cleanup-remote')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('не удалены'), findsOneWidget);
+
+    vault.failDelete = false;
+    await tester.tap(
+      find.byKey(const ValueKey('mcp-secret-cleanup-retry-remote')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mcp-secret-cleanup-remote')),
+      findsNothing,
+    );
+    expect(await vault.read(bearer), isNull);
+    expect(tester.takeException(), isNull);
+  });
 }
