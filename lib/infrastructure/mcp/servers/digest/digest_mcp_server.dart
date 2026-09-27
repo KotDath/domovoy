@@ -215,7 +215,7 @@ final class DigestMcpServerFactory implements LocalMcpServerFactory {
   /// Resolves the trusted per-invocation pin; never falls back to a global.
   DigestModelPin _resolvePin(sdk.RequestHandlerExtra extra) {
     final scope = DigestInvocationScope(
-      requestId: extra.requestId?.toString() ?? 'unknown',
+      requestId: extra.requestId.toString(),
       sessionId: extra.sessionId,
       taskId: extra.taskId,
       meta: extra.meta,
