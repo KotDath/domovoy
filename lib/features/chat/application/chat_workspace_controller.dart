@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import '../../../core/agents/agents.dart';
+import '../../../core/automation/automation.dart';
 import '../../../core/llm/llm.dart';
 import '../../../core/projects/ids.dart';
 import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
@@ -23,6 +24,7 @@ final class ChatWorkspaceController {
     AgentSessionTitlePolicy? titlePolicy,
     this.settingsLauncher,
     this.onTurnCompleted,
+    this.chatDeliveries,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
     AgentClock? clock,
@@ -31,7 +33,12 @@ final class ChatWorkspaceController {
        _agent = runtime.agent(definition),
        _state = ChatWorkspaceState.initial(
          providerGroups: registry.providerGroups,
-       );
+       ) {
+    final deliveries = chatDeliveries;
+    if (deliveries != null) {
+      _deliverySubscription = deliveries.delivered.listen(_onDelivery);
+    }
+  }
 
   final AgentRuntime runtime;
   final AgentDefinition definition;
@@ -42,10 +49,16 @@ final class ChatWorkspaceController {
   final AgentSessionTitlePolicy titlePolicy;
   final ChatSettingsLauncher? settingsLauncher;
   final Future<void> Function(AgentSessionSnapshot snapshot)? onTurnCompleted;
+
+  /// Read side of the separately typed automation result cards. Optional: a
+  /// composition without scheduled tasks shows a plain chat.
+  final AutomationChatDeliverySource? chatDeliveries;
+
   final ChatStreamPacingPolicy pacingPolicy;
   final ChatStreamScheduler scheduler;
   final AgentClock clock;
   final Agent _agent;
+  StreamSubscription<AutomationChatDelivery>? _deliverySubscription;
 
   final StreamController<ChatWorkspaceState> _states =
       StreamController<ChatWorkspaceState>.broadcast(sync: true);
@@ -178,6 +191,8 @@ final class ChatWorkspaceController {
           selectedSession: created.snapshot,
           liveRun: null,
           error: null,
+          automationDeliveries: const <AutomationChatDelivery>[],
+          automationDeliveryError: null,
         ),
       );
       await _refreshCatalog(generation);
@@ -253,8 +268,11 @@ final class ChatWorkspaceController {
           selectedSession: restored.snapshot,
           liveRun: null,
           error: null,
+          automationDeliveries: const <AutomationChatDelivery>[],
+          automationDeliveryError: null,
         ),
       );
+      await _loadDeliveries(id, generation);
       return const ChatCommandResult.succeeded();
     } on Object catch (error) {
       return _recordFailure(error, generation, clearSelection: true);
@@ -339,7 +357,13 @@ final class ChatWorkspaceController {
       if (identical(_session, current)) {
         _session = null;
         _emit(
-          _state.copyWith(selectedSession: null, liveRun: null, error: null),
+          _state.copyWith(
+            selectedSession: null,
+            liveRun: null,
+            error: null,
+            automationDeliveries: const <AutomationChatDelivery>[],
+            automationDeliveryError: null,
+          ),
         );
       }
       return const ChatCommandResult.succeeded();
@@ -822,6 +846,8 @@ final class ChatWorkspaceController {
               liveRun: null,
               liveCompactions: const <AgentCompactionEvent>[],
               error: null,
+              automationDeliveries: const <AutomationChatDelivery>[],
+              automationDeliveryError: null,
             ),
           );
         } else {
@@ -837,8 +863,11 @@ final class ChatWorkspaceController {
               liveRun: null,
               liveCompactions: const <AgentCompactionEvent>[],
               error: null,
+              automationDeliveries: const <AutomationChatDelivery>[],
+              automationDeliveryError: null,
             ),
           );
+          await _loadDeliveries(neighbor, generation);
         }
       }
       return const ChatCommandResult.succeeded();
@@ -891,6 +920,8 @@ final class ChatWorkspaceController {
     _generation += 1;
     _cancelScheduledNotification();
     await _providerCatalogSubscription?.cancel();
+    await _deliverySubscription?.cancel();
+    _deliverySubscription = null;
     _emit(
       _state.copyWith(
         activeOperation: ChatWorkspaceOperationKind.close,
@@ -944,11 +975,105 @@ final class ChatWorkspaceController {
         return;
       }
       _session = restored;
-      _emit(_state.copyWith(selectedSession: restored.snapshot));
+      _emit(
+        _state.copyWith(
+          selectedSession: restored.snapshot,
+          automationDeliveries: const <AutomationChatDelivery>[],
+          automationDeliveryError: null,
+        ),
+      );
+      await _loadDeliveries(id, generation);
     } on Object catch (error) {
       _recordFailure(error, generation, clearSelection: true);
     }
     await _refreshCatalog(generation);
+  }
+
+  /// Loads the separately typed result cards addressed to [id].
+  ///
+  /// A card store failure never hides the chat: the transcript is shown and a
+  /// compact visible notice explains that cards are unavailable.
+  Future<void> _loadDeliveries(AgentSessionId id, int generation) async {
+    final source = chatDeliveries;
+    if (source == null) {
+      if (_isCurrent(generation)) {
+        _emit(
+          _state.copyWith(
+            automationDeliveries: const <AutomationChatDelivery>[],
+            automationDeliveryError: null,
+          ),
+        );
+      }
+      return;
+    }
+    try {
+      final deliveries = await source.deliveriesForChat(id.value);
+      if (!_isCurrent(generation)) {
+        return;
+      }
+      final merged =
+          <String, AutomationChatDelivery>{
+            for (final delivery in deliveries) delivery.runId.value: delivery,
+            for (final delivery in _state.automationDeliveries)
+              if (delivery.chatId == id.value) delivery.runId.value: delivery,
+          }.values.toList()..sort((left, right) {
+            final byTime = left.deliveredAt.compareTo(right.deliveredAt);
+            return byTime != 0
+                ? byTime
+                : left.deliveryId.compareTo(right.deliveryId);
+          });
+      _emit(
+        _state.copyWith(
+          automationDeliveries: merged,
+          automationDeliveryError: null,
+        ),
+      );
+    } on AutomationException catch (error) {
+      if (!_isCurrent(generation)) {
+        return;
+      }
+      _emit(
+        _state.copyWith(
+          automationDeliveries: const <AutomationChatDelivery>[],
+          automationDeliveryError: error.error.message,
+        ),
+      );
+    } on Object {
+      if (!_isCurrent(generation)) {
+        return;
+      }
+      _emit(
+        _state.copyWith(
+          automationDeliveries: const <AutomationChatDelivery>[],
+          automationDeliveryError:
+              'Карточки результатов задач недоступны; чат читается без них.',
+        ),
+      );
+    }
+  }
+
+  /// Inserts a card delivered while its chat is selected.
+  void _onDelivery(AutomationChatDelivery delivery) {
+    if (_disposed || _state.selectedId?.value != delivery.chatId) {
+      return;
+    }
+    final next =
+        <AutomationChatDelivery>[
+          for (final existing in _state.automationDeliveries)
+            if (existing.runId != delivery.runId) existing,
+          delivery,
+        ]..sort((left, right) {
+          final byTime = left.deliveredAt.compareTo(right.deliveredAt);
+          return byTime != 0
+              ? byTime
+              : left.deliveryId.compareTo(right.deliveryId);
+        });
+    _emit(
+      _state.copyWith(
+        automationDeliveries: next,
+        automationDeliveryError: null,
+      ),
+    );
   }
 
   Future<void> _refreshCatalog(int generation) async {

@@ -253,6 +253,23 @@ final class LibraryCard {
        savedAt = savedAt.toUtc(),
        arxivIds = List<String>.unmodifiable(arxivIds);
 
+  factory LibraryCard.fromJson(Object? json) {
+    final map = _requireObject(json, 'library card');
+    final rawIds = map['arxivIds'];
+    if (rawIds is! List || rawIds.any((value) => value is! String)) {
+      throwLibrary(LibraryErrorKind.invalidInput, 'Invalid library card IDs.');
+    }
+    return LibraryCard(
+      libraryId: _requireText(map, 'libraryId'),
+      runId: map['runId'] == null ? null : _requireText(map, 'runId'),
+      topic: _requireText(map, 'topic'),
+      savedAt: _requireUtcDate(map, 'savedAt'),
+      paperCount: _requireNonNegativeInt(map, 'paperCount'),
+      itemCount: _requireNonNegativeInt(map, 'itemCount'),
+      arxivIds: rawIds.cast<String>(),
+    );
+  }
+
   final LibraryId libraryId;
   final String? runId;
   final String topic;

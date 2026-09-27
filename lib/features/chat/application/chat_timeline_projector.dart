@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../../../core/agents/agents.dart';
+import '../../../core/automation/automation.dart';
 import '../../../core/llm/llm.dart';
 import 'chat_workspace_state.dart';
 
@@ -119,6 +120,35 @@ final class ChatUnsupportedPartItem extends ChatTimelineItem {
   final String label;
 }
 
+/// A scheduled task result delivered as a card, not as a model message.
+///
+/// The card has its own identity and reference; it is projected from the
+/// durable delivery store and never becomes part of the model transcript.
+final class ChatAutomationResultItem extends ChatTimelineItem {
+  const ChatAutomationResultItem({
+    required super.key,
+    required this.deliveryId,
+    required this.runId,
+    required this.taskId,
+    required this.taskName,
+    required this.status,
+    required this.deliveredAt,
+    required this.reference,
+    this.resultText,
+    this.errorMessage,
+  });
+
+  final String deliveryId;
+  final String runId;
+  final String taskId;
+  final String taskName;
+  final AutomationRunStatus status;
+  final DateTime deliveredAt;
+  final String reference;
+  final String? resultText;
+  final String? errorMessage;
+}
+
 final class ChatTimelineProjection {
   ChatTimelineProjection(List<ChatTimelineItem> items)
     : items = List<ChatTimelineItem>.unmodifiable(items);
@@ -135,6 +165,9 @@ final class ChatTimelineProjector {
     ChatLiveRunState? liveRun,
     List<AgentCompactionEvent> operationCompactions =
         const <AgentCompactionEvent>[],
+    List<AutomationChatDelivery> automationDeliveries =
+        const <AutomationChatDelivery>[],
+    String? automationDeliveryError,
     ChatWorkspaceError? workspaceError,
   }) {
     final transcript = snapshot.transcript;
@@ -225,6 +258,32 @@ final class ChatTimelineProjector {
           beforeEstimate: persistedCompaction.beforeEstimate,
           afterEstimate: persistedCompaction.afterEstimate,
           generation: persistedCompaction.generation,
+        ),
+      );
+    }
+
+    for (final delivery in automationDeliveries) {
+      items.add(
+        ChatAutomationResultItem(
+          key: 'automation-card:${delivery.deliveryId}',
+          deliveryId: delivery.deliveryId,
+          runId: delivery.runId.value,
+          taskId: delivery.taskId.value,
+          taskName: delivery.taskName,
+          status: delivery.status,
+          deliveredAt: delivery.deliveredAt,
+          reference: delivery.reference,
+          resultText: delivery.resultText,
+          errorMessage: delivery.errorMessage,
+        ),
+      );
+    }
+    if (automationDeliveryError != null) {
+      items.add(
+        ChatErrorItem(
+          key: 'session:${snapshot.id.value}:delivery-error',
+          kind: ChatTimelineErrorKind.failed,
+          message: automationDeliveryError,
         ),
       );
     }

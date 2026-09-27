@@ -1,4 +1,5 @@
 import 'package:domovoy/core/agents/agents.dart';
+import 'package:domovoy/core/automation/automation.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/features/chat/application/chat_timeline_projector.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_state.dart';
@@ -283,6 +284,38 @@ void main() {
     );
     final projection = projector.project(snapshot: _snapshot(transcript));
     expect(projection.items.whereType<ChatUnsupportedPartItem>(), hasLength(1));
+  });
+
+  test('automation card projects separately without mutating transcript', () {
+    final transcript = AgentTranscript(
+      messages: <LlmMessage>[
+        LlmMessage(
+          role: LlmMessageRole.user,
+          parts: <LlmContentPart>[LlmTextPart('Question')],
+        ),
+      ],
+    );
+    final snapshot = _snapshot(transcript);
+    final before = snapshot.transcript.toJson();
+    final card = AutomationChatDelivery(
+      chatId: 'chat',
+      runId: 'ran_0000000000000001',
+      taskId: 'atm_0000000000000001',
+      taskName: 'Подборка',
+      status: AutomationRunStatus.succeeded,
+      resultText: 'Готово',
+      deliveredAt: DateTime.utc(2026, 1, 1),
+    );
+    final projection = projector.project(
+      snapshot: snapshot,
+      automationDeliveries: [card],
+    );
+    expect(
+      projection.items.whereType<ChatAutomationResultItem>(),
+      hasLength(1),
+    );
+    expect(projection.items.whereType<ChatAssistantItem>(), isEmpty);
+    expect(snapshot.transcript.toJson(), before);
   });
 }
 

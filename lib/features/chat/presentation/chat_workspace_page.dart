@@ -299,6 +299,8 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       snapshot: snapshot,
       liveRun: _state.liveRun,
       operationCompactions: _state.liveCompactions,
+      automationDeliveries: _state.automationDeliveries,
+      automationDeliveryError: _state.automationDeliveryError,
       workspaceError: _state.error,
     );
     if (projection.items.isEmpty) {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/automation/automation.dart';
 import '../../../design_system/design_system.dart';
 import '../application/chat_timeline_projector.dart';
 import 'assistant_markdown.dart';
@@ -41,6 +42,7 @@ class ChatTimelinePart extends StatelessWidget {
       onOpenSettings: onOpenSettings,
     ),
     ChatUnsupportedPartItem value => _UnsupportedPart(item: value),
+    ChatAutomationResultItem value => _AutomationResultPart(item: value),
   };
 }
 
@@ -431,6 +433,110 @@ class _UnsupportedPart extends StatelessWidget {
     padding: DomovoyDimensions.panelInsets,
     child: SelectableText(item.label),
   );
+}
+
+class _AutomationResultPart extends StatelessWidget {
+  const _AutomationResultPart({required this.item});
+
+  final ChatAutomationResultItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = context.domovoyTheme;
+    final failed = item.status == AutomationRunStatus.failed;
+    return DomovoySurface(
+      key: ValueKey(item.key),
+      role: DomovoySurfaceRole.elevated,
+      border: true,
+      borderRadius: BorderRadius.circular(DomovoyDimensions.radiusLarge),
+      padding: DomovoyDimensions.panelInsets,
+      child: Semantics(
+        label: 'Результат задачи ${item.taskName}',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.event_available_outlined,
+                  size: DomovoyDimensions.iconMedium,
+                  color: tokens.accent,
+                ),
+                const SizedBox(width: DomovoyDimensions.space3),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Результат задачи «${item.taskName}»',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: DomovoyDimensions.space1),
+                      Text(
+                        '${_deliveryMoment(item.deliveredAt)} · '
+                        '${item.runId}',
+                        key: ValueKey('${item.key}:run'),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: tokens.textMuted,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: DomovoyDimensions.space3),
+                DomovoyStatusChip(
+                  label: failed ? 'Ошибка' : 'Готово',
+                  tone: failed
+                      ? DomovoyStatusTone.danger
+                      : DomovoyStatusTone.success,
+                ),
+              ],
+            ),
+            if (item.errorMessage != null) ...[
+              const SizedBox(height: DomovoyDimensions.space3),
+              Text(
+                item.errorMessage!,
+                key: ValueKey('${item.key}:error'),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: tokens.danger),
+              ),
+            ],
+            if (item.resultText != null) ...[
+              const SizedBox(height: DomovoyDimensions.space3),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 260),
+                child: SingleChildScrollView(
+                  primary: false,
+                  child: SelectableText(item.resultText!),
+                ),
+              ),
+            ],
+            const SizedBox(height: DomovoyDimensions.space3),
+            Text(
+              'Автоматический результат · подробнее в разделе «Задачи». '
+              'Запуск: ${item.runId}',
+              key: ValueKey('${item.key}:note'),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: tokens.textMuted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _deliveryMoment(DateTime value) {
+  final local = value.toLocal();
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${two(local.day)}.${two(local.month)}.${local.year} '
+      '${two(local.hour)}:${two(local.minute)}';
 }
 
 String _toolStatusLabel(ChatToolStatus status) => switch (status) {

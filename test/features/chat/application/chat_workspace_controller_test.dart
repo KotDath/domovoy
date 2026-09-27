@@ -2,17 +2,100 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:domovoy/core/agents/agents.dart';
+import 'package:domovoy/core/automation/automation.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_controller.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_state.dart';
 import 'package:domovoy/features/prompt/domain/prompt_workspace.dart';
 import 'package:domovoy/infrastructure/agents/jsonl/jsonl.dart';
+import 'package:domovoy/infrastructure/automation_chat/automation_chat.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/agent_harness.dart';
 import '../../../support/scripted_llm_provider.dart';
 
 void main() {
+  test(
+    'reopened chat keeps a delivered card outside the next model input',
+    () async {
+      final repository = InMemoryAgentSessionRepository();
+      final cardStorage = _MemoryJsonlStorage();
+      final cardStore = JsonlAutomationChatDeliveryStore(storage: cardStorage);
+      final firstProvider = QueueScriptedLlmProvider(
+        id: BuiltInLlmCatalog.deepSeek,
+        wireFamily: LlmWireFamily.openaiChatCompletions,
+        turns: <List<LlmEvent>>[
+          textTurn('First answer'),
+          textTurn('Second answer'),
+        ],
+      );
+      final firstRuntime = testRuntime(
+        provider: firstProvider,
+        repository: repository,
+      );
+      final first = _controller(
+        firstRuntime,
+        repository,
+        repository,
+        chatDeliveries: cardStore,
+      );
+      await first.initialize();
+      await first.createChat(id: AgentSessionId('card-chat'));
+      await first.send('First question');
+      final transcriptBefore = first.state.selectedSession!.transcript.toJson();
+      await cardStore.saveIfAbsent(
+        AutomationChatDelivery(
+          chatId: 'card-chat',
+          runId: 'ran_0000000000000001',
+          taskId: 'atm_0000000000000001',
+          taskName: 'Подборка',
+          status: AutomationRunStatus.succeeded,
+          resultText: 'Card result only',
+          deliveredAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
+      expect(first.state.automationDeliveries, hasLength(1));
+      expect(
+        first.state.selectedSession!.transcript.toJson(),
+        transcriptBefore,
+      );
+      await first.dispose();
+      final reopenedCards = JsonlAutomationChatDeliveryStore(
+        storage: cardStorage,
+      );
+      final second = _controller(
+        firstRuntime,
+        repository,
+        repository,
+        chatDeliveries: reopenedCards,
+      );
+      await second.initialize();
+      expect(second.state.automationDeliveries, hasLength(1));
+      expect(
+        second.state.selectedSession!.transcript.toJson(),
+        transcriptBefore,
+      );
+      final sendResult = await second.send('Second question');
+      expect(
+        sendResult.isSuccess,
+        isTrue,
+        reason: '${sendResult.status}: ${sendResult.error?.message}',
+      );
+      final nextInput = firstProvider.requests.last.context.messages;
+      expect(nextInput, hasLength(3));
+      expect(
+        nextInput
+            .expand((message) => message.parts)
+            .whereType<LlmTextPart>()
+            .map((part) => part.text),
+        isNot(contains('Card result only')),
+      );
+      await second.dispose();
+      await firstRuntime.close();
+      cardStore.dispose();
+      reopenedCards.dispose();
+    },
+  );
   group('chat workspace startup', () {
     test(
       'empty catalog stays actionable and creates no transient session',
@@ -724,6 +807,7 @@ ChatWorkspaceController _controller(
   AgentSessionRepository repository,
   AgentSessionCatalog catalog, {
   Future<void> Function(AgentSessionSnapshot snapshot)? onTurnCompleted,
+  AutomationChatDeliverySource? chatDeliveries,
 }) => ChatWorkspaceController(
   runtime: runtime,
   definition: testDefinition(),
@@ -731,6 +815,7 @@ ChatWorkspaceController _controller(
   repository: repository,
   registry: runtime.registry,
   onTurnCompleted: onTurnCompleted,
+  chatDeliveries: chatDeliveries,
 );
 
 AgentSessionRecord _emptyRecord(String id) => AgentSessionRecord(

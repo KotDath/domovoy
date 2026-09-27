@@ -1,4 +1,5 @@
 import '../../../core/agents/agents.dart';
+import '../../../core/automation/automation.dart';
 import '../../../core/llm/llm.dart';
 import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 
@@ -162,6 +163,9 @@ final class ChatWorkspaceState {
         const <AgentSessionCatalogIssue>[],
     List<LlmProviderGroup> providerGroups = const <LlmProviderGroup>[],
     List<AgentCompactionEvent> liveCompactions = const <AgentCompactionEvent>[],
+    List<AutomationChatDelivery> automationDeliveries =
+        const <AutomationChatDelivery>[],
+    this.automationDeliveryError,
     this.selectedSession,
     this.activeOperation,
     this.liveRun,
@@ -180,6 +184,9 @@ final class ChatWorkspaceState {
        ),
        liveCompactions = List<AgentCompactionEvent>.unmodifiable(
          List<AgentCompactionEvent>.from(liveCompactions),
+       ),
+       automationDeliveries = List<AutomationChatDelivery>.unmodifiable(
+         List<AutomationChatDelivery>.from(automationDeliveries),
        );
 
   factory ChatWorkspaceState.initial({
@@ -194,6 +201,16 @@ final class ChatWorkspaceState {
   final List<AgentSessionCatalogIssue> catalogIssues;
   final List<LlmProviderGroup> providerGroups;
   final List<AgentCompactionEvent> liveCompactions;
+
+  /// Separately typed scheduled result cards addressed to the selected chat.
+  ///
+  /// They are projected by the timeline from their own durable store and never
+  /// enter [selectedSession]'s transcript.
+  final List<AutomationChatDelivery> automationDeliveries;
+
+  /// Visible failure of the card store; the chat itself stays readable.
+  final String? automationDeliveryError;
+
   final AgentSessionSnapshot? selectedSession;
   final ChatWorkspaceOperationKind? activeOperation;
   final ChatLiveRunState? liveRun;
@@ -214,6 +231,8 @@ final class ChatWorkspaceState {
     List<AgentSessionCatalogIssue>? catalogIssues,
     List<LlmProviderGroup>? providerGroups,
     List<AgentCompactionEvent>? liveCompactions,
+    List<AutomationChatDelivery>? automationDeliveries,
+    Object? automationDeliveryError = _keep,
     Object? selectedSession = _keep,
     Object? activeOperation = _keep,
     Object? liveRun = _keep,
@@ -227,6 +246,10 @@ final class ChatWorkspaceState {
     catalogIssues: catalogIssues ?? this.catalogIssues,
     providerGroups: providerGroups ?? this.providerGroups,
     liveCompactions: liveCompactions ?? this.liveCompactions,
+    automationDeliveries: automationDeliveries ?? this.automationDeliveries,
+    automationDeliveryError: identical(automationDeliveryError, _keep)
+        ? this.automationDeliveryError
+        : automationDeliveryError as String?,
     selectedSession: identical(selectedSession, _keep)
         ? this.selectedSession
         : selectedSession as AgentSessionSnapshot?,
