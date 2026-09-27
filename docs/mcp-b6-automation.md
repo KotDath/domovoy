@@ -90,15 +90,23 @@ DST-семантика проверена тестами против реаль
 - No-overlap: каждый старт (ручной или плановый) берёт **резервирование**
   задачи синхронно, до первого обращения к хранилищу, поэтому два
   параллельных старта не могут оба пройти проверку и запуститься. Пока задача
-  выполняется, следующий период записывается `skipped` без очереди, а ручной
-  запуск отклоняется `no_overlap`.
-- Перед каждым долговечным коммитом и перед запуском сессии заново
-  проверяются: сервис запущен и в foreground, задача всё ещё активна и той же
+  **выполняется** (`_active`), следующий период записывается `skipped` без
+  очереди, а ручной запуск отклоняется `no_overlap`.
+- Резервирование *ещё не закоммиченного* старта не считается выполнением:
+  если тик видит только резервирование (ручной вызов ещё пишет запись), он
+  ничего не помечает пропущенным, а короткий повторный таймер переоценивает
+  период. Поэтому ручной запуск со stale-ревизией, который падает до коммита,
+  не «съедает» плановый период: тот срабатывает один раз следующим тиком.
+- Перед каждым долговечным коммитом **и после него** заново проверяются:
+  сервис запущен и в foreground, задача всё ещё жива, активна и той же
   ревизии. Тик, начавшийся в foreground, не запускает работу после
   `setForeground(false)`/`stop()`: он либо ничего не коммитит (период остаётся
   для catch-up), либо, если запись `running` уже опубликована, закрывает её
-  как `interrupted` без побочных эффектов. Порядок «durable running раньше
-  побочного эффекта» сохранён.
+  как `interrupted` без побочных эффектов. Пауза, удаление или правка задачи
+  во время публикации записи (`appendRun` ещё ждёт хранилище) тоже приводят к
+  `interrupted` без запуска агента; состояние задачи остаётся за новым
+  писателем, а период считается потреблённым и не повторяется. Порядок
+  «durable running раньше побочного эффекта» сохранён.
 - `runTaskNow` отказывает видимо (`cancelled`), пока сервис остановлен или
   приложение в фоне; `run_task_now` не сдвигает `nextDueAt`; задача-предложение
   не запускается до подтверждения человеком; разовая задача после срабатывания
@@ -163,11 +171,34 @@ DST-семантика проверена тестами против реаль
 | `create_task` | `name`, `prompt`, ровно одно из `cron`+`timeZone` / `runAt`, `model`, `allowedTools[]`, необязательный `delivery` | `taskId`, `state: proposed`, `requiresConfirmation: true`, `revision`, `nextOccurrences` (3) |
 | `list_tasks` | необязательные `status` (`active|paused|proposed|completed|deleted|all`), `limit` | `tasks[]` со статусом, cron/поясом, `nextDueAt` и сводкой `lastRun` |
 | `pause_task` | `taskId`, `paused`, необязательный `expectedRevision` | `taskId`, `state`, `revision`, `nextDueAt?` |
-| `run_task_now` | `taskId`, необязательный `expectedRevision` | `runId`, `status: running`, `trigger: manual`, `scheduledAt` |
+| `run_task_now` | `taskId`, необязательный `expectedRevision` | `runId`, `status: running`, `trigger: manual`, `scheduledAt`; после отмены клиентом до старта — `status: interrupted` |
 
 `create_task` всегда создаёт **предложение** (`origin: agent`); включает его
 человек в разделе «Задачи» (B8) через `confirmTask`. Вызов агентом
 `create_task` не даёт расписанию никаких новых прав.
+
+### Отмена MCP-вызова
+
+Токен отмены (`CancellationToken` из SDK-сигнала) доводится до границы
+мутации сервиса для `create_task`, `pause_task` и `run_task_now` (а также
+`confirm_task`/`update_task`/`delete_task`, если их будет вызывать MCP-клиент
+в будущем):
+
+- **до долговечного коммита** отмена даёт видимую `[automation:cancelled]` и
+  ничего не создаёт/не меняет/не запускает;
+- **после коммита** сервис возвращает зафиксированный результат, а не ложную
+  отмену (как в B5). Для `run_task_now` это значит: запись `running` уже
+  опубликована, агент не запускается, запись закрывается как `interrupted`, и
+  инструмент возвращает `status: interrupted` — committed truth вместо
+  выдуманной ошибки отмены.
+
+Аннотации: `run_task_now` помечен `destructiveHint: true`, потому что
+запускаемая задача может иметь пишущие/удаляющие инструменты. Для
+интерактивного гранта, собранного `ToolAccessGrant.forMcpCatalog`, это
+добавляет вызов в набор подтверждения (`ask`), а фактическим авторитетом
+остаётся стабильный allowlist; неприсмотренные гранты и так запрещают
+инструмент внутренне. `create_task`, `list_tasks` и `pause_task` остаются
+`destructiveHint: false`.
 
 ## Защита от расширения прав
 
@@ -184,6 +215,10 @@ DST-семантика проверена тестами против реаль
    если вызов как-то дошёл до сервера; сервис дополнительно запрещает
    `runTaskNow` с `origin: scheduledRun` и с `origin: agentTool` во время
    активного планового запуска.
+3. Аннотация: `run_task_now` объявлен `destructiveHint: true`, поэтому
+   интерактивный грант, собранный из каталога, требует подтверждения перед
+   запуском чужой задачи (allowlist при этом остаётся фактическим
+   авторитетом).
 
 ## Как собирают B8 и B9
 
@@ -220,13 +255,13 @@ if (storage != null) {
 | `test/core/automation/schedule_test.dart` | JSON round-trip, неизвестный пояс, недостижимое выражение, preview трёх моментов |
 | `test/core/automation/task_run_test.dart` | модели задачи/запуска, инварианты состояний, санитизация ошибок, лимиты |
 | `test/core/automation/automation_service_test.dart` | fake-clock `*/5`, подтверждение предложения, пауза/возобновление, run-now без сдвига, конкурентные тики, no-overlap, catch-up с агрегацией, crash replay, лимит времени, фон, недоступность, доставка, привилегии, события, ручной запуск в момент периода не вытесняет его, два ручных запуска в один момент |
-| `test/core/automation/automation_service_concurrency_test.dart` | gated-репозиторий: параллельные ручные запуски, ручной старт + тик, пауза/удаление/фон/stop во время тика, отказ `runTaskNow` в фоне и после остановки |
+| `test/core/automation/automation_service_concurrency_test.dart` | gated-репозиторий: параллельные ручные запуски, ручной старт + тик (тик откладывается, пока старт не закоммичен), пауза/удаление/правка во время gated-`appendRun` (запись закрывается как `interrupted`, агент не стартует, период не повторяется), удаление во время gated-ручного append, провалившийся ручной старт не съедает период, отмена ручного старта до и после коммита, пауза/удаление/фон/stop во время тика, отказ `runTaskNow` в фоне и после остановки |
 | `test/core/automation/automation_service_update_test.dart` | `updateTask`: активная/пауза/предложение/завершённая семантика, stale revision, валидация cron/пояса/лимитов, снимок выполняющегося запуска и маршрут доставки |
 | `test/infrastructure/automation/automation_jsonl_store_test.dart` | ревизии, tombstone, replay после рестарта, идемпотентность периода, независимость ручных запусков, усечённый хвост, повреждение, лимиты |
 | `test/infrastructure/automation/time_zone_database_test.dart` | реальные IANA-переходы NY/Berlin/Sydney, границы месяца, 29 февраля, недостижимые даты |
 | `test/infrastructure/automation/agent_session_automation_executor_test.dart` | доступность модели/инструментов/ключа, снимок определения, отдельная сессия на запуск, трасса, запрет `create_task`/`run_task_now`, лимит вызовов, отмена |
 | `test/infrastructure/automation/automation_foreground_observer_test.dart` | мобильная пауза/возобновление, desktop игнорирует lifecycle |
-| `test/infrastructure/mcp/servers/automation/automation_mcp_server_test.dart` | схемы для профилей B2, proposal-only `create_task`, `list_tasks`/`pause_task`/`run_task_now`, revision mismatch, запрет во время планового запуска, отмена |
+| `test/infrastructure/mcp/servers/automation/automation_mcp_server_test.dart` | схемы для профилей B2, proposal-only `create_task`, `list_tasks`/`pause_task`/`run_task_now`, revision mismatch, запрет во время планового запуска, отмена, отмена на границе мутации (`create_task`/`pause_task`/`run_task_now`: до коммита — `cancelled`, после — committed truth, включая `interrupted` для ручного запуска), консервативная аннотация `run_task_now` и её следствие `ask` в интерактивном гранте |
 | `test/core/agents/access_test.dart` | внутренний запрет `run_task_now` для неприсмотренных грантов |
 
 ## Демонстрация дня 18
