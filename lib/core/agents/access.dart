@@ -23,10 +23,13 @@ enum ToolAccessScope {
 /// allowlist a caller passes.
 ///
 /// The built-in `automation` server creates new schedules through
-/// `create_task`; a scheduled run that could call it would let an unattended
-/// agent extend its own automation. The restriction is keyed by the built-in
-/// connection id and original tool name, so a third-party server that happens
-/// to expose a tool called `create_task` on another connection is unaffected.
+/// `create_task` and starts other saved tasks through `run_task_now`. A
+/// scheduled run that could call either would let an unattended agent extend
+/// its own automation or launch a different task carrying broader permissions,
+/// so both identities are intrinsically denied for every unattended grant. The
+/// restriction is keyed by the built-in connection id and original tool name,
+/// so a third-party server that happens to expose a tool with the same name on
+/// another connection is unaffected.
 abstract final class ScheduledToolRestrictions {
   /// Connection id of the built-in automation MCP server (B6).
   static const automationConnectionId = 'automation';
@@ -34,12 +37,19 @@ abstract final class ScheduledToolRestrictions {
   /// Original tool name that creates schedules on the built-in server.
   static const createTaskOriginalName = 'create_task';
 
+  /// Original tool name that starts another saved task on the built-in server.
+  static const runTaskNowOriginalName = 'run_task_now';
+
   /// Stable model-facing identities every unattended grant denies.
   static final Set<String> intrinsicDeniedToolIds =
       Set<String>.unmodifiable(<String>{
         McpToolNamePolicy().candidate(
           connectionId: McpConnectionId(automationConnectionId),
           originalToolName: createTaskOriginalName,
+        ),
+        McpToolNamePolicy().candidate(
+          connectionId: McpConnectionId(automationConnectionId),
+          originalToolName: runTaskNowOriginalName,
         ),
       });
 

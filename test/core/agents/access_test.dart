@@ -106,24 +106,41 @@ void main() {
     });
 
     test(
-      'scheduled grants intrinsically deny the built-in create_task route',
+      'scheduled grants intrinsically deny schedule creation and other-task launch',
       () {
         final grant = ToolAccessGrant.scheduledTask(
           allowedToolIds: <String>[
             'mcp_automation__create_task',
+            'mcp_automation__run_task_now',
             'mcp_automation__list_tasks',
             'mcp_other__create_task',
+            'mcp_other__run_task_now',
           ],
         );
         expect(grant.isUnattended, isTrue);
-        // Denied without any caller-supplied deny list.
+        // Denied without any caller-supplied deny list: a scheduled run can
+        // neither create schedules nor start another saved task with broader
+        // permissions.
         expect(
           grant.permissionFor('mcp_automation__create_task'),
           ToolPermission.deny,
         );
+        expect(
+          grant.permissionFor('mcp_automation__run_task_now'),
+          ToolPermission.deny,
+        );
         expect(grant.permits('mcp_automation__list_tasks'), isTrue);
-        // A third-party create_task on another connection stays governable.
+        // Third-party tools with the same names on another connection stay
+        // governable by the caller's allowlist.
         expect(grant.permits('mcp_other__create_task'), isTrue);
+        expect(grant.permits('mcp_other__run_task_now'), isTrue);
+        expect(
+          ScheduledToolRestrictions.intrinsicDeniedToolIds,
+          containsAll(<String>[
+            'mcp_automation__create_task',
+            'mcp_automation__run_task_now',
+          ]),
+        );
 
         final builder = McpCatalogBuilder();
         builder.addConnection(
@@ -134,6 +151,11 @@ void main() {
               'create_task',
               annotations: const <String, Object?>{'destructiveHint': true},
             ),
+            scriptedTool(
+              'automation',
+              'run_task_now',
+              annotations: const <String, Object?>{'destructiveHint': true},
+            ),
             scriptedTool('automation', 'list_tasks'),
           ],
         );
@@ -141,33 +163,49 @@ void main() {
           catalog: builder.build(),
           allowedToolIds: <String>[
             'mcp_automation__create_task',
+            'mcp_automation__run_task_now',
             'mcp_automation__list_tasks',
           ],
           interactiveApproval: false,
           scope: ToolAccessScope.scheduledTask,
         );
-        // The destructive annotation would add create_task to the approval set;
+        // The destructive annotation would add both tools to the approval set;
         // the intrinsic denial wins instead of raising a conflict.
         expect(
           scheduled.permissionFor('mcp_automation__create_task'),
+          ToolPermission.deny,
+        );
+        expect(
+          scheduled.permissionFor('mcp_automation__run_task_now'),
           ToolPermission.deny,
         );
         expect(scheduled.permits('mcp_automation__list_tasks'), isTrue);
       },
     );
 
-    test('an interactive grant keeps the built-in create_task governable', () {
-      final scheduled = ToolAccessGrant.scheduledTask(
-        allowedToolIds: <String>['mcp_automation__create_task'],
-      );
-      expect(scheduled.permits('mcp_automation__create_task'), isFalse);
+    test(
+      'an interactive grant keeps the built-in automation tools governable',
+      () {
+        final scheduled = ToolAccessGrant.scheduledTask(
+          allowedToolIds: <String>[
+            'mcp_automation__create_task',
+            'mcp_automation__run_task_now',
+          ],
+        );
+        expect(scheduled.permits('mcp_automation__create_task'), isFalse);
+        expect(scheduled.permits('mcp_automation__run_task_now'), isFalse);
 
-      final interactive = ToolAccessGrant(
-        allowedToolIds: <String>['mcp_automation__create_task'],
-      );
-      expect(interactive.isUnattended, isFalse);
-      expect(interactive.permits('mcp_automation__create_task'), isTrue);
-    });
+        final interactive = ToolAccessGrant(
+          allowedToolIds: <String>[
+            'mcp_automation__create_task',
+            'mcp_automation__run_task_now',
+          ],
+        );
+        expect(interactive.isUnattended, isFalse);
+        expect(interactive.permits('mcp_automation__create_task'), isTrue);
+        expect(interactive.permits('mcp_automation__run_task_now'), isTrue);
+      },
+    );
 
     test('policy delegates every decision to the grant', () {
       final policy = ToolAccessPolicy(
