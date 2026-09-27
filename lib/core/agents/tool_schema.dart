@@ -727,7 +727,12 @@ void _collectArrayProblems(
         problems.add('schema validation budget exceeded at $path.');
         return;
       }
-      keys.add(_uniqueValueKey(item));
+      try {
+        keys.add(_uniqueValueKey(item, depth: 0, budget: budget));
+      } on _UniqueKeyLimit catch (limit) {
+        problems.add('array at $path ${limit.reason}');
+        return;
+      }
     }
     keys.sort();
     for (var index = 1; index < keys.length; index += 1) {
@@ -1022,46 +1027,105 @@ String _describeType(Object? type) {
   return 'a supported value';
 }
 
-String _uniqueValueKey(Object? value) {
+/// Builds the exact uniqueness key for one JSON value.
+///
+/// Numeric keys preserve Dart's JSON numeric equality without collapsing
+/// distinct 64-bit integers through a 53-bit double: an `int` keeps its exact
+/// digits and an integral `double` normalises to the integer it equals (so
+/// `1` and `1.0` stay equal, while `2^53` and `2^53 + 1` stay distinct).
+///
+/// The recursion is bounded by [_maximumSchemaDepth] and by the shared
+/// validation budget, so a deeply nested or huge item fails with a visible
+/// problem instead of overflowing the stack or running unbounded.
+String _uniqueValueKey(
+  Object? value, {
+  required int depth,
+  required _ValidationBudget budget,
+}) {
+  if (depth > _maximumSchemaDepth) {
+    throw const _UniqueKeyLimit(
+      'contains a value nested deeper than '
+      '$_maximumSchemaDepth levels.',
+    );
+  }
   if (value == null) {
     return 'z';
   }
   if (value is bool) {
     return value ? 'b1' : 'b0';
   }
+  if (value is int) {
+    return 'n$value';
+  }
   if (value is num) {
-    final asDouble = value.toDouble();
-    if (asDouble.isFinite && asDouble == asDouble.truncateToDouble()) {
-      return 'n${asDouble.truncate()}';
+    if (value == 0) {
+      // -0.0 == 0.0 in Dart, so both normalise to the same key.
+      return 'n0';
     }
-    return 'n$asDouble';
+    if (value.isFinite && value == value.truncateToDouble()) {
+      return 'n${value.toStringAsFixed(0)}';
+    }
+    return 'n$value';
   }
   if (value is String) {
     return 's${value.length}:$value';
   }
   if (value is List) {
+    budget.step();
+    if (budget.exhausted) {
+      throw const _UniqueKeyLimit(
+        'schema validation budget exceeded while serializing item values.',
+      );
+    }
     final buffer = StringBuffer('l${value.length}[');
     for (final item in value) {
-      buffer.write(_uniqueValueKey(item));
+      budget.step();
+      if (budget.exhausted) {
+        throw const _UniqueKeyLimit(
+          'schema validation budget exceeded while serializing item values.',
+        );
+      }
+      buffer.write(_uniqueValueKey(item, depth: depth + 1, budget: budget));
       buffer.write(',');
     }
     buffer.write(']');
     return buffer.toString();
   }
   if (value is Map) {
+    budget.step();
+    if (budget.exhausted) {
+      throw const _UniqueKeyLimit(
+        'schema validation budget exceeded while serializing item values.',
+      );
+    }
     final entries = value.entries.toList()
       ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
     final buffer = StringBuffer('m${entries.length}{');
     for (final entry in entries) {
+      budget.step();
+      if (budget.exhausted) {
+        throw const _UniqueKeyLimit(
+          'schema validation budget exceeded while serializing item values.',
+        );
+      }
       buffer.write('s${entry.key.toString().length}:${entry.key}');
       buffer.write(':');
-      buffer.write(_uniqueValueKey(entry.value));
+      buffer.write(
+        _uniqueValueKey(entry.value, depth: depth + 1, budget: budget),
+      );
       buffer.write(',');
     }
     buffer.write('}');
     return buffer.toString();
   }
   return 'u${value.toString()}';
+}
+
+/// Raised when a value cannot be keyed safely; reported as a visible problem.
+final class _UniqueKeyLimit implements Exception {
+  const _UniqueKeyLimit(this.reason);
+
+  final String reason;
 }
 
 bool _isValidPattern(String pattern) {

@@ -367,5 +367,73 @@ void main() {
         contains('cannot be verified safely'),
       );
     });
+
+    test('uniqueItems distinguishes 64-bit integers exactly', () {
+      final schema = <String, Object?>{'type': 'array', 'uniqueItems': true};
+      // Distinct VM JSON ints beyond 2^53 must not collapse through a double.
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[
+          9007199254740992,
+          9007199254740993,
+        ]),
+        isNull,
+      );
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[
+          -9007199254740993,
+          -9007199254740992,
+        ]),
+        isNull,
+      );
+      // An integral double still equals the integer it represents.
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[
+          9007199254740992,
+          9007199254740992.0,
+        ]),
+        contains('repeat'),
+      );
+      // The double literal rounds to 2^53, so it is genuinely distinct from
+      // the odd integer; the keys must reflect Dart numeric equality.
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[
+          9007199254740993,
+          9007199254740993.0,
+        ]),
+        isNull,
+      );
+    });
+
+    test('uniqueItems fails visibly on deep or huge nested items', () {
+      final schema = <String, Object?>{'type': 'array', 'uniqueItems': true};
+      Object? nested(int levels) {
+        Object? value = 'leaf';
+        for (var level = 0; level < levels; level += 1) {
+          value = <Object?>[value];
+        }
+        return value;
+      }
+
+      // Depth beyond the supported nesting budget fails visibly instead of
+      // recursing into a stack overflow.
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[nested(2000)]),
+        contains('nested deeper'),
+      );
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[nested(2), nested(2)]),
+        contains('repeat'),
+      );
+
+      // Work inside one item is charged to the shared budget: a huge nested
+      // list cannot be serialized silently.
+      final huge = <Object?>[
+        <Object?>[for (var index = 0; index < 250000; index += 1) index],
+      ];
+      expect(
+        firstToolSchemaValueProblem(schema, huge),
+        contains('budget exceeded while serializing'),
+      );
+    });
   });
 }
