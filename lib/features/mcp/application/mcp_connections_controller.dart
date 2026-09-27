@@ -591,8 +591,16 @@ final class McpConnectionsController extends ChangeNotifier {
         );
       }
       // Second, fresh read: the first one may be a stale snapshot taken while
-      // another writer committed an endpoint/alias edit.
-      final confirmed = await _repository.load(id) ?? latest;
+      // another writer committed an endpoint/alias edit. A `null` here means
+      // the connection was deleted in the meantime; it must not be resurrected
+      // from the earlier snapshot.
+      final confirmed = await _repository.load(id);
+      if (confirmed == null) {
+        throwMcp(
+          McpErrorKind.configuration,
+          'Подключение было удалено в другом месте. Обновите список.',
+        );
+      }
       await _host.upsertConnection(confirmed.copyWith(enabled: enabled));
     });
     if (ok) {
@@ -856,14 +864,19 @@ final class McpConnectionsController extends ChangeNotifier {
 
   /// Stages freshly submitted values, tolerating a vault that commits and then
   /// throws: the value is read back before a write is declared failed.
+  ///
+  /// A reference is recorded in [staged] before the attempt, because a write
+  /// that commits and then throws, or whose read-back is unavailable, may have
+  /// stored a value that must be cleaned up even though the configuration
+  /// never referenced it.
   Future<bool> _stageSecrets(
     Map<McpSecretReference, String> writes,
     Set<McpSecretReference> staged,
   ) async {
     for (final entry in writes.entries) {
+      staged.add(entry.key);
       try {
         await _secrets.write(entry.key, entry.value);
-        staged.add(entry.key);
         continue;
       } on Object {
         var committed = false;
@@ -875,7 +888,6 @@ final class McpConnectionsController extends ChangeNotifier {
         if (!committed) {
           return false;
         }
-        staged.add(entry.key);
       }
     }
     return true;

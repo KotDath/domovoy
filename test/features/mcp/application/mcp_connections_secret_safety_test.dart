@@ -701,6 +701,108 @@ void main() {
     expect(await vault.read(legacyBearer), isNull);
     expect(fixture.connections.state.secretCleanupFailures, isEmpty);
   });
+  test('an unreadable staged write is still cleaned up', () async {
+    final vault = CommitThenThrowWithUnreadableReadbackVault();
+    final fixture = await McpFeatureFixture.create(
+      builders: <String, ScriptedMcpConnection Function()>{
+        'remote': () => remoteConnection('remote'),
+      },
+      vault: vault,
+      secretRefIds: counterRefIds(),
+    );
+    addTearDown(fixture.dispose);
+    await fixture.saveConnection(httpConfig('remote'));
+    await vault.inner.write(legacyBearer, 'old-token');
+
+    expect(await fixture.connections.beginEdit('remote'), isTrue);
+    fixture.connections.updateDraft(
+      (draft) => draft.copyWith(bearerToken: 'new-token'),
+    );
+    expect(await fixture.connections.saveDraft(), isFalse);
+
+    final staged = stagedRef('mcp.remote.bearer.1');
+    final stored = await fixture.repository.load(remoteId);
+    expect(stored!.alias, 'Remote');
+    expect(
+      (stored.transport as McpHttpTransportConfig).bearerSecret,
+      legacyBearer,
+    );
+    expect(await vault.inner.read(legacyBearer), 'old-token');
+    // The unattempted config never referenced the staged ref, so it must not
+    // survive in secure storage.
+    expect(await vault.inner.read(staged), isNull);
+    expect(fixture.connections.state.secretCleanupFailures, isEmpty);
+    expect(fixture.connections.state.editorError, isNotNull);
+    expect(fixture.connections.state.editorError, isNot(contains('new-token')));
+  });
+
+  test(
+    'a staged orphan whose cleanup fails is visible and retryable',
+    () async {
+      final vault = CommitThenThrowWithUnreadableReadbackVault();
+      final fixture = await McpFeatureFixture.create(
+        builders: <String, ScriptedMcpConnection Function()>{
+          'remote': () => remoteConnection('remote'),
+        },
+        vault: vault,
+        secretRefIds: counterRefIds(),
+      );
+      addTearDown(fixture.dispose);
+      await fixture.saveConnection(httpConfig('remote'));
+      await vault.inner.write(legacyBearer, 'old-token');
+
+      expect(await fixture.connections.beginEdit('remote'), isTrue);
+      fixture.connections.updateDraft(
+        (draft) => draft.copyWith(bearerToken: 'orphan-secret'),
+      );
+      vault.failDeletes = true;
+      expect(await fixture.connections.saveDraft(), isFalse);
+
+      final staged = stagedRef('mcp.remote.bearer.1');
+      expect(fixture.connections.state.secretCleanupFailures['remote'], 1);
+      expect(fixture.connections.state.error, isNotNull);
+      expect(await vault.inner.read(staged), 'orphan-secret');
+      final state = fixture.connections.state.toString();
+      expect(state, isNot(contains('orphan-secret')));
+
+      vault.failDeletes = false;
+      expect(await fixture.connections.retrySecretCleanup('remote'), isTrue);
+      expect(await vault.inner.read(staged), isNull);
+      expect(fixture.connections.state.secretCleanupFailures, isEmpty);
+      expect(await vault.inner.read(legacyBearer), 'old-token');
+    },
+  );
+
+  test(
+    'setEnabled cannot resurrect a connection deleted between reads',
+    () async {
+      final repository = DeleteDuringSecondReadRepository(
+        InMemoryMcpConnectionRepository(),
+      );
+      final fixture = await McpFeatureFixture.create(
+        builders: <String, ScriptedMcpConnection Function()>{
+          'remote': () => remoteConnection('remote'),
+        },
+        repository: repository,
+        secretRefIds: counterRefIds(),
+      );
+      addTearDown(fixture.dispose);
+      await fixture.saveConnection(httpConfig('remote'));
+      expect(repository.saveCalls, 1);
+
+      // The second read observes a concurrent removal.
+      repository.target = remoteId;
+      await fixture.connections.setEnabled('remote', false);
+
+      expect(
+        repository.saveCalls,
+        1,
+        reason: 'a deleted connection must not be recreated by setEnabled',
+      );
+      expect(await repository.inner.load(remoteId), isNull);
+      expect(fixture.connections.state.error, isNotNull);
+    },
+  );
 }
 
 /// Probe transport that resolves the bearer token and echoes it in a

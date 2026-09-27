@@ -451,3 +451,103 @@ final class GatedLoadMcpConnectionRepository
     cancellation: cancellation,
   );
 }
+
+/// Vault that commits a staged write, then throws, and whose read-back is also
+/// unavailable (a broken secure-storage adapter).
+final class CommitThenThrowWithUnreadableReadbackVault
+    implements McpSecretVault {
+  CommitThenThrowWithUnreadableReadbackVault([Map<String, String>? initial])
+    : inner = InMemoryMcpSecretVault(initial);
+
+  final InMemoryMcpSecretVault inner;
+  bool failReads = true;
+  bool failDeletes = false;
+
+  @override
+  Future<String?> read(McpSecretReference reference) {
+    if (failReads) {
+      return Future<String?>.error(StateError('vault read unavailable'));
+    }
+    return inner.read(reference);
+  }
+
+  @override
+  Future<void> write(McpSecretReference reference, String value) async {
+    await inner.write(reference, value);
+    throw StateError('vault write committed then failed');
+  }
+
+  @override
+  Future<void> delete(McpSecretReference reference) {
+    if (failDeletes) {
+      return Future<void>.error(StateError('vault delete failed'));
+    }
+    return inner.delete(reference);
+  }
+}
+
+/// Repository that deletes the target between two reads, so the second read
+/// observes a concurrent removal and returns `null`.
+final class DeleteDuringSecondReadRepository
+    implements McpConnectionRepository {
+  DeleteDuringSecondReadRepository(this.inner);
+
+  final McpConnectionRepository inner;
+  McpConnectionId? target;
+  int saveCalls = 0;
+  int deleteCalls = 0;
+  int _targetLoads = 0;
+
+  @override
+  Future<McpConnectionConfig?> load(McpConnectionId id) async {
+    if (target == id) {
+      _targetLoads += 1;
+      if (_targetLoads == 2) {
+        final existing = await inner.load(id);
+        if (existing != null) {
+          await inner.delete(
+            id,
+            expectedRevision: existing.revision,
+            cancellation: CancellationSource().token,
+          );
+        }
+        return null;
+      }
+    }
+    return inner.load(id);
+  }
+
+  @override
+  Future<List<McpConnectionConfig>> loadAll() => inner.loadAll();
+
+  @override
+  Future<Map<String, int>> loadTombstones() => inner.loadTombstones();
+
+  @override
+  Future<void> save(
+    McpConnectionConfig config, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) {
+    saveCalls += 1;
+    return inner.save(
+      config,
+      expectedRevision: expectedRevision,
+      cancellation: cancellation,
+    );
+  }
+
+  @override
+  Future<void> delete(
+    McpConnectionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) {
+    deleteCalls += 1;
+    return inner.delete(
+      id,
+      expectedRevision: expectedRevision,
+      cancellation: cancellation,
+    );
+  }
+}
