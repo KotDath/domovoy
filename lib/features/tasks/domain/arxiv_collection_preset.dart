@@ -16,12 +16,13 @@ const arxivPresetDefaultTopic = 'агенты на основе больших �
 
 /// Prompt of the built-in arXiv collection preset.
 const arxivPresetPrompt =
-    'Тема: $arxivPresetDefaultTopic. Собери подборку свежих статей arXiv '
-    'по этой теме. '
-    'Вызови arxiv.search_papers, затем передай найденные статьи в '
-    'digest.summarize_papers и сохрани готовую сводку через '
-    'library.save_digest. В ответе перечисли ID статей, '
-    'тему подборки и ссылку на сохранённую запись.';
+    'Тема: $arxivPresetDefaultTopic. Выполни цепочку из трёх MCP-вызовов. '
+    'Сначала arxiv.search_papers с limit=1 и sortBy=submittedDate. '
+    'Передай один полный объект Paper v1 из structuredContent в '
+    'digest.summarize_papers. Затем передай этот Paper v1 и полный Digest v1 '
+    'из structuredContent в library.save_digest. Не пересказывай и не '
+    'обрезай поля объектов при передаче. В ответе укажи ID статьи, тему '
+    'и libraryId сохранённой записи.';
 
 /// Tools the preset pins, in pipeline order.
 ///

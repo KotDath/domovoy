@@ -447,7 +447,10 @@ final class McpAgentToolSource implements AgentToolSource {
     }
     final output = descriptor.outputSchema;
     if (output != null) {
-      final problem = toolSchemaProblem(output, profile: profile);
+      final problem = toolSchemaProblem(
+        _validationOutputSchema(output),
+        profile: profile,
+      );
       if (problem != null) {
         return 'JSON Schema for this tool cannot be validated faithfully: '
             '$problem';
@@ -712,13 +715,26 @@ final class _McpAgentToolExecutor implements AgentToolExecutor {
           'но вернул успешный результат без structuredContent. '
           'Результат не подтверждён схемой.';
     }
-    final problem = firstToolSchemaValueProblem(outputSchema, structured);
+    final problem = firstToolSchemaValueProblem(
+      _validationOutputSchema(outputSchema),
+      structured,
+    );
     if (problem == null) {
       return null;
     }
     return 'MCP: structuredContent инструмента "${binding.modelToolName}" '
         'не соответствует объявленной outputSchema: $problem';
   }
+}
+
+/// FastMCP adds this root annotation to describe its wire result wrapping.
+/// It does not constrain structuredContent. Keep every other vendor keyword
+/// subject to the strict schema check rather than silently dropping it.
+Map<String, Object?> _validationOutputSchema(Map<String, Object?> schema) {
+  if (schema['x-fastmcp-wrap-result'] is! bool) {
+    return schema;
+  }
+  return Map<String, Object?>.of(schema)..remove('x-fastmcp-wrap-result');
 }
 
 final class _BoundArguments {

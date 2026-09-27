@@ -202,11 +202,6 @@ class _TasksPageState extends State<TasksPage> {
                 Expanded(child: detail),
               ],
             ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _edit(),
-        icon: const Icon(Icons.add),
-        label: const Text('Создать'),
-      ),
     );
   }
 }

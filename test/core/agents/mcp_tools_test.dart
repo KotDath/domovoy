@@ -484,6 +484,7 @@ void main() {
 
     test('isError, structured and media payloads stay data', () async {
       const outputSchema = <String, Object?>{
+        'x-fastmcp-wrap-result': true,
         'type': 'object',
         'properties': <String, Object?>{
           'ok': <String, Object?>{'type': 'boolean'},
