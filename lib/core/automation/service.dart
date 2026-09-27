@@ -393,6 +393,10 @@ final class AutomationService {
         nextDueAt = _requireNextOccurrence(draft.schedule, now);
       case AutomationTaskState.paused:
         state = AutomationTaskState.paused;
+        // The new schedule is not armed while paused, but it must still be
+        // usable on resume: a past one-shot is rejected here instead of
+        // failing later.
+        _requireNextOccurrence(draft.schedule, now);
         nextDueAt = null;
       case AutomationTaskState.proposed:
         state = AutomationTaskState.proposed;

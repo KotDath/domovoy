@@ -120,6 +120,25 @@ void main() {
         expect(updated.state, AutomationTaskState.paused);
         expect(updated.nextDueAt, isNull);
 
+        // A schedule that could never fire on resume is rejected now.
+        await expectLater(
+          harness.service.updateTask(
+            task.taskId,
+            automationDraft(
+              schedule: AutomationSchedule.oneShot(
+                DateTime.utc(2026, 1, 1, 11, 59),
+              ),
+            ),
+          ),
+          throwsA(
+            isA<AutomationException>().having(
+              (error) => error.error.kind,
+              'kind',
+              AutomationErrorKind.invalidSchedule,
+            ),
+          ),
+        );
+
         final resumed = await harness.service.setPaused(task.taskId, false);
         expect(resumed.state, AutomationTaskState.active);
         expect(resumed.nextDueAt, DateTime.utc(2026, 1, 2, 6));
