@@ -36,6 +36,17 @@ edit affects the next message without recreating the chat. Profile data and
 memory remain separate. See [docs/personalization.md](docs/personalization.md)
 for the data model, request path, and demo script.
 
+## Tasks and schedule
+
+The tasks section runs agent prompts on a one-shot moment or a five-field cron
+expression in an explicit IANA time zone, keeps a versioned JSONL history of
+runs, catches up once after the app was closed, and never overlaps two runs of
+the same task. Scheduled runs are unattended: they cannot create new schedules
+or start other tasks, and a task proposed by an agent stays inactive until a
+human confirms it. See
+[docs/automation-user-guide.md](docs/automation-user-guide.md) for the cron
+syntax, DST policy and the literal 24/7 limitation (the app must be open).
+
 ## Linux development
 
 The application stores an optional DeepSeek API-key override with Secret
