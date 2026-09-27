@@ -281,7 +281,7 @@ void main() {
       }, profile: ToolSchemaProfile.openaiChatCompletions);
       expect(representation.isRepresented, isFalse);
       expect(representation.reason, contains('bounded work'));
-      expect(representation.reason, contains('quantified group'));
+      expect(representation.reason, contains('grouping and alternation'));
 
       final patternProperties = representToolSchema(<String, Object?>{
         'type': 'object',

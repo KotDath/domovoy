@@ -3,27 +3,28 @@
 ///
 /// Dart's `RegExp` is a backtracking engine: a crafted pattern and input can
 /// take effectively unbounded time, and because matching is synchronous a
-/// timeout on the same isolate cannot interrupt it. Instead of running
-/// unknown patterns, [toolPatternProblem] accepts only patterns whose
-/// matching work is provably bounded:
+/// timeout on the same isolate cannot interrupt it. This analyzer therefore
+/// accepts only a flat, auditable subset whose matching work is provably
+/// bounded:
 ///
-/// - no quantified groups (`(a+)+`), no nested quantifiers, no backreferences,
-///   no lookarounds, no inline flags, no named groups;
-/// - repetition bounds are explicit and small (`{n}`/`{n,m}`, `n,m` limited by
-///   [maxToolPatternRepeat]);
-/// - within one unseparated segment, ambiguous repetitions must have
-///   pairwise disjoint character sets, at most
-///   [maxToolPatternAmbiguousPerSegment] of them, at most
-///   [maxToolPatternUnboundedPerSegment] unbounded, and their bounded choice
-///   product must stay under [maxToolPatternAmbiguityFactor];
+/// - no groups and no alternation at all. Repeated overlapping alternation
+///   such as `(a|aa)(a|aa)...` backtracks exponentially even without any
+///   quantifier, so both `(`/`)` and `|` are rejected outright;
+/// - no backreferences, lookarounds, inline flags or Unicode property
+///   escapes (all of them require `(` or `\`);
+/// - quantifiers apply to a single character atom only, with explicit bounds
+///   no larger than [maxToolPatternRepeat];
+/// - within one unseparated segment, ambiguous repetitions must have pairwise
+///   disjoint character sets, at most [maxToolPatternAmbiguousPerSegment] of
+///   them, at most [maxToolPatternUnboundedPerSegment] unbounded, and their
+///   bounded choice product must stay under [maxToolPatternAmbiguityFactor];
 /// - the whole pattern is limited to [maxToolPatternLength] characters.
 ///
-/// Anything outside the subset is reported with a reason, so the tool is
-/// marked unavailable instead of being matched. The subset is deliberately
-/// conservative: common anchored patterns, character classes and disjoint
-/// quantifiers such as `^\s*\d+$`, `^[^,]*,[^,]*$` or `\d{4}-\d{2}-\d{2}`
-/// stay supported, while quantified groups (for example `(?:ab)+`) and
-/// overlapping repetitions (`a*a*`) do not.
+/// Everything else makes the tool unavailable with a visible reason instead
+/// of being matched. Ordinary flat patterns such as `^\s*\d+$`,
+/// `^[^,]*,[^,]*$`, `\d{4}-\d{2}-\d{2}` or `^[a-z]+\.[a-z]+$` stay
+/// supported; patterns that need grouping are a visible unavailability and
+/// must be expressed differently in the server schema.
 library;
 
 /// Maximum accepted pattern length.
@@ -47,287 +48,154 @@ String? toolPatternProblem(String pattern) {
   if (pattern.length > maxToolPatternLength) {
     return 'pattern is longer than $maxToolPatternLength characters.';
   }
-  return _PatternParser(pattern).analyse();
+  return _FlatPatternAnalyzer(pattern).analyse();
 }
 
-final class _PatternParser {
-  _PatternParser(this.source);
+final class _FlatPatternAnalyzer {
+  _FlatPatternAnalyzer(this.source);
 
   final String source;
   var _index = 0;
-  String? _problem;
+  final List<_CharSet> _classes = <_CharSet>[];
+  var _factor = 1;
+  var _ambiguousCount = 0;
+  var _unboundedCount = 0;
 
   String? analyse() {
-    _parseAlternation(depth: 0);
-    if (_problem != null) {
-      return _problem;
-    }
-    if (_index != source.length) {
-      return 'unexpected "${source[_index]}" at position $_index.';
-    }
-    return null;
-  }
-
-  _Summary _parseAlternation({required int depth}) {
-    final branches = <_Summary>[_parseSequence(depth: depth)];
-    while (_problem == null && _peek() == '|') {
-      _index += 1;
-      branches.add(_parseSequence(depth: depth));
-    }
-    return _Summary.union(branches);
-  }
-
-  _Summary _parseSequence({required int depth}) {
-    final state = _SegmentState();
-    var charset = _CharSet.empty;
-    var minLength = 0;
-    var hasAmbiguity = false;
-    final ambiguousClasses = <_CharSet>[];
-    while (_problem == null) {
-      final char = _peek();
-      if (char == null || char == '|' || char == ')') {
-        break;
+    while (_index < source.length) {
+      final char = source[_index];
+      if (char == '(' || char == ')' || char == '|') {
+        return 'grouping and alternation are not supported (position '
+            '$_index).';
       }
       if (char == '^' || char == r'$') {
         _index += 1;
         continue;
       }
-      final start = _index;
-      final atom = _parseAtom(depth: depth);
-      if (_problem != null) {
-        break;
+      if (char == '*' || char == '+' || char == '?') {
+        return 'quantifier "$char" at position $_index has no atom.';
       }
-      if (atom is _GroupAtom && _startsQuantifier(_peek())) {
-        _problem =
-            'quantified groups are not supported (group at position $start).';
-        break;
+      final charset = _parseAtom();
+      if (charset == null) {
+        return _error;
       }
       final quantifier = _parseQuantifier();
-      if (_problem != null) {
-        break;
+      if (_error != null) {
+        return _error;
       }
-      final ambiguous = quantifier?.isAmbiguous ?? false;
       if (quantifier != null) {
-        if (atom.charset.isEmpty) {
-          _problem =
-              'a quantifier at position $start is applied to a zero-width '
-              'atom.';
-          break;
+        if (charset.isEmpty) {
+          return 'a quantifier at position $_index is applied to a '
+              'zero-width atom.';
         }
-        _recordAmbiguous(
-          state,
-          atom.charset,
-          unbounded: quantifier.isUnbounded,
-          factor: quantifier.factor,
-        );
-        if (_problem != null) {
-          break;
+        final problem = _recordAmbiguous(charset, quantifier);
+        if (problem != null) {
+          return problem;
         }
-      } else if (atom is _GroupAtom && atom.summary.hasAmbiguity) {
-        final competition = atom.summary.ambiguousClasses.any(
-          (ambiguousClass) => state.classes.any(ambiguousClass.intersects),
-        );
-        if (competition) {
-          _problem =
-              'an ambiguous repetition inside the group at position $start '
-              'competes with a surrounding repetition.';
-          break;
-        }
-        if (atom.summary.minLength > 0 &&
-            _isSeparator(atom.charset, state.classes)) {
-          state.reset();
-        }
-        for (final ambiguousClass in atom.summary.ambiguousClasses) {
-          state.classes.add(ambiguousClass);
-        }
-        state.ambiguousCount += 1;
-        if (state.ambiguousCount > maxToolPatternAmbiguousPerSegment) {
-          _problem =
-              'too many ambiguous repetitions in one segment around position '
-              '$start.';
-          break;
-        }
-      } else if (atom is _SetAtom) {
-        _applyMandatory(state, atom.charset);
-      } else if (atom.minLength > 0 &&
-          _isSeparator(atom.charset, state.classes)) {
-        state.reset();
-      }
-      charset = charset.union(atom.charset);
-      minLength += atom.minLength * (quantifier?.minimumCount ?? 1);
-      hasAmbiguity = hasAmbiguity || ambiguous || atom.isAmbiguous;
-      if (ambiguous) {
-        ambiguousClasses.add(atom.charset);
-      } else if (atom is _GroupAtom) {
-        ambiguousClasses.addAll(atom.summary.ambiguousClasses);
+      } else {
+        _applyMandatory(charset);
       }
     }
-    return _Summary(
-      charset: charset,
-      minLength: minLength,
-      hasAmbiguity: hasAmbiguity,
-      ambiguousClasses: ambiguousClasses,
-    );
+    return null;
   }
 
-  _Atom _parseAtom({required int depth}) {
-    final char = _peek();
-    if (char == null) {
-      _problem = 'unexpected end of pattern.';
-      return const _AnchorAtom();
+  /// Parses one character atom; `null` means [_error] is set.
+  _CharSet? _parseAtom() {
+    final char = source[_index];
+    if (char == r'\') {
+      return _parseEscape();
     }
-    switch (char) {
-      case '(':
-        return _parseGroup(depth: depth);
-      case '[':
-        return _SetAtom(_parseCharClass());
-      case '.':
-        _index += 1;
-        return _SetAtom(_CharSet.all);
-      case r'\':
-        return _parseEscape();
-      case '*' || '+' || '?':
-        _problem = 'quantifier "$char" at position $_index has no atom.';
-        return const _AnchorAtom();
-      default:
-        _index += 1;
-        return _SetAtom(_CharSet.literal(char.codeUnitAt(0)));
-    }
-  }
-
-  _Atom _parseGroup({required int depth}) {
-    final start = _index;
-    if (depth >= 16) {
-      _problem = 'groups are nested deeper than 16 levels at position $start.';
-      return const _AnchorAtom();
+    if (char == '[') {
+      return _parseCharClass();
     }
     _index += 1;
-    if (_peek() == '?') {
-      if (_peekAt(1) != ':') {
-        _problem =
-            'only non-capturing "(?:" groups are supported (position $start).';
-        return const _AnchorAtom();
-      }
-      _index += 2;
+    if (char == '.') {
+      return _CharSet.all;
     }
-    final summary = _parseAlternation(depth: depth + 1);
-    if (_problem != null) {
-      return const _AnchorAtom();
-    }
-    if (_peek() != ')') {
-      _problem = 'group at position $start is not closed.';
-      return const _AnchorAtom();
-    }
-    _index += 1;
-    return _GroupAtom(summary);
+    return _CharSet.literal(char.codeUnitAt(0));
   }
 
-  _Atom _parseEscape() {
+  _CharSet? _parseEscape() {
     final start = _index;
     _index += 1;
-    final char = _peek();
-    if (char == null) {
-      _problem = 'pattern ends with a backslash at position $start.';
-      return const _AnchorAtom();
+    if (_index >= source.length) {
+      _error = 'pattern ends with a backslash at position $start.';
+      return null;
     }
+    final char = source[_index];
     if (char == 'b' || char == 'B') {
       _index += 1;
-      return const _AnchorAtom();
+      return _CharSet.empty;
     }
     if (char == 'k' || _isDigit(char)) {
-      _problem = 'backreferences are not supported (position $start).';
-      return const _AnchorAtom();
+      _error = 'backreferences are not supported (position $start).';
+      return null;
     }
     if (char == 'p' || char == 'P') {
-      _problem =
-          'Unicode property escapes are not supported (position $start).';
-      return const _AnchorAtom();
+      _error = 'Unicode property escapes are not supported (position $start).';
+      return null;
     }
-    final escaped = _parseEscapeCharSet();
-    if (_problem != null) {
-      return const _AnchorAtom();
-    }
-    return _SetAtom(escaped);
+    return _parseEscapeCharSet();
   }
 
   _CharSet _parseEscapeCharSet() {
-    final char = _peek()!;
+    final char = source[_index];
     _index += 1;
-    switch (char) {
-      case 'd':
-        return _CharSet.digit;
-      case 'D':
-        return _CharSet.digit.complement();
-      case 'w':
-        return _CharSet.word;
-      case 'W':
-        return _CharSet.word.complement();
-      case 's':
-        return _CharSet.space;
-      case 'S':
-        return _CharSet.space.complement();
-      case 'n':
-        return _CharSet.literal(0x0A);
-      case 'r':
-        return _CharSet.literal(0x0D);
-      case 't':
-        return _CharSet.literal(0x09);
-      case 'f':
-        return _CharSet.literal(0x0C);
-      case 'v':
-        return _CharSet.literal(0x0B);
-      case '0':
-        return _CharSet.literal(0x00);
-      case 'x':
-        return _CharSet.literal(_readHexEscape(2, fallback: 0x78));
-      case 'u':
-        if (_peek() == '{') {
-          _problem = 'Unicode code point escapes are not supported.';
-          return _CharSet.empty;
-        }
-        return _CharSet.literal(_readHexEscape(4, fallback: 0x75));
-      default:
-        return _CharSet.literal(char.codeUnitAt(0));
-    }
+    return switch (char) {
+      'd' => _CharSet.digit,
+      'D' => _CharSet.digit.complement(),
+      'w' => _CharSet.word,
+      'W' => _CharSet.word.complement(),
+      's' => _CharSet.space,
+      'S' => _CharSet.space.complement(),
+      'n' => _CharSet.literal(0x0A),
+      'r' => _CharSet.literal(0x0D),
+      't' => _CharSet.literal(0x09),
+      'f' => _CharSet.literal(0x0C),
+      'v' => _CharSet.literal(0x0B),
+      '0' => _CharSet.literal(0x00),
+      'x' => _CharSet.literal(_readHexEscape(2, fallback: 0x78)),
+      'u' => _CharSet.literal(_readHexEscape(4, fallback: 0x75)),
+      _ => _CharSet.literal(char.codeUnitAt(0)),
+    };
   }
 
   int _readHexEscape(int digits, {required int fallback}) {
     final buffer = StringBuffer();
     for (var count = 0; count < digits; count += 1) {
-      final char = _peek();
-      if (char == null || !_isHexDigit(char)) {
+      if (_index >= source.length || !_isHexDigit(source[_index])) {
         return fallback;
       }
-      buffer.write(char);
+      buffer.write(source[_index]);
       _index += 1;
     }
     return int.parse(buffer.toString(), radix: 16);
   }
 
-  _CharSet _parseCharClass() {
+  _CharSet? _parseCharClass() {
     final start = _index;
     _index += 1;
     var negated = false;
-    if (_peek() == '^') {
+    if (_index < source.length && source[_index] == '^') {
       negated = true;
       _index += 1;
     }
     var members = _CharSet.empty;
     var first = true;
-    while (_problem == null) {
-      final char = _peek();
-      if (char == null) {
-        _problem = 'character class at position $start is not closed.';
-        return _CharSet.empty;
+    while (true) {
+      if (_index >= source.length) {
+        _error = 'character class at position $start is not closed.';
+        return null;
       }
+      final char = source[_index];
       if (char == ']' && !first) {
         _index += 1;
         break;
       }
       first = false;
       if (_index - start > 256) {
-        _problem = 'character class at position $start is too large.';
-        return _CharSet.empty;
+        _error = 'character class at position $start is too large.';
+        return null;
       }
       if (char == ']') {
         // A leading ']' is a literal member.
@@ -337,41 +205,36 @@ final class _PatternParser {
       }
       if (char == r'\') {
         _index += 1;
-        final escaped = _peek();
-        if (escaped == null) {
-          _problem =
-              'character class at position $start ends with a '
-              'backslash.';
-          return _CharSet.empty;
+        if (_index >= source.length) {
+          _error = 'character class at position $start ends with a backslash.';
+          return null;
         }
+        final escaped = source[_index];
         if (_isClassEscape(escaped)) {
           _index += 1;
           members = members.union(_classEscapeSet(escaped));
           continue;
         }
-        final firstChar = _parseClassLiteral(escaped, start);
-        if (_problem != null) {
-          return _CharSet.empty;
+        final codeUnit = _parseClassLiteral(escaped);
+        final range = _tryClassRange(codeUnit, start);
+        if (_error != null) {
+          return null;
         }
-        final range = _tryClassRange(firstChar, start);
-        if (_problem != null) {
-          return _CharSet.empty;
-        }
-        members = members.union(range ?? _CharSet.literal(firstChar));
+        members = members.union(range ?? _CharSet.literal(codeUnit));
         continue;
       }
       _index += 1;
-      final firstChar = char.codeUnitAt(0);
-      final range = _tryClassRange(firstChar, start);
-      if (_problem != null) {
-        return _CharSet.empty;
+      final codeUnit = char.codeUnitAt(0);
+      final range = _tryClassRange(codeUnit, start);
+      if (_error != null) {
+        return null;
       }
-      members = members.union(range ?? _CharSet.literal(firstChar));
+      members = members.union(range ?? _CharSet.literal(codeUnit));
     }
     return negated ? members.complement() : members;
   }
 
-  int _parseClassLiteral(String escaped, int start) {
+  int _parseClassLiteral(String escaped) {
     switch (escaped) {
       case 'n':
         _index += 1;
@@ -404,37 +267,37 @@ final class _PatternParser {
   }
 
   _CharSet? _tryClassRange(int firstChar, int start) {
-    if (_peek() != '-' || _peekAt(1) == null || _peekAt(1) == ']') {
+    if (_index + 1 >= source.length ||
+        source[_index] != '-' ||
+        source[_index + 1] == ']') {
       return null;
     }
     _index += 1;
-    final char = _peek()!;
+    final char = source[_index];
     late final int lastChar;
     if (char == r'\') {
       _index += 1;
-      final escaped = _peek();
-      if (escaped == null || _isClassEscape(escaped)) {
-        _problem = 'character class at position $start has an invalid range.';
+      if (_index >= source.length || _isClassEscape(source[_index])) {
+        _error = 'character class at position $start has an invalid range.';
         return null;
       }
-      lastChar = _parseClassLiteral(escaped, start);
+      lastChar = _parseClassLiteral(source[_index]);
     } else {
       _index += 1;
       lastChar = char.codeUnitAt(0);
     }
     if (lastChar < firstChar) {
-      _problem = 'character class at position $start has a reversed range.';
+      _error = 'character class at position $start has a reversed range.';
       return null;
     }
     return _CharSet.range(firstChar, lastChar);
   }
 
   _Quantifier? _parseQuantifier() {
-    final char = _peek();
-    if (char == null) {
+    if (_index >= source.length) {
       return null;
     }
-    switch (char) {
+    switch (source[_index]) {
       case '*':
         _index += 1;
         _consumeLazyMarker();
@@ -468,30 +331,30 @@ final class _PatternParser {
     }
     var maximum = minimum;
     var unbounded = false;
-    if (_peek() == ',') {
+    if (_index < source.length && source[_index] == ',') {
       _index += 1;
-      if (_peek() == '}') {
+      if (_index < source.length && source[_index] == '}') {
         unbounded = true;
       } else {
         final parsed = _readRepeatCount();
         if (parsed == null) {
-          _problem = 'malformed repetition at position $start.';
+          _error = 'malformed repetition at position $start.';
           return null;
         }
         maximum = parsed;
       }
     }
-    if (_peek() != '}') {
-      _problem = 'malformed repetition at position $start.';
+    if (_index >= source.length || source[_index] != '}') {
+      _index = start;
       return null;
     }
     _index += 1;
     if (maximum < minimum) {
-      _problem = 'repetition at position $start has a reversed range.';
+      _error = 'repetition at position $start has a reversed range.';
       return null;
     }
     if (maximum > maxToolPatternRepeat) {
-      _problem = 'repetition at position $start exceeds $maxToolPatternRepeat.';
+      _error = 'repetition at position $start exceeds $maxToolPatternRepeat.';
       return null;
     }
     _consumeLazyMarker();
@@ -508,105 +371,80 @@ final class _PatternParser {
   int? _readRepeatCount() {
     final start = _index;
     var value = 0;
-    while (true) {
-      final char = _peek();
-      if (char == null || !_isDigit(char)) {
-        break;
-      }
-      value = value * 10 + (char.codeUnitAt(0) - 0x30);
+    while (_index < source.length && _isDigit(source[_index])) {
+      value = value * 10 + (source[_index].codeUnitAt(0) - 0x30);
       _index += 1;
       if (value > maxToolPatternRepeat) {
         return maxToolPatternRepeat + 1;
       }
     }
-    if (_index == start) {
-      return null;
-    }
-    return value;
+    return _index == start ? null : value;
   }
 
   void _consumeLazyMarker() {
-    if (_peek() == '?') {
+    if (_index < source.length && source[_index] == '?') {
       _index += 1;
     }
   }
 
-  void _recordAmbiguous(
-    _SegmentState state,
-    _CharSet charset, {
-    required bool unbounded,
-    required int factor,
-  }) {
-    for (final existing in state.classes) {
+  String? _recordAmbiguous(_CharSet charset, _Quantifier quantifier) {
+    for (final existing in _classes) {
       if (existing.intersects(charset)) {
-        _problem =
-            'repetitions with overlapping character sets are not supported '
-            '(position $_index).';
-        return;
+        return 'repetitions with overlapping character sets are not '
+            'supported (position $_index).';
       }
     }
-    state.classes.add(charset);
-    state.ambiguousCount += 1;
-    if (state.ambiguousCount > maxToolPatternAmbiguousPerSegment) {
-      _problem =
-          'more than $maxToolPatternAmbiguousPerSegment ambiguous repetitions '
-          'are adjacent (position $_index).';
-      return;
+    _classes.add(charset);
+    _ambiguousCount += 1;
+    if (_ambiguousCount > maxToolPatternAmbiguousPerSegment) {
+      return 'more than $maxToolPatternAmbiguousPerSegment ambiguous '
+          'repetitions are adjacent (position $_index).';
     }
-    if (unbounded) {
-      state.unboundedCount += 1;
-      if (state.unboundedCount > maxToolPatternUnboundedPerSegment) {
-        _problem =
-            'more than $maxToolPatternUnboundedPerSegment unbounded '
+    if (quantifier.isUnbounded) {
+      _unboundedCount += 1;
+      if (_unboundedCount > maxToolPatternUnboundedPerSegment) {
+        return 'more than $maxToolPatternUnboundedPerSegment unbounded '
             'repetitions are adjacent (position $_index).';
       }
-      return;
+      return null;
     }
-    state.factor *= factor;
-    if (state.factor > maxToolPatternAmbiguityFactor) {
-      _problem =
-          'the number of ambiguous repetition choices exceeds '
+    _factor *= quantifier.factor;
+    if (_factor > maxToolPatternAmbiguityFactor) {
+      return 'the number of ambiguous repetition choices exceeds '
           '$maxToolPatternAmbiguityFactor (position $_index).';
     }
+    return null;
   }
 
-  void _applyMandatory(_SegmentState state, _CharSet charset) {
-    if (state.classes.isEmpty) {
+  void _applyMandatory(_CharSet charset) {
+    if (_classes.isEmpty) {
       return;
     }
-    if (_isSeparator(charset, state.classes)) {
-      state.reset();
+    if (_isSeparator(charset)) {
+      _classes.clear();
+      _factor = 1;
+      _ambiguousCount = 0;
+      _unboundedCount = 0;
       return;
     }
     // The mandatory atom can consume a character an earlier ambiguous
     // repetition could also consume, so it does not reset the segment.
-    state.classes.add(charset);
+    _classes.add(charset);
   }
 
-  bool _isSeparator(_CharSet charset, List<_CharSet> classes) {
+  /// A non-empty mandatory atom consumed by a disjoint character set separates
+  /// two ambiguous repetitions; an empty (zero-width) atom never does.
+  bool _isSeparator(_CharSet charset) {
     if (charset.isEmpty) {
       return false;
     }
-    for (final existing in classes) {
+    for (final existing in _classes) {
       if (existing.intersects(charset)) {
         return false;
       }
     }
     return true;
   }
-
-  String? _peek() => _peekAt(0);
-
-  String? _peekAt(int offset) {
-    final index = _index + offset;
-    if (index < 0 || index >= source.length) {
-      return null;
-    }
-    return source[index];
-  }
-
-  bool _startsQuantifier(String? char) =>
-      char == '*' || char == '+' || char == '?' || char == '{';
 
   bool _isDigit(String char) {
     final code = char.codeUnitAt(0);
@@ -636,6 +474,8 @@ final class _PatternParser {
     's' => _CharSet.space,
     _ => _CharSet.space.complement(),
   };
+
+  String? _error;
 }
 
 final class _Quantifier {
@@ -648,103 +488,6 @@ final class _Quantifier {
   final int minimumCount;
   final bool isUnbounded;
   final int factor;
-
-  bool get isAmbiguous => isUnbounded || factor > 1;
-}
-
-sealed class _Atom {
-  const _Atom();
-
-  _CharSet get charset;
-
-  int get minLength;
-
-  bool get isAmbiguous => false;
-}
-
-final class _SetAtom extends _Atom {
-  const _SetAtom(this.charset);
-
-  @override
-  final _CharSet charset;
-
-  @override
-  int get minLength => 1;
-}
-
-final class _GroupAtom extends _Atom {
-  const _GroupAtom(this.summary);
-
-  final _Summary summary;
-
-  @override
-  _CharSet get charset => summary.charset;
-
-  @override
-  int get minLength => summary.minLength;
-
-  @override
-  bool get isAmbiguous => summary.hasAmbiguity;
-}
-
-final class _AnchorAtom extends _Atom {
-  const _AnchorAtom();
-
-  @override
-  _CharSet get charset => _CharSet.empty;
-
-  @override
-  int get minLength => 0;
-}
-
-final class _Summary {
-  const _Summary({
-    required this.charset,
-    required this.minLength,
-    required this.hasAmbiguity,
-    required this.ambiguousClasses,
-  });
-
-  factory _Summary.union(List<_Summary> branches) {
-    var charset = _CharSet.empty;
-    var minLength = 0;
-    var hasAmbiguity = false;
-    final ambiguousClasses = <_CharSet>[];
-    for (var index = 0; index < branches.length; index += 1) {
-      final branch = branches[index];
-      charset = charset.union(branch.charset);
-      minLength = index == 0
-          ? branch.minLength
-          : (branch.minLength < minLength ? branch.minLength : minLength);
-      hasAmbiguity = hasAmbiguity || branch.hasAmbiguity;
-      ambiguousClasses.addAll(branch.ambiguousClasses);
-    }
-    return _Summary(
-      charset: charset,
-      minLength: minLength,
-      hasAmbiguity: hasAmbiguity,
-      ambiguousClasses: ambiguousClasses,
-    );
-  }
-
-  final _CharSet charset;
-  final int minLength;
-  final bool hasAmbiguity;
-  final List<_CharSet> ambiguousClasses;
-}
-
-final class _SegmentState {
-  final List<_CharSet> classes = <_CharSet>[];
-  var factor = 1;
-  var ambiguousCount = 0;
-  var unboundedCount = 0;
-
-  void reset() {
-    classes.clear();
-    factor = 1;
-    ambiguousCount = 0;
-    unboundedCount = 0;
-  }
 }
 
 final class _Range {

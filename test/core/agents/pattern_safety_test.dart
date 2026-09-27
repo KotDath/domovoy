@@ -3,11 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('bounded regex subset', () {
-    test('accepts ordinary safe patterns', () {
+    test('accepts ordinary safe flat patterns', () {
       const safe = <String>[
         r'^[a-z]+$',
         r'^\d{4}-\d{2}-\d{2}$',
-        r'^(?:foo|bar)$',
         r'^\s*\d+$',
         r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',
         r'^[^,]*,[^,]*$',
@@ -15,7 +14,6 @@ void main() {
         r'^a+?b$',
         r'\w+@\w+\.\w+',
         r'^[A-Za-z0-9_-]{1,64}$',
-        r'^\d+\.\d+$|^\d+$',
         r'^[a-z]+\.[a-z]+$',
         r'^\d+-\d+-\d+-x$',
       ];
@@ -24,23 +22,28 @@ void main() {
       }
     });
 
-    test('rejects constructs whose work cannot be bounded', () {
+    test('rejects the repeated-overlapping-alternation probe', () {
+      // Even without any quantifier this backtracks exponentially; the
+      // analyzer must reject it before anything tries to match it.
+      final pattern = '^${'(a|aa)' * 24}b\$';
+      expect(toolPatternProblem(pattern), isNotNull);
+    });
+
+    test('rejects grouping, alternation and other unsafe constructs', () {
       final unsafe = <String, String>{
-        // The reported ReDoS repro: a quantified group with an inner
-        // quantifier.
-        r'(a+)+$': 'group',
-        r'^(?:ab)+$': 'group',
-        r'(a|b)+$': 'group',
+        r'(a+)+$': 'grouping and alternation',
+        r'^(?:ab)+$': 'grouping and alternation',
+        r'(a|b)+$': 'grouping and alternation',
+        r'^(?=x)y$': 'grouping and alternation',
+        r'(?<=x)y': 'grouping and alternation',
+        r'(?<name>x)': 'grouping and alternation',
+        r'(?i)abc': 'grouping and alternation',
+        r'a|b': 'grouping and alternation',
+        r'^a|b$': 'grouping and alternation',
         r'a*a*b': 'overlapping',
         r'.*.*': 'overlapping',
         r'\d+\d+': 'overlapping',
-        r'(?=x)': 'group',
-        r'(?!x)': 'group',
-        r'(?<=x)y': 'group',
-        r'(?<!x)y': 'group',
-        r'(?<name>x)': 'group',
-        r'(?i)abc': 'group',
-        r'(a)\1': 'backreference',
+        r'\1': 'backreference',
         r'\p{L}': 'Unicode',
         r'a{1001}': 'exceeds',
         r'a*b*c*d*e*': 'unbounded',
@@ -53,7 +56,7 @@ void main() {
       });
     });
 
-    test('rejects oversized patterns and malformed groups quickly', () {
+    test('rejects oversized and malformed patterns quickly', () {
       final long = 'a' * (maxToolPatternLength + 1);
       expect(toolPatternProblem(long), contains('longer than'));
       expect(toolPatternProblem('(abc'), isNotNull);
@@ -63,7 +66,7 @@ void main() {
 
     test('keeps the analyzer itself linear on hostile inputs', () {
       final stopwatch = Stopwatch()..start();
-      // 5000 nested-looking groups hit the depth limit instead of recursing.
+      // Thousands of group openers are rejected on the first one.
       final deep = '${'(' * 4000}a${')' * 4000}';
       expect(toolPatternProblem(deep), isNotNull);
       final wide = '${'a*' * 2000}b';
