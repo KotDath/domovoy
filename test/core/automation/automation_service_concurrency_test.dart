@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:domovoy/core/automation/automation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -77,27 +79,41 @@ void main() {
   });
 
   test('a manual start and a due tick never both launch', () async {
+    final execution = Completer<void>();
     final harness = build();
+    harness.executor.handler = (request, cancellation) async {
+      await execution.future;
+      return AutomationRunOutcome(
+        status: AutomationRunStatus.succeeded,
+        resultText: 'готово',
+      );
+    };
     await harness.service.start();
     final task = await harness.service.createTask(automationDraft());
-    harness.clock.advance(const Duration(minutes: 5));
     harness.repository.gate('appendRun');
+    harness.clock.advance(const Duration(minutes: 5));
 
+    // The manual call reserves the task synchronously before the timer tick
+    // resumes; the tick must defer, not record a skip for a start that has not
+    // committed yet.
     final manual = harness.service.runTaskNow(task.taskId);
     final tick = harness.service.tick();
     await pump();
-    // Both the manual start and the tick's skipped-period record are held at
-    // the store boundary; the tick must not launch a second execution.
-    expect(harness.repository.callsFor('appendRun'), 2);
+    expect(harness.repository.callsFor('appendRun'), 1);
 
     harness.repository.release('appendRun');
     final handle = await manual;
-    await handle.done;
     await tick;
+    // The manual run is now executing; the still-due period is recorded as
+    // skipped (no queue, no second execution).
+    await harness.service.tick();
+    expect(harness.executor.requests, hasLength(1));
+
+    execution.complete();
+    await handle.done;
     await harness.service.waitForIdle();
 
     final runs = await harness.repository.listRuns(taskId: task.taskId);
-    expect(runs, hasLength(2));
     final executed = runs
         .where((run) => run.status == AutomationRunStatus.succeeded)
         .toList();
@@ -118,6 +134,173 @@ void main() {
     // The plan advanced past the skipped period.
     final stored = await harness.repository.findTask(task.taskId);
     expect(stored!.nextDueAt, DateTime.utc(2026, 1, 1, 12, 10));
+    await harness.service.dispose();
+  });
+
+  test(
+    'a failed manual start does not let a due tick consume the period',
+    () async {
+      final harness = build();
+      await harness.service.start();
+      final task = await harness.service.createTask(automationDraft());
+      harness.clock.advance(const Duration(minutes: 5));
+      // The manual call reserves the task, then blocks on the task read.
+      harness.repository.gate('findTask');
+      final manual = harness.service.runTaskNow(
+        task.taskId,
+        expectedRevision: task.revision + 1,
+      );
+      await pump();
+      expect(harness.repository.callsFor('findTask'), greaterThanOrEqualTo(1));
+
+      // The due tick saw only a pending reservation: it must not mark the period
+      // skipped.
+      harness.repository.release('findTask');
+      await expectLater(
+        manual,
+        throwsA(
+          isA<AutomationException>().having(
+            (error) => error.error.kind,
+            'kind',
+            AutomationErrorKind.revisionMismatch,
+          ),
+        ),
+      );
+      expect(harness.executor.requests, isEmpty);
+      expect(harness.repository.inner.runs, isEmpty);
+
+      // The period was never consumed: the retry tick fires it exactly once.
+      harness.clock.advance(const Duration(milliseconds: 60));
+      await harness.service.tick();
+      await harness.service.waitForIdle();
+      final runs = await harness.repository.listRuns(taskId: task.taskId);
+      expect(runs, hasLength(1));
+      expect(runs.single.trigger, AutomationRunTrigger.scheduled);
+      expect(runs.single.scheduledAt, DateTime.utc(2026, 1, 1, 12, 5));
+      expect(harness.executor.requests, hasLength(1));
+      final stored = await harness.repository.findTask(task.taskId);
+      expect(stored!.nextDueAt, DateTime.utc(2026, 1, 1, 12, 10));
+      await harness.service.dispose();
+    },
+  );
+
+  test('pause during a gated append closes the committed run', () async {
+    final harness = build();
+    await harness.service.start();
+    final task = await harness.service.createTask(automationDraft());
+    harness.clock.advance(const Duration(minutes: 5));
+    harness.repository.gate('appendRun');
+
+    final tick = harness.service.tick();
+    await pump();
+    expect(harness.repository.callsFor('appendRun'), 1);
+    await harness.service.setPaused(task.taskId, true);
+    harness.repository.release('appendRun');
+    await tick;
+    await harness.service.waitForIdle();
+
+    expect(harness.executor.requests, isEmpty);
+    final runs = await harness.repository.listRuns(taskId: task.taskId);
+    expect(runs, hasLength(1));
+    expect(runs.single.status, AutomationRunStatus.interrupted);
+    expect(runs.single.scheduledAt, DateTime.utc(2026, 1, 1, 12, 5));
+    final stored = await harness.repository.findTask(task.taskId);
+    expect(stored!.state, AutomationTaskState.paused);
+    expect(stored.nextDueAt, isNull);
+
+    // Resume skips the interrupted period and never replays it.
+    final resumed = await harness.service.setPaused(task.taskId, false);
+    expect(resumed.nextDueAt, DateTime.utc(2026, 1, 1, 12, 10));
+    harness.clock.advance(const Duration(milliseconds: 60));
+    await harness.service.tick();
+    await harness.service.waitForIdle();
+    expect(harness.executor.requests, isEmpty);
+    await harness.service.dispose();
+  });
+
+  test('delete during a gated append closes the committed run', () async {
+    final harness = build();
+    await harness.service.start();
+    final task = await harness.service.createTask(automationDraft());
+    harness.clock.advance(const Duration(minutes: 5));
+    harness.repository.gate('appendRun');
+
+    final tick = harness.service.tick();
+    await pump();
+    expect(harness.repository.callsFor('appendRun'), 1);
+    final deleted = await harness.service.deleteTask(task.taskId);
+    expect(deleted.state, AutomationTaskState.deleted);
+    harness.repository.release('appendRun');
+    await tick;
+    await harness.service.waitForIdle();
+
+    expect(harness.executor.requests, isEmpty);
+    final runs = await harness.repository.listRuns(taskId: task.taskId);
+    expect(runs, hasLength(1));
+    expect(runs.single.status, AutomationRunStatus.interrupted);
+    final stored = await harness.repository.findTask(task.taskId);
+    expect(stored!.state, AutomationTaskState.deleted);
+    expect(stored.nextDueAt, isNull);
+    await harness.service.dispose();
+  });
+
+  test('edit during a gated append closes the committed run', () async {
+    final harness = build();
+    await harness.service.start();
+    final task = await harness.service.createTask(automationDraft());
+    harness.clock.advance(const Duration(minutes: 5));
+    harness.repository.gate('appendRun');
+
+    final tick = harness.service.tick();
+    await pump();
+    expect(harness.repository.callsFor('appendRun'), 1);
+    final updated = await harness.service.updateTask(
+      task.taskId,
+      automationDraft(
+        name: 'Новая версия',
+        schedule: AutomationSchedule.cron(
+          expression: '0 9 * * *',
+          timeZoneId: 'Europe/Moscow',
+        ),
+      ),
+    );
+    harness.repository.release('appendRun');
+    await tick;
+    await harness.service.waitForIdle();
+
+    expect(harness.executor.requests, isEmpty);
+    final runs = await harness.repository.listRuns(taskId: task.taskId);
+    expect(runs, hasLength(1));
+    expect(runs.single.status, AutomationRunStatus.interrupted);
+    final stored = await harness.repository.findTask(task.taskId);
+    expect(stored!.revision, updated.revision);
+    expect(stored.nextDueAt, DateTime.utc(2026, 1, 2, 6));
+    // The old period is consumed, not replayed on the next tick.
+    await harness.service.tick();
+    await harness.service.waitForIdle();
+    expect(harness.executor.requests, isEmpty);
+    await harness.service.dispose();
+  });
+
+  test('delete during a gated manual append closes the record', () async {
+    final harness = build();
+    await harness.service.start();
+    final task = await harness.service.createTask(automationDraft());
+    harness.repository.gate('appendRun');
+
+    final manual = harness.service.runTaskNow(task.taskId);
+    await pump();
+    expect(harness.repository.callsFor('appendRun'), 1);
+    await harness.service.deleteTask(task.taskId);
+    harness.repository.release('appendRun');
+    await expectLater(manual, throwsA(isA<AutomationException>()));
+    await harness.service.waitForIdle();
+
+    expect(harness.executor.requests, isEmpty);
+    final runs = await harness.repository.listRuns(taskId: task.taskId);
+    expect(runs, hasLength(1));
+    expect(runs.single.status, AutomationRunStatus.interrupted);
+    expect(runs.single.trigger, AutomationRunTrigger.manual);
     await harness.service.dispose();
   });
 

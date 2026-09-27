@@ -127,6 +127,52 @@ final class AutomationService {
     }
   }
 
+  /// Rechecks the live task record after a durable `running` record exists.
+  ///
+  /// Returns true when the agent session may still start for [planned]: the
+  /// service is running in the foreground, the task is alive and unchanged,
+  /// and (for the scheduler path) it is still active. A pause, delete or edit
+  /// that happened while the append was awaiting closes the committed record
+  /// as interrupted instead of launching an agent.
+  Future<bool> _postCommitStartReady(
+    AutomationTask planned, {
+    required bool requireActive,
+  }) async {
+    if (!_canCommitRuns) {
+      return false;
+    }
+    final current = await tasks.findTask(planned.taskId);
+    if (current == null || !current.isAlive) {
+      return false;
+    }
+    if (current.revision != planned.revision) {
+      return false;
+    }
+    if (current.state == AutomationTaskState.proposed ||
+        current.state == AutomationTaskState.deleted) {
+      return false;
+    }
+    if (requireActive && current.state != AutomationTaskState.active) {
+      return false;
+    }
+    return _canCommitRuns;
+  }
+
+  /// Closes a committed-but-unstartable run visibly and returns its terminal
+  /// record. No agent session was started, and the period stays consumed so a
+  /// later tick never repeats it.
+  Future<AutomationRun> _abandonCommittedRun(
+    AutomationRun run, {
+    required String message,
+  }) => _finishRun(
+    run,
+    status: AutomationRunStatus.interrupted,
+    error: AutomationRunError(
+      kind: AutomationRunErrorKind.interrupted,
+      message: message,
+    ),
+  );
+
   /// True while a scheduled or catch-up run executes in this process.
   ///
   /// Used as a defense-in-depth guard by the `automation` MCP server: while a
@@ -439,6 +485,7 @@ final class AutomationService {
   /// and while the service is stopped or backgrounded. The task reservation is
   /// taken synchronously before the first store call and covers the whole
   /// start boundary, so two overlapping calls cannot both launch.
+  ///
   Future<AutomationRunHandle> runTaskNow(
     AutomationTaskId taskId, {
     AutomationCallOrigin origin = AutomationCallOrigin.human,
@@ -509,21 +556,24 @@ final class AutomationService {
         trigger: AutomationRunTrigger.manual,
         startedAt: now,
       );
-      if (!_canCommitRuns) {
-        // The durable record exists; no agent session may start in background.
-        await _finishRun(
+      if (!await _postCommitStartReady(current, requireActive: false)) {
+        await _abandonCommittedRun(
           run,
-          status: AutomationRunStatus.interrupted,
-          error: AutomationRunError(
-            kind: AutomationRunErrorKind.interrupted,
-            message:
-                'Ручной запуск отменён: приложение ушло в фон или сервис '
-                'остановлен.',
-          ),
+          message:
+              'Запуск отменён: задача изменилась, удалена, или приложение ушло '
+              'в фон до старта.',
         );
+        if (!_canCommitRuns) {
+          throwAutomation(
+            AutomationErrorKind.cancelled,
+            'Ручной запуск отменён: приложение в фоне или сервис остановлен; '
+            'запись закрыта как interrupted.',
+          );
+        }
         throwAutomation(
-          AutomationErrorKind.cancelled,
-          'Ручной запуск отменён: приложение в фоне или сервис остановлен.',
+          AutomationErrorKind.noOverlap,
+          'Задача изменилась или удалена до старта запуска; запись закрыта '
+          'как interrupted.',
         );
       }
       _launchRun(current, run);
@@ -630,9 +680,15 @@ final class AutomationService {
       return;
     }
     if (!_tryReserve(task.taskId.value)) {
-      // A manual start or run holds the task: the due period is recorded as
-      // skipped without a queue, exactly like any other overlap.
-      await _recordBusyPeriod(task, now);
+      if (_active.containsKey(task.taskId.value)) {
+        // An actual run of the task holds it: the due period is recorded as
+        // skipped without a queue, exactly like any other overlap.
+        await _recordBusyPeriod(task, now);
+      }
+      // Otherwise only a pending start reservation holds the task (a manual
+      // call that has not committed yet). Nothing is marked skipped: if that
+      // start fails, this due period must still fire/catch up once. The short
+      // retry timer re-evaluates it.
       return;
     }
     try {
@@ -646,7 +702,7 @@ final class AutomationService {
       final consumed = await runs.findPeriodRun(task.taskId, last);
       if (task.schedule is OneShotSchedule) {
         if (consumed == null && await _commitReady(task)) {
-          await _startDueRun(
+          final started = await _startDueRun(
             task,
             scheduledAt: due,
             trigger: AutomationRunTrigger.scheduled,
@@ -655,6 +711,12 @@ final class AutomationService {
             skippedTruncated: false,
             now: now,
           );
+          if (!started) {
+            // The committed record was closed as interrupted because the task
+            // changed or the service left the foreground; the newer writer
+            // owns the task state, so this tick must not overwrite it.
+            return;
+          }
         }
         if (!_canCommitRuns) {
           return;
@@ -684,7 +746,7 @@ final class AutomationService {
         // stays for the next foreground catch-up.
         return;
       }
-      await _startDueRun(
+      final started = await _startDueRun(
         task,
         scheduledAt: last,
         trigger: isCatchUp
@@ -695,6 +757,9 @@ final class AutomationService {
         skippedTruncated: skipped.truncated,
         now: now,
       );
+      if (!started) {
+        return;
+      }
       await _saveTaskState(
         task,
         next == null
@@ -708,8 +773,12 @@ final class AutomationService {
     }
   }
 
-  /// Records one due period as skipped because another run of the task holds
-  /// it (manual start, manual run or a previous tick still starting).
+  /// Records one due period as skipped because another run of the task is
+  /// actually executing.
+  ///
+  /// Never called for a pending start reservation: a manual call that has not
+  /// committed yet may still fail, and marking the period skipped would lose
+  /// it although nothing overlapped.
   Future<void> _recordBusyPeriod(AutomationTask task, DateTime now) async {
     final current = await tasks.findTask(task.taskId);
     if (current == null ||
@@ -768,9 +837,16 @@ final class AutomationService {
     );
   }
 
-  /// Persists the `running` record, saves the advanced task state and launches
-  /// the agent session.
-  Future<void> _startDueRun(
+  /// Persists the `running` record and launches the agent session.
+  ///
+  /// Returns true only when the session was actually launched; the caller then
+  /// saves the advanced task state. A false result means no agent started:
+  /// either nothing was committed (the service left the foreground or the task
+  /// changed before the write, so the period stays for catch-up) or a
+  /// committed record was closed as interrupted (the period is consumed and
+  /// the newer writer owns the task state, so the caller must not overwrite
+  /// it).
+  Future<bool> _startDueRun(
     AutomationTask task, {
     required DateTime scheduledAt,
     required AutomationRunTrigger trigger,
@@ -780,7 +856,7 @@ final class AutomationService {
     required DateTime now,
   }) async {
     if (!_canCommitRuns) {
-      return;
+      return false;
     }
     final run = await _createRunRecord(
       task,
@@ -791,22 +867,21 @@ final class AutomationService {
       skippedFrom: skippedFrom,
       skippedTruncated: skippedTruncated,
     );
-    if (!_canCommitRuns) {
-      // The durable `running` record already exists; no agent session may
-      // start in the background, so the period is closed as interrupted
-      // without side effects.
-      await _finishRun(
+    // The task may have been paused, deleted or edited while the record was
+    // being published. The committed record is the truth: close it visibly as
+    // interrupted without starting an agent, and leave the task state to the
+    // newer writer.
+    if (!await _postCommitStartReady(task, requireActive: true)) {
+      await _abandonCommittedRun(
         run,
-        status: AutomationRunStatus.interrupted,
-        error: AutomationRunError(
-          kind: AutomationRunErrorKind.interrupted,
-          message:
-              'Запуск отменён: приложение ушло в фон или сервис остановлен.',
-        ),
+        message:
+            'Запуск отменён: задача изменилась, удалена, или приложение ушло '
+            'в фон до старта. Агент не запускался.',
       );
-      return;
+      return false;
     }
     _launchRun(task, run);
+    return true;
   }
 
   /// Rechecks, immediately before a durable commit, that the service may start
