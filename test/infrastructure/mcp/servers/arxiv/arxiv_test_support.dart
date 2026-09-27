@@ -4,27 +4,66 @@ import 'package:domovoy/core/research/research.dart';
 import 'package:domovoy/infrastructure/mcp/servers/arxiv/arxiv.dart';
 
 /// Virtual clock so rate limiting and cache TTL never slow tests down.
+///
+/// When [gateSleeps] is true, [sleep] neither advances virtual time nor
+/// completes until [releaseSleeps] is called. That lets a test hold a
+/// rate/backoff wait open while a real caller deadline elapses.
 final class FakeArxivClock implements ArxivClock {
   FakeArxivClock({DateTime? now}) : _now = now ?? DateTime.utc(2025, 1, 1);
 
   DateTime _now;
   final List<Duration> sleeps = <Duration>[];
+  final List<_PendingSleep> _pending = <_PendingSleep>[];
+
+  /// Blocks every non-zero sleep until [releaseSleeps] is called.
+  bool gateSleeps = false;
 
   @override
   DateTime nowUtc() => _now;
 
   @override
-  Future<void> sleep(Duration duration) async {
+  Future<void> sleep(Duration duration) {
     if (duration <= Duration.zero) {
-      return;
+      return Future<void>.value();
     }
-    sleeps.add(duration);
-    _now = _now.add(duration);
+    final pending = _PendingSleep(duration);
+    _pending.add(pending);
+    if (gateSleeps) {
+      return pending.completer.future;
+    }
+    _complete(pending);
+    return pending.completer.future;
   }
 
   void advance(Duration duration) {
     _now = _now.add(duration);
   }
+
+  /// Completes every blocked sleep in request order, advancing virtual time.
+  void releaseSleeps() {
+    final pending = List<_PendingSleep>.of(_pending);
+    _pending.clear();
+    for (final item in pending) {
+      _complete(item);
+    }
+  }
+
+  void _complete(_PendingSleep pending) {
+    _pending.remove(pending);
+    if (pending.completer.isCompleted) {
+      return;
+    }
+    sleeps.add(pending.duration);
+    _now = _now.add(pending.duration);
+    pending.completer.complete();
+  }
+}
+
+final class _PendingSleep {
+  _PendingSleep(this.duration);
+
+  final Duration duration;
+  final Completer<void> completer = Completer<void>();
 }
 
 /// Scripted HTTP adapter that never touches the network.

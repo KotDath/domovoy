@@ -489,6 +489,66 @@ void main() {
     );
 
     test(
+      'a call expired during a long rate-limit wait never sends a late request',
+      () async {
+        final adapter = FakeArxivHttpAdapter(
+          clock: clock,
+          responder: (url, index) async {
+            if (index == 0) {
+              clock.advance(const Duration(seconds: 1));
+              return atomResponse(
+                'slow down',
+                statusCode: 429,
+                headers: <String, String>{'retry-after': '60'},
+              );
+            }
+            return atomResponse(atomFeed(entries: <String>[atomEntry()]));
+          },
+        );
+        final client = clientWith(
+          adapter,
+          requestTimeout: const Duration(milliseconds: 80),
+        );
+
+        final first = await _failureOf(
+          client.search(ArxivSearchRequest(query: 'first')),
+        );
+        expect(first.kind, ArxivFailureKind.rateLimited);
+        expect(adapter.requests, hasLength(1));
+
+        // The next call enters the 60-second backoff wait; its caller deadline
+        // fires while the clock sleep is still blocked.
+        clock.gateSleeps = true;
+        final second = client.search(ArxivSearchRequest(query: 'second'));
+        await expectLater(
+          second,
+          throwsA(
+            isA<ArxivFailure>().having(
+              (failure) => failure.kind,
+              'kind',
+              ArxivFailureKind.timeout,
+            ),
+          ),
+        );
+        expect(adapter.requests, hasLength(1));
+
+        // Releasing the backoff must not turn the expired wait into a late
+        // arXiv request.
+        clock.releaseSleeps();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(adapter.requests, hasLength(1));
+
+        // A fresh call after the backoff still works, and the expired attempt
+        // must not have consumed the request slot or the 3s spacing.
+        clock.gateSleeps = false;
+        final third = await client.search(ArxivSearchRequest(query: 'third'));
+        expect(third.papers, hasLength(1));
+        expect(adapter.requests, hasLength(2));
+        expect(clock.sleeps, <Duration>[const Duration(seconds: 60)]);
+      },
+    );
+
+    test(
       'serves a cache hit without a second request and expires by TTL',
       () async {
         final adapter = feedAdapter(<String>[

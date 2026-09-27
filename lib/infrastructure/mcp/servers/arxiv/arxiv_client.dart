@@ -180,8 +180,8 @@ final class ArxivClient {
   Future<ArxivSearchPage> search(ArxivSearchRequest request) async {
     _validateSearch(request);
     final key = 'search|${_searchKey(request)}';
-    return _load(key, () async {
-      final feed = await _fetch(_searchUri(request));
+    return _load(key, (attempt) async {
+      final feed = await _fetch(_searchUri(request), attempt);
       return _pageFromFeed(feed, request);
     });
   }
@@ -204,8 +204,8 @@ final class ArxivClient {
       throwArxiv(ArxivFailureKind.invalidInput, 'arXiv ID указан неверно.');
     }
     final key = 'get|$arxivId|${version ?? ''}';
-    return _load(key, () async {
-      final feed = await _fetch(_getUri(arxivId, version));
+    return _load(key, (attempt) async {
+      final feed = await _fetch(_getUri(arxivId, version), attempt);
       return _selectPaper(feed, arxivId, version);
     });
   }
@@ -258,9 +258,14 @@ final class ArxivClient {
   ///
   /// Each call carries an expiry marker: when the caller's deadline fires
   /// while the action is still waiting in the queue, the action must neither
-  /// send a request nor publish a result. The second cache check inside the
+  /// send a request nor publish a result. The marker is rechecked inside
+  /// [_fetch] as well, because the rate/backoff gate can hold the action for
+  /// a long time after the caller is gone. The second cache check inside the
   /// exclusive section coalesces identical concurrent requests.
-  Future<T> _load<T>(String key, Future<T> Function() loader) async {
+  Future<T> _load<T>(
+    String key,
+    Future<T> Function(_LoadAttempt attempt) loader,
+  ) async {
     final hit = _cacheGet<T>(key);
     if (hit != null) {
       return hit;
@@ -275,7 +280,7 @@ final class ArxivClient {
               return second;
             }
             attempt.throwIfExpired();
-            final value = await loader();
+            final value = await loader(attempt);
             attempt.throwIfExpired();
             return value;
           }).timeout(
@@ -313,8 +318,12 @@ final class ArxivClient {
     }();
   }
 
-  Future<ArxivAtomFeed> _fetch(Uri uri) async {
+  Future<ArxivAtomFeed> _fetch(Uri uri, _LoadAttempt attempt) async {
     await _waitForTurn();
+    // The caller's deadline may have fired while this attempt was sleeping
+    // behind the rate/backoff gate; never send a late request or claim the
+    // request slot in that case.
+    attempt.throwIfExpired();
     final startedAt = _clock.nowUtc();
     _lastRequestAt = startedAt;
     final ArxivHttpResponse response;
