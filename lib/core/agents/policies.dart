@@ -2,6 +2,7 @@ import '../llm/errors.dart';
 import '../llm/generation.dart';
 import '../llm/json.dart';
 import 'errors.dart';
+import 'ids.dart';
 import 'run_context.dart';
 
 enum ToolPermission { allow, deny, ask }
@@ -316,7 +317,10 @@ final class AgentRunOptions {
     this.reasoning,
     this.typedInput,
     this.toolContext,
-  }) {
+    Iterable<ToolId> additionalEnabledTools = const <ToolId>[],
+  }) : additionalEnabledTools = List<ToolId>.unmodifiable(
+         additionalEnabledTools,
+       ) {
     _validatePositiveOverride('maxModelTurns', maxModelTurns);
     _validateNonNegativeOverride('maxToolCalls', maxToolCalls);
     _validateDurationOverride('maxDuration', maxDuration);
@@ -354,6 +358,12 @@ final class AgentRunOptions {
   /// run id binding). Copied into every [ToolInvocation] of the run; never
   /// serialized, never shown to the model and never an argument.
   final AgentRunToolContext? toolContext;
+
+  /// Extra tools offered only for this run. Interactive MCP selections live
+  /// outside the durable agent definition and are frozen when a run starts.
+  /// The active permission policy still checks every call against current
+  /// chat/project rights and the live MCP route.
+  final List<ToolId> additionalEnabledTools;
 }
 
 final class ResolvedRunGuards {

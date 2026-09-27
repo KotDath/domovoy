@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/automation/automation.dart';
 import 'package:domovoy/core/llm/llm.dart';
+import 'package:domovoy/features/chat/application/chat_workspace_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'infrastructure/mcp/servers/arxiv/arxiv_test_support.dart';
@@ -50,6 +51,89 @@ void main() {
     final structured = lastStructured(request, 'papers');
     return (structured?['papers'] as List<Object?>?) ?? const <Object?>[];
   }
+
+  test('interactive chat selection reaches the model and MCP server', () async {
+    final clock = FakeArxivClock();
+    final adapter = FakeArxivHttpAdapter(
+      clock: clock,
+      responder: (url, index) async => atomResponse(
+        atomFeed(
+          entries: <String>[
+            atomEntry(
+              id: 'http://arxiv.org/abs/2501.01234v1',
+              title: 'Retrieval augmented generation',
+              summary: 'A paper abstract.',
+            ),
+          ],
+          totalResults: '1',
+        ),
+      ),
+    );
+    final provider = RoutingLlmProvider(
+      id: ProviderId('deepseek'),
+      agentResponder: (request, index) => index == 0
+          ? toolTurn(
+              name: arxivTool,
+              callId: 'arxiv-interactive',
+              arguments: jsonEncode(<String, Object?>{
+                'query': 'retrieval augmented generation',
+                'limit': 1,
+              }),
+            )
+          : textTurn('Found the paper on arXiv.'),
+    );
+    final harness = await McpCompositionHarness.start(
+      provider: provider,
+      arxivHttpAdapter: adapter,
+      arxivClock: clock,
+    );
+    final access = harness.mcp.feature.toolAccess;
+    final controller = ChatWorkspaceController(
+      runtime: harness.runtime,
+      definition: testDefinition(
+        tools: <ToolId>[ToolId('read')],
+        limits: AgentRunLimits(maxModelTurns: 4, maxToolCalls: 4),
+      ),
+      catalog: harness.sessions,
+      repository: harness.sessions,
+      registry: harness.runtime.registry,
+      additionalRunTools: (snapshot) => <ToolId>[
+        for (final id in access.effectiveToolIds(
+          chatId: snapshot.id,
+          projectId: snapshot.projectId,
+        ))
+          ToolId(id),
+      ],
+    );
+    addTearDown(() async {
+      await controller.dispose();
+      await harness.dispose();
+    });
+
+    const chatId = 'interactive-arxiv';
+    expect((await controller.initialize()).isSuccess, isTrue);
+    expect(
+      (await controller.createChat(id: AgentSessionId(chatId))).isSuccess,
+      isTrue,
+    );
+    await access.attachScope(chatId: AgentSessionId(chatId), projectId: null);
+    await access.toggleTool(arxivTool, true);
+
+    final result = await controller.send('Find one paper with arXiv.');
+    expect(result.isSuccess, isTrue);
+    expect(
+      provider.agentRequests.first.context.tools.map((tool) => tool.name),
+      contains(arxivTool),
+    );
+    expect(adapter.requests, hasLength(1));
+    expect(provider.agentRequests, hasLength(2));
+    expect(
+      provider.agentRequests.last.context.messages.where(
+        (message) => message.role == LlmMessageRole.tool,
+      ),
+      isNotEmpty,
+    );
+  });
 
   test(
     'long agent scenario routes three servers and records the trace',

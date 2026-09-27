@@ -3076,6 +3076,7 @@ final class _LiveRun implements AgentRun {
   var _closeAfter = false;
   late final ResolvedRunGuards guards;
   late final LlmGenerationConfig _generation;
+  late final List<ToolId> _enabledTools;
   late final AgentToolView _toolView;
   late final Map<String, AgentTool> _toolSnapshot;
   late final Map<String, String> _withheldTools;
@@ -3283,8 +3284,14 @@ final class _LiveRun implements AgentRun {
   /// its visible reason instead. Every call is still re-checked against the
   /// live registry and the current policy immediately before execution.
   void _resolveTools() {
+    _enabledTools = List<ToolId>.unmodifiable(
+      <String, ToolId>{
+        for (final id in session.definition.enabledTools) id.value: id,
+        for (final id in options.additionalEnabledTools) id.value: id,
+      }.values,
+    );
     _toolView = session.runtime.tools.view(
-      session.definition.enabledTools,
+      _enabledTools,
       profile: session.toolSchemaProfileFor(selection.model),
     );
     final advertised = <String, AgentTool>{};
@@ -3621,9 +3628,7 @@ final class _LiveRun implements AgentRun {
         content: jsonEncode(<String, Object?>{'error': error.error.message}),
       );
     }
-    final enabled = session.definition.enabledTools.any(
-      (id) => id.value == call.name,
-    );
+    final enabled = _enabledTools.any((id) => id.value == call.name);
     final tool = session.runtime.tools.lookup(call.name);
     if (!enabled || tool == null) {
       return _toolResult(

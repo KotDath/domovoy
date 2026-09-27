@@ -550,6 +550,7 @@ class _TaskEditorPageState extends State<TaskEditorPage> {
               Text('Модель', style: Theme.of(context).textTheme.titleMedium),
               if (widget.availableModels.isNotEmpty)
                 DropdownButtonFormField<ModelRef>(
+                  isExpanded: true,
                   initialValue: widget.availableModels.contains(draft.model)
                       ? draft.model
                       : null,
@@ -563,6 +564,8 @@ class _TaskEditorPageState extends State<TaskEditorPage> {
                         value: model,
                         child: Text(
                           '${model.providerId.value} · ${model.modelId.value}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                   ],

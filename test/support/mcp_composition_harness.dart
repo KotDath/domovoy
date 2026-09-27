@@ -223,12 +223,13 @@ final class McpCompositionHarness {
       'deny': const DenyAllPolicy(),
       'allow': const AllowAllPolicy(),
     };
+    final sessions = InMemoryAgentSessionRepository();
     final runtime = testRuntime(
       provider: provider,
       tools: tools,
       policies: policies,
+      repository: sessions,
     );
-    final sessions = InMemoryAgentSessionRepository();
     final connections = connectionStorage ?? FakeMemoryJsonlStorage();
     final selections = selectionStorage ?? FakeMemoryJsonlStorage();
     final library = libraryStorage ?? FakeMemoryJsonlStorage();

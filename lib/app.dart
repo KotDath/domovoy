@@ -950,6 +950,15 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
       onTurnCompleted: dependencies.memoryInspector?.recordCompletedTurn,
       chatDeliveries: mcp?.chatDeliveryStore,
       runToolContexts: mcp?.runToolContexts,
+      additionalRunTools: mcp == null
+          ? null
+          : (snapshot) => <ToolId>[
+              for (final id in mcp.feature.toolAccess.effectiveToolIds(
+                chatId: snapshot.id,
+                projectId: snapshot.projectId,
+              ))
+                ToolId(id),
+            ],
       settingsLauncher: _ApiKeyDialogLauncher(
         navigatorKey: _navigatorKey,
         overrideStore: dependencies.overrideStore,

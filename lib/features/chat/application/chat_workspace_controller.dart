@@ -26,6 +26,7 @@ final class ChatWorkspaceController {
     this.onTurnCompleted,
     this.chatDeliveries,
     this.runToolContexts,
+    this.additionalRunTools,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
     AgentClock? clock,
@@ -57,6 +58,12 @@ final class ChatWorkspaceController {
 
   /// Optional issuer of app-owned per-run tool contexts (digest model pin).
   final AgentRunToolContextFactory? runToolContexts;
+
+  /// App-owned per-chat/project tool selection evaluated for each new turn.
+  /// Session definitions keep their stable built-in tool list; selected MCP
+  /// tools are added to the one run and checked again by the live policy.
+  final List<ToolId> Function(AgentSessionSnapshot snapshot)?
+  additionalRunTools;
 
   final ChatStreamPacingPolicy pacingPolicy;
   final ChatStreamScheduler scheduler;
@@ -421,12 +428,17 @@ final class ChatWorkspaceController {
       model: session.snapshot.selection.model,
     );
     try {
+      final extraTools =
+          additionalRunTools?.call(session.snapshot) ?? const <ToolId>[];
       final run = session.run(
         input,
         titlePolicy: titlePolicy,
-        options: runContext == null
+        options: runContext == null && extraTools.isEmpty
             ? null
-            : AgentRunOptions(toolContext: runContext),
+            : AgentRunOptions(
+                toolContext: runContext,
+                additionalEnabledTools: extraTools,
+              ),
       );
       _activeRun = run;
       final done = Completer<void>();
