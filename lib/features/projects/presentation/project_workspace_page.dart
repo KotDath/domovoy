@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../chat/presentation/chat_workspace_page.dart';
+import '../../mcp/application/mcp_tool_access_controller.dart';
 import '../../memory/application/memory_inspector_controller.dart';
 import '../../profile/application/profile_controller.dart';
 import '../../profile/application/profile_interview.dart';
@@ -15,6 +16,7 @@ class ProjectWorkspacePage extends StatelessWidget {
     this.themeMode,
     this.onThemeModeChanged,
     this.providersView,
+    this.mcpToolAccess,
     super.key,
   });
 
@@ -25,6 +27,7 @@ class ProjectWorkspacePage extends StatelessWidget {
   final ThemeMode? themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final Widget? providersView;
+  final McpToolAccessController? mcpToolAccess;
 
   @override
   Widget build(BuildContext context) {
@@ -37,6 +40,7 @@ class ProjectWorkspacePage extends StatelessWidget {
       themeMode: themeMode,
       onThemeModeChanged: onThemeModeChanged,
       providersView: providersView,
+      mcpToolAccess: mcpToolAccess,
     );
   }
 }

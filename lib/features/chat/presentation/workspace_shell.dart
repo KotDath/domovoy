@@ -40,6 +40,7 @@ class WorkspaceShell extends StatefulWidget {
     this.memoryPanel,
     this.onOpenMemory,
     this.memorySelected = false,
+    this.headerAction,
     super.key,
   });
 
@@ -75,6 +76,9 @@ class WorkspaceShell extends StatefulWidget {
   final Widget? memoryPanel;
   final VoidCallback? onOpenMemory;
   final bool memorySelected;
+
+  /// Optional MCP/feature action rendered in the header next to the title.
+  final Widget? headerAction;
 
   @override
   State<WorkspaceShell> createState() => _WorkspaceShellState();
@@ -210,6 +214,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
                   ),
+                  if (widget.headerAction != null) ...[
+                    widget.headerAction!,
+                    const SizedBox(width: DomovoyDimensions.space2),
+                  ],
                   if (widget.profileLabel != null) ...[
                     DomovoyQuietButton(
                       key: const ValueKey('active-profile-indicator'),

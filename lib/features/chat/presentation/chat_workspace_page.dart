@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
 import '../../../core/personalization/personalization.dart';
+import '../../../core/projects/ids.dart';
 import '../../../design_system/design_system.dart';
 import '../../projects/application/project_workspace_controller.dart';
 import '../../projects/application/project_workspace_state.dart';
@@ -12,6 +13,8 @@ import '../../projects/presentation/project_sidebar_section.dart';
 import '../../memory/application/memory_inspector_controller.dart';
 import '../../memory/presentation/memory_inspector_panel.dart';
 import '../../memory/presentation/memory_inspector_sheet.dart';
+import '../../mcp/application/mcp_tool_access_controller.dart';
+import '../../mcp/presentation/mcp_tool_access_view.dart';
 import '../../profile/application/profile_controller.dart';
 import '../../profile/application/profile_interview.dart';
 import '../../profile/presentation/profile_view.dart';
@@ -39,6 +42,7 @@ class ChatWorkspacePage extends StatefulWidget {
     this.themeMode,
     this.onThemeModeChanged,
     this.providersView,
+    this.mcpToolAccess,
     super.key,
   });
 
@@ -50,6 +54,9 @@ class ChatWorkspacePage extends StatefulWidget {
   final ThemeMode? themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final Widget? providersView;
+
+  /// Per-chat/project MCP tool permission controller composed by B9.
+  final McpToolAccessController? mcpToolAccess;
 
   @override
   State<ChatWorkspacePage> createState() => _ChatWorkspacePageState();
@@ -156,6 +163,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     final projectState = _projects;
     final visibleChats = projectState?.selectedGroup?.chats ?? _state.chats;
     final group = projectState?.selectedGroup;
+    final mcpScope = _mcpScope();
     return WorkspaceShell(
       key: const ValueKey('chat-workspace-destination'),
       chats: visibleChats,
@@ -236,6 +244,26 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       onOpenMemory: widget.memory == null
           ? null
           : () => unawaited(showMemoryInspectorSheet(context, widget.memory!)),
+      headerAction: widget.mcpToolAccess == null
+          ? null
+          : McpChatToolsButton(
+              controller: widget.mcpToolAccess!,
+              chatId: mcpScope.chatId,
+              projectId: mcpScope.projectId,
+            ),
+    );
+  }
+
+  ({AgentSessionId? chatId, ProjectId? projectId}) _mcpScope() {
+    final session = _visibleSelectedSession;
+    final group = _projects?.selectedGroup;
+    return (
+      chatId: session?.id,
+      projectId:
+          session?.projectId ??
+          (group?.kind == ProjectSelectionKind.project
+              ? group?.projectId
+              : null),
     );
   }
 

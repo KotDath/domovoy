@@ -32,7 +32,7 @@ final class ScriptedMcpConnection implements McpTransportConnection {
   final McpHandshake handshake;
   final Object? connectError;
   final Duration? connectDelay;
-  final Object? listError;
+  Object? listError;
   final Duration? callDelay;
   final Future<McpToolCallResult> Function(
     String originalToolName,
