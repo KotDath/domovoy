@@ -15,8 +15,9 @@ import 'automation_replay.dart';
 /// own stream keyed `run-<runId>`. Every append validates the revision chain, so
 /// two writers cannot silently overwrite each other, and every stream replays
 /// from scratch on the first read after a restart. The `(taskId, scheduledAt)`
-/// identity is enforced here as well as in the scheduler, so a duplicate fire
-/// is impossible even if two callers race.
+/// identity of a **period** is enforced here as well as in the scheduler, so a
+/// duplicate fire is impossible even if two callers race; manual runs do not
+/// occupy a period and are keyed by `runId` alone.
 final class JsonlAutomationStore implements AutomationRepository {
   JsonlAutomationStore({
     required this.storage,
@@ -170,18 +171,12 @@ final class JsonlAutomationStore implements AutomationRepository {
   });
 
   @override
-  Future<AutomationRun?> findRunBySchedule(
+  Future<AutomationRun?> findPeriodRun(
     AutomationTaskId taskId,
     DateTime scheduledAt,
   ) => _serialized(() async {
     await _ensureLoaded();
-    for (final run in _runs.values) {
-      if (run.taskId == taskId &&
-          run.scheduledAt.isAtSameMomentAs(scheduledAt)) {
-        return run;
-      }
-    }
-    return null;
+    return _findPeriodRunUnsafe(taskId, scheduledAt);
   });
 
   @override
@@ -209,13 +204,17 @@ final class JsonlAutomationStore implements AutomationRepository {
           'Новый запуск должен начинаться с ревизии 0.',
         );
       }
-      final duplicate = _findRunByScheduleUnsafe(run.taskId, run.scheduledAt);
-      if (duplicate != null) {
-        throwAutomation(
-          AutomationErrorKind.conflict,
-          'Период ${run.scheduledAt.toIso8601String()} задачи '
-          '${run.taskId.value} уже имеет запуск ${duplicate.runId.value}.',
-        );
+      // Only a period occupies `(taskId, scheduledAt)`; a manual run is
+      // distinct by runId and must never consume or suppress a planned period.
+      if (run.trigger != AutomationRunTrigger.manual) {
+        final duplicate = _findPeriodRunUnsafe(run.taskId, run.scheduledAt);
+        if (duplicate != null) {
+          throwAutomation(
+            AutomationErrorKind.conflict,
+            'Период ${run.scheduledAt.toIso8601String()} задачи '
+            '${run.taskId.value} уже имеет запуск ${duplicate.runId.value}.',
+          );
+        }
       }
       final payload = _encodeRun(run);
       await _appendRun(run, payload: payload, sequence: 0, expectedRevision: 0);
@@ -542,11 +541,14 @@ final class JsonlAutomationStore implements AutomationRepository {
     }
   }
 
-  AutomationRun? _findRunByScheduleUnsafe(
+  AutomationRun? _findPeriodRunUnsafe(
     AutomationTaskId taskId,
     DateTime scheduledAt,
   ) {
     for (final run in _runs.values) {
+      if (run.trigger == AutomationRunTrigger.manual) {
+        continue;
+      }
       if (run.taskId == taskId &&
           run.scheduledAt.isAtSameMomentAs(scheduledAt)) {
         return run;

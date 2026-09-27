@@ -274,11 +274,14 @@ final class InMemoryAutomationRepository implements AutomationRepository {
   Future<AutomationRun?> findRun(AutomationRunId id) async => _runs[id.value];
 
   @override
-  Future<AutomationRun?> findRunBySchedule(
+  Future<AutomationRun?> findPeriodRun(
     AutomationTaskId taskId,
     DateTime scheduledAt,
   ) async {
     for (final run in _runs.values) {
+      if (run.trigger == AutomationRunTrigger.manual) {
+        continue;
+      }
       if (run.taskId == taskId &&
           run.scheduledAt.isAtSameMomentAs(scheduledAt)) {
         return run;
@@ -307,12 +310,14 @@ final class InMemoryAutomationRepository implements AutomationRepository {
           'Новый запуск должен начинаться с ревизии 0.',
         );
       }
-      final duplicate = await findRunBySchedule(run.taskId, run.scheduledAt);
-      if (duplicate != null) {
-        throwAutomation(
-          AutomationErrorKind.conflict,
-          'Период ${run.scheduledAt.toIso8601String()} уже имеет запуск.',
-        );
+      if (run.trigger != AutomationRunTrigger.manual) {
+        final duplicate = await findPeriodRun(run.taskId, run.scheduledAt);
+        if (duplicate != null) {
+          throwAutomation(
+            AutomationErrorKind.conflict,
+            'Период ${run.scheduledAt.toIso8601String()} уже имеет запуск.',
+          );
+        }
       }
     } else {
       if (current.revision != expectedRevision) {
@@ -339,6 +344,113 @@ final class InMemoryAutomationRepository implements AutomationRepository {
     if (failure != null) {
       throw AutomationException(failure);
     }
+  }
+}
+
+/// Wraps [InMemoryAutomationRepository] and can hold selected operations
+/// behind a gate, so tests can interleave service calls deterministically.
+///
+/// Usage: `gate('appendRun')`, start the operation, wait until
+/// `callsFor('appendRun') == 1`, run the competing operation, then
+/// `release('appendRun')`.
+final class GatedAutomationRepository implements AutomationRepository {
+  GatedAutomationRepository(this.inner);
+
+  final InMemoryAutomationRepository inner;
+  final Map<String, Completer<void>> _gates = <String, Completer<void>>{};
+  final Map<String, int> _calls = <String, int>{};
+
+  /// Holds every following [operation] call until [release].
+  void gate(String operation) {
+    _gates[operation] = Completer<void>();
+  }
+
+  void release(String operation) {
+    final gate = _gates.remove(operation);
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  int callsFor(String operation) => _calls[operation] ?? 0;
+
+  Future<void> _hold(String operation) async {
+    _calls[operation] = callsFor(operation) + 1;
+    final gate = _gates[operation];
+    if (gate != null) {
+      await gate.future;
+    }
+  }
+
+  @override
+  Future<List<AutomationTask>> listTasks({bool includeDeleted = false}) async {
+    await _hold('listTasks');
+    return inner.listTasks(includeDeleted: includeDeleted);
+  }
+
+  @override
+  Future<AutomationTask?> findTask(AutomationTaskId id) async {
+    await _hold('findTask');
+    return inner.findTask(id);
+  }
+
+  @override
+  Future<AutomationTask> createTask(AutomationTask task) async {
+    await _hold('createTask');
+    return inner.createTask(task);
+  }
+
+  @override
+  Future<AutomationTask> saveTask(
+    AutomationTask task, {
+    required int expectedRevision,
+  }) async {
+    await _hold('saveTask');
+    return inner.saveTask(task, expectedRevision: expectedRevision);
+  }
+
+  @override
+  Future<List<AutomationRun>> listRuns({
+    AutomationTaskId? taskId,
+    int limit = 200,
+    bool includeDeletedTasks = true,
+  }) async {
+    await _hold('listRuns');
+    return inner.listRuns(
+      taskId: taskId,
+      limit: limit,
+      includeDeletedTasks: includeDeletedTasks,
+    );
+  }
+
+  @override
+  Future<AutomationRun?> findRun(AutomationRunId id) async {
+    await _hold('findRun');
+    return inner.findRun(id);
+  }
+
+  @override
+  Future<AutomationRun?> findPeriodRun(
+    AutomationTaskId taskId,
+    DateTime scheduledAt,
+  ) async {
+    await _hold('findPeriodRun');
+    return inner.findPeriodRun(taskId, scheduledAt);
+  }
+
+  @override
+  Future<List<AutomationRun>> listRunningRuns() async {
+    await _hold('listRunningRuns');
+    return inner.listRunningRuns();
+  }
+
+  @override
+  Future<AutomationRun> appendRun(
+    AutomationRun run, {
+    required int expectedRevision,
+  }) async {
+    await _hold('appendRun');
+    return inner.appendRun(run, expectedRevision: expectedRevision);
   }
 }
 

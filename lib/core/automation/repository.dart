@@ -33,10 +33,13 @@ abstract interface class AutomationRunRepository {
 
   Future<AutomationRun?> findRun(AutomationRunId id);
 
-  /// Run of [taskId] whose `scheduledAt` equals [scheduledAt], if any.
+  /// Period run of [taskId] whose `scheduledAt` equals [scheduledAt], if any.
   ///
-  /// This is the `(taskId, scheduledAt)` idempotency lookup.
-  Future<AutomationRun?> findRunBySchedule(
+  /// This is the `(taskId, scheduledAt)` idempotency lookup. Only scheduled,
+  /// catch-up and skipped runs occupy a period; manual runs are keyed by
+  /// `runId` alone and are ignored here, so run-now never consumes or
+  /// suppresses a planned period.
+  Future<AutomationRun?> findPeriodRun(
     AutomationTaskId taskId,
     DateTime scheduledAt,
   );
@@ -45,6 +48,11 @@ abstract interface class AutomationRunRepository {
   Future<List<AutomationRun>> listRunningRuns();
 
   /// Appends [run] as the next revision of its stream.
+  ///
+  /// A new **period** run ([AutomationRun.trigger] not
+  /// [AutomationRunTrigger.manual]) conflicts with an existing period run for
+  /// the same `(taskId, scheduledAt)`; manual runs only conflict on a repeated
+  /// `runId`.
   Future<AutomationRun> appendRun(
     AutomationRun run, {
     required int expectedRevision,

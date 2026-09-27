@@ -346,6 +346,122 @@ void main() {
       );
     });
 
+    test(
+      'a manual run does not occupy or consume a scheduled period',
+      () async {
+        final store = buildStore();
+        final taskId = AutomationTaskId('atm_00000000000000000000000000000001');
+        await store.createTask(task());
+        await store.appendRun(
+          run(
+            id: 'ran_00000000000000000000000000000001',
+            trigger: AutomationRunTrigger.manual,
+          ),
+          expectedRevision: 0,
+        );
+        // The period key stays free for the scheduled run at the same instant.
+        expect(
+          await store.findPeriodRun(taskId, DateTime.utc(2026, 1, 1, 12, 5)),
+          isNull,
+        );
+        await store.appendRun(
+          run(
+            id: 'ran_00000000000000000000000000000002',
+            trigger: AutomationRunTrigger.scheduled,
+          ),
+          expectedRevision: 0,
+        );
+        expect(
+          (await store.findPeriodRun(
+            taskId,
+            DateTime.utc(2026, 1, 1, 12, 5),
+          ))!.runId.value,
+          'ran_00000000000000000000000000000002',
+        );
+        // A second *period* run for the same instant conflicts...
+        await expectLater(
+          store.appendRun(
+            run(
+              id: 'ran_00000000000000000000000000000003',
+              trigger: AutomationRunTrigger.catchUp,
+            ),
+            expectedRevision: 0,
+          ),
+          throwsA(
+            isA<AutomationException>().having(
+              (error) => error.error.kind,
+              'kind',
+              AutomationErrorKind.conflict,
+            ),
+          ),
+        );
+        // ...while another manual run at the same unchanged instant is fine.
+        await store.appendRun(
+          run(
+            id: 'ran_00000000000000000000000000000004',
+            trigger: AutomationRunTrigger.manual,
+          ),
+          expectedRevision: 0,
+        );
+        final all = await store.listRuns(taskId: taskId);
+        expect(all, hasLength(3));
+      },
+    );
+
+    test('replay keeps period idempotency across a restart', () async {
+      final first = buildStore();
+      final taskId = AutomationTaskId('atm_00000000000000000000000000000001');
+      await first.createTask(task());
+      await first.appendRun(
+        run(
+          id: 'ran_00000000000000000000000000000001',
+          trigger: AutomationRunTrigger.scheduled,
+        ),
+        expectedRevision: 0,
+      );
+      await first.appendRun(
+        run(
+          id: 'ran_00000000000000000000000000000002',
+          trigger: AutomationRunTrigger.manual,
+        ),
+        expectedRevision: 0,
+      );
+
+      final second = buildStore();
+      expect(
+        (await second.findPeriodRun(
+          taskId,
+          DateTime.utc(2026, 1, 1, 12, 5),
+        ))!.runId.value,
+        'ran_00000000000000000000000000000001',
+      );
+      // The replayed period is still consumed after a restart.
+      await expectLater(
+        second.appendRun(
+          run(
+            id: 'ran_00000000000000000000000000000003',
+            trigger: AutomationRunTrigger.catchUp,
+          ),
+          expectedRevision: 0,
+        ),
+        throwsA(
+          isA<AutomationException>().having(
+            (error) => error.error.kind,
+            'kind',
+            AutomationErrorKind.conflict,
+          ),
+        ),
+      );
+      // A manual run at the same instant is never blocked by the period.
+      await second.appendRun(
+        run(
+          id: 'ran_00000000000000000000000000000004',
+          trigger: AutomationRunTrigger.manual,
+        ),
+        expectedRevision: 0,
+      );
+    });
+
     test('lists runs newest first and finds by schedule', () async {
       final store = buildStore();
       await store.createTask(task());
@@ -368,7 +484,7 @@ void main() {
       );
       expect(listed, hasLength(2));
       expect(listed.first.scheduledAt, DateTime.utc(2026, 1, 1, 12, 10));
-      final found = await store.findRunBySchedule(
+      final found = await store.findPeriodRun(
         AutomationTaskId('atm_00000000000000000000000000000001'),
         DateTime.utc(2026, 1, 1, 12, 5),
       );

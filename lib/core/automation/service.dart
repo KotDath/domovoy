@@ -41,11 +41,19 @@ final class AutomationRunHandle {
 /// Guarantees:
 /// - one catch-up on reopen/resume: at most one fresh run, older missed periods
 ///   are aggregated as skipped and never replayed one by one;
-/// - `(taskId, scheduledAt)` idempotency: a period never runs twice, including
-///   after a crash or a late timer;
-/// - no overlap: while a task has an active run, further periods are recorded
-///   as `skipped` and manual starts are refused;
+/// - `(taskId, scheduledAt)` idempotency of a **period**: scheduled, catch-up
+///   and skipped runs never run twice, including after a crash or a late
+///   timer; manual runs are distinct by `runId` and never consume a period;
+/// - no overlap: every start (manual or due) reserves its task synchronously
+///   before the first store call, so two overlapping starts can never both
+///   launch; while a task has an active run, further periods are recorded as
+///   `skipped` and manual starts are refused;
 /// - manual runs never shift the planned `nextDueAt`;
+/// - foreground/stop rechecks happen immediately before a durable commit and
+///   before launching, and a run that was already committed is closed as
+///   `interrupted` instead of starting in the background;
+/// - `updateTask` is the human-only edit path (B8); an executing run keeps the
+///   snapshot taken at start, including its delivery target;
 /// - a scheduled run may never create tasks or start other tasks.
 final class AutomationService {
   AutomationService({
@@ -78,6 +86,13 @@ final class AutomationService {
   var _disposed = false;
   Future<void>? _tickFuture;
   final Map<String, _ActiveRun> _active = <String, _ActiveRun>{};
+
+  /// Tasks whose start boundary is in flight.
+  ///
+  /// A reservation is taken synchronously before the first store call and
+  /// covers the whole start boundary, so two overlapping starts (manual call,
+  /// due tick) can never both pass the no-overlap check and launch.
+  final Set<String> _busyTasks = <String>{};
   final Set<Future<void>> _pending = <Future<void>>{};
   var _scheduledRunsActive = 0;
 
@@ -87,6 +102,30 @@ final class AutomationService {
   bool get isRunning => _started;
 
   bool get isForeground => _foreground;
+
+  /// True while the service may start new work.
+  bool get _canCommitRuns => _started && _foreground && !_disposed;
+
+  bool _tryReserve(String taskId) {
+    if (_busyTasks.contains(taskId) || _active.containsKey(taskId)) {
+      return false;
+    }
+    _busyTasks.add(taskId);
+    return true;
+  }
+
+  void _releaseReservation(String taskId) {
+    _busyTasks.remove(taskId);
+  }
+
+  void _requireRunnable(String action) {
+    if (!_canCommitRuns) {
+      throwAutomation(
+        AutomationErrorKind.cancelled,
+        '$action недоступен: сервис остановлен или приложение в фоне.',
+      );
+    }
+  }
 
   /// True while a scheduled or catch-up run executes in this process.
   ///
@@ -322,10 +361,14 @@ final class AutomationService {
     );
   }
 
-  /// Starts a manual run now; the planned `nextDueAt` does not move.
+  /// Starts a manual run now; the planned `nextDueAt` does not move and the
+  /// `(taskId, scheduledAt)` period key stays free for the scheduled run.
   ///
   /// Refused for proposals (a human must confirm first), for a task that is
-  /// already running, and for every call coming from a scheduled run.
+  /// already starting or running, for every call coming from a scheduled run,
+  /// and while the service is stopped or backgrounded. The task reservation is
+  /// taken synchronously before the first store call and covers the whole
+  /// start boundary, so two overlapping calls cannot both launch.
   Future<AutomationRunHandle> runTaskNow(
     AutomationTaskId taskId, {
     AutomationCallOrigin origin = AutomationCallOrigin.human,
@@ -344,46 +387,87 @@ final class AutomationService {
         'запуск.',
       );
     }
-    final task = await _requireTask(taskId);
-    if (task.state == AutomationTaskState.deleted) {
-      throwAutomation(AutomationErrorKind.notFound, 'Задача удалена.');
-    }
-    if (task.state == AutomationTaskState.proposed) {
-      throwAutomation(
-        AutomationErrorKind.denied,
-        'Задача-предложение не запускается, пока человек не подтвердит её в '
-        'разделе «Задачи».',
-      );
-    }
-    if (expectedRevision != null && task.revision != expectedRevision) {
-      throwAutomation(
-        AutomationErrorKind.revisionMismatch,
-        'Ревизия задачи изменилась: ожидалась $expectedRevision, сейчас '
-        '${task.revision}.',
-      );
-    }
-    if (_active.containsKey(task.taskId.value)) {
+    _requireRunnable('Ручной запуск недоступен');
+    if (!_tryReserve(taskId.value)) {
       throwAutomation(
         AutomationErrorKind.noOverlap,
         'Задача уже выполняется; дождитесь завершения текущего запуска.',
       );
     }
-    final now = clock.nowUtc();
-    final run = await _createRunRecord(
-      task,
-      scheduledAt: now,
-      trigger: AutomationRunTrigger.manual,
-      startedAt: now,
-    );
-    _launchRun(task, run);
-    return AutomationRunHandle(
-      runId: run.runId,
-      taskId: run.taskId,
-      trigger: run.trigger,
-      status: run.status,
-      scheduledAt: run.scheduledAt,
-      done: _active[task.taskId.value]!.done.future,
-    );
+    try {
+      final task = await _requireTask(taskId);
+      _requireRunnable('Ручной запуск отменён');
+      if (task.state == AutomationTaskState.deleted) {
+        throwAutomation(AutomationErrorKind.notFound, 'Задача удалена.');
+      }
+      if (task.state == AutomationTaskState.proposed) {
+        throwAutomation(
+          AutomationErrorKind.denied,
+          'Задача-предложение не запускается, пока человек не подтвердит её в '
+          'разделе «Задачи».',
+        );
+      }
+      if (expectedRevision != null && task.revision != expectedRevision) {
+        throwAutomation(
+          AutomationErrorKind.revisionMismatch,
+          'Ревизия задачи изменилась: ожидалась $expectedRevision, сейчас '
+          '${task.revision}.',
+        );
+      }
+      // The task could have been paused, deleted or edited while `_requireTask`
+      // was awaiting; the live record decides.
+      final current = await tasks.findTask(taskId);
+      _requireRunnable('Ручной запуск отменён');
+      if (current == null || !current.isAlive) {
+        throwAutomation(
+          AutomationErrorKind.notFound,
+          'Задача ${taskId.value} удалена до начала запуска.',
+        );
+      }
+      if (current.state == AutomationTaskState.proposed ||
+          current.revision != task.revision) {
+        throwAutomation(
+          AutomationErrorKind.noOverlap,
+          'Задача изменилась или уже выполняется; повторите запуск.',
+        );
+      }
+      final now = clock.nowUtc();
+      _requireRunnable('Ручной запуск отменён');
+      final run = await _createRunRecord(
+        current,
+        scheduledAt: now,
+        trigger: AutomationRunTrigger.manual,
+        startedAt: now,
+      );
+      if (!_canCommitRuns) {
+        // The durable record exists; no agent session may start in background.
+        await _finishRun(
+          run,
+          status: AutomationRunStatus.interrupted,
+          error: AutomationRunError(
+            kind: AutomationRunErrorKind.interrupted,
+            message:
+                'Ручной запуск отменён: приложение ушло в фон или сервис '
+                'остановлен.',
+          ),
+        );
+        throwAutomation(
+          AutomationErrorKind.cancelled,
+          'Ручной запуск отменён: приложение в фоне или сервис остановлен.',
+        );
+      }
+      _launchRun(current, run);
+      return AutomationRunHandle(
+        runId: run.runId,
+        taskId: run.taskId,
+        trigger: run.trigger,
+        status: run.status,
+        scheduledAt: run.scheduledAt,
+        done: _active[current.taskId.value]!.done.future,
+      );
+    } finally {
+      _releaseReservation(taskId.value);
+    }
   }
 
   /// Run history of one task, newest first.
@@ -445,6 +529,9 @@ final class AutomationService {
       return;
     }
     for (final task in all) {
+      if (!_canCommitRuns) {
+        break;
+      }
       if (!task.isActive) {
         continue;
       }
@@ -472,33 +559,72 @@ final class AutomationService {
     if (due == null || due.isAfter(now)) {
       return;
     }
-    final last = task.schedule.lastAtOrBefore(now, timeZones);
-    if (last == null) {
-      // Defensive: no occurrence at all before now means the schedule is
-      // exhausted; finish the task instead of retrying forever.
-      await _saveTaskState(task, AutomationTaskState.completed, null, now);
+    if (!_tryReserve(task.taskId.value)) {
+      // A manual start or run holds the task: the due period is recorded as
+      // skipped without a queue, exactly like any other overlap.
+      await _recordBusyPeriod(task, now);
       return;
     }
-    final consumed = await runs.findRunBySchedule(task.taskId, last);
-    if (task.schedule is OneShotSchedule) {
-      if (consumed == null) {
-        await _startDueRun(
-          task,
-          scheduledAt: due,
-          trigger: AutomationRunTrigger.scheduled,
-          aggregatedSkippedCount: 0,
-          skippedFrom: null,
-          skippedTruncated: false,
-          now: now,
-        );
+    try {
+      final last = task.schedule.lastAtOrBefore(now, timeZones);
+      if (last == null) {
+        // Defensive: no occurrence at all before now means the schedule is
+        // exhausted; finish the task instead of retrying forever.
+        await _saveTaskState(task, AutomationTaskState.completed, null, now);
+        return;
       }
-      await _saveTaskState(task, AutomationTaskState.completed, null, now);
-      return;
-    }
-    final next = task.schedule.nextAfter(last, timeZones);
-    if (consumed != null) {
-      // The freshest missed period was already consumed (for example by an
-      // interrupted run): never replay its side effects.
+      final consumed = await runs.findPeriodRun(task.taskId, last);
+      if (task.schedule is OneShotSchedule) {
+        if (consumed == null && await _commitReady(task)) {
+          await _startDueRun(
+            task,
+            scheduledAt: due,
+            trigger: AutomationRunTrigger.scheduled,
+            aggregatedSkippedCount: 0,
+            skippedFrom: null,
+            skippedTruncated: false,
+            now: now,
+          );
+        }
+        if (!_canCommitRuns) {
+          return;
+        }
+        await _saveTaskState(task, AutomationTaskState.completed, null, now);
+        return;
+      }
+      final next = task.schedule.nextAfter(last, timeZones);
+      if (consumed != null) {
+        // The freshest missed period was already consumed (for example by an
+        // interrupted run): never replay its side effects.
+        await _saveTaskState(
+          task,
+          next == null
+              ? AutomationTaskState.completed
+              : AutomationTaskState.active,
+          next,
+          now,
+        );
+        return;
+      }
+      final skipped = await _countMissedPeriods(task, from: due, to: last);
+      final isCatchUp = skipped.count > 0 || last != due;
+      if (!await _commitReady(task)) {
+        // The service went to the background or the task changed while the
+        // tick was awaiting the store; nothing is committed and the period
+        // stays for the next foreground catch-up.
+        return;
+      }
+      await _startDueRun(
+        task,
+        scheduledAt: last,
+        trigger: isCatchUp
+            ? AutomationRunTrigger.catchUp
+            : AutomationRunTrigger.scheduled,
+        aggregatedSkippedCount: skipped.count,
+        skippedFrom: skipped.count > 0 ? skipped.from : null,
+        skippedTruncated: skipped.truncated,
+        now: now,
+      );
       await _saveTaskState(
         task,
         next == null
@@ -507,12 +633,40 @@ final class AutomationService {
         next,
         now,
       );
+    } finally {
+      _releaseReservation(task.taskId.value);
+    }
+  }
+
+  /// Records one due period as skipped because another run of the task holds
+  /// it (manual start, manual run or a previous tick still starting).
+  Future<void> _recordBusyPeriod(AutomationTask task, DateTime now) async {
+    final current = await tasks.findTask(task.taskId);
+    if (current == null ||
+        !current.isActive ||
+        current.revision != task.revision) {
       return;
     }
-    final skipped = await _countMissedPeriods(task, from: due, to: last);
-    final isCatchUp = skipped.count > 0 || last != due;
-    if (_active.containsKey(task.taskId.value)) {
-      // No overlap: the period is recorded as skipped without a queue.
+    final last = task.schedule.lastAtOrBefore(now, timeZones);
+    if (last == null) {
+      if (!_canCommitRuns) {
+        return;
+      }
+      await _saveTaskState(task, AutomationTaskState.completed, null, now);
+      return;
+    }
+    final consumed = await runs.findPeriodRun(task.taskId, last);
+    final next = task.schedule.nextAfter(last, timeZones);
+    if (consumed == null) {
+      if (!_canCommitRuns) {
+        return;
+      }
+      final skipped = await _countMissedPeriods(
+        task,
+        from: task.nextDueAt ?? last,
+        to: last,
+      );
+      final isCatchUp = skipped.count > 0 || last != task.nextDueAt;
       await _createRunRecord(
         task,
         scheduledAt: last,
@@ -532,27 +686,10 @@ final class AutomationService {
         skippedFrom: skipped.count > 0 ? skipped.from : null,
         skippedTruncated: skipped.truncated,
       );
-      await _saveTaskState(
-        task,
-        next == null
-            ? AutomationTaskState.completed
-            : AutomationTaskState.active,
-        next,
-        now,
-      );
+    }
+    if (!_canCommitRuns) {
       return;
     }
-    await _startDueRun(
-      task,
-      scheduledAt: last,
-      trigger: isCatchUp
-          ? AutomationRunTrigger.catchUp
-          : AutomationRunTrigger.scheduled,
-      aggregatedSkippedCount: skipped.count,
-      skippedFrom: skipped.count > 0 ? skipped.from : null,
-      skippedTruncated: skipped.truncated,
-      now: now,
-    );
     await _saveTaskState(
       task,
       next == null ? AutomationTaskState.completed : AutomationTaskState.active,
@@ -572,6 +709,9 @@ final class AutomationService {
     required bool skippedTruncated,
     required DateTime now,
   }) async {
+    if (!_canCommitRuns) {
+      return;
+    }
     final run = await _createRunRecord(
       task,
       scheduledAt: scheduledAt,
@@ -581,7 +721,36 @@ final class AutomationService {
       skippedFrom: skippedFrom,
       skippedTruncated: skippedTruncated,
     );
+    if (!_canCommitRuns) {
+      // The durable `running` record already exists; no agent session may
+      // start in the background, so the period is closed as interrupted
+      // without side effects.
+      await _finishRun(
+        run,
+        status: AutomationRunStatus.interrupted,
+        error: AutomationRunError(
+          kind: AutomationRunErrorKind.interrupted,
+          message:
+              'Запуск отменён: приложение ушло в фон или сервис остановлен.',
+        ),
+      );
+      return;
+    }
     _launchRun(task, run);
+  }
+
+  /// Rechecks, immediately before a durable commit, that the service may start
+  /// work and that the task record is still the active revision that was
+  /// planned for.
+  Future<bool> _commitReady(AutomationTask task) async {
+    if (!_canCommitRuns) {
+      return false;
+    }
+    final current = await tasks.findTask(task.taskId);
+    return current != null &&
+        current.isActive &&
+        current.revision == task.revision &&
+        _canCommitRuns;
   }
 
   Future<_MissedPeriods> _countMissedPeriods(
@@ -610,7 +779,10 @@ final class AutomationService {
     return _MissedPeriods(count: count, from: from, truncated: truncated);
   }
 
-  /// Scheduled instants already occupied by a run of this task.
+  /// Period instants already occupied by a run of this task.
+  ///
+  /// Manual runs never occupy a period, so they are excluded from the
+  /// catch-up aggregation.
   Future<Set<DateTime>> _scheduledKeys(AutomationTaskId taskId) async {
     late final List<AutomationRun> history;
     try {
@@ -621,7 +793,10 @@ final class AutomationService {
     } on AutomationException {
       return const <DateTime>{};
     }
-    return <DateTime>{for (final run in history) run.scheduledAt};
+    return <DateTime>{
+      for (final run in history)
+        if (run.trigger != AutomationRunTrigger.manual) run.scheduledAt,
+    };
   }
 
   bool _containsInstant(Set<DateTime> values, DateTime instant) {
@@ -847,9 +1022,14 @@ final class AutomationService {
     );
     _emitEvent(AutomationRunChangedEvent(terminal));
     // Delivery runs after the terminal record exists, so a chat card can
-    // always reference a persisted run. The delivery update is a second
-    // append; the replay keeps the last revision of the run stream.
-    final delivered = await _deliver(terminal, terminalCandidate);
+    // always reference a persisted run. Only a real result (succeeded or
+    // failed) is delivered; skipped and interrupted runs never reach a chat.
+    final delivers =
+        status == AutomationRunStatus.succeeded ||
+        status == AutomationRunStatus.failed;
+    final delivered = delivers
+        ? await _deliver(terminal, terminalCandidate)
+        : null;
     if (delivered != null) {
       terminal = await runs.appendRun(
         terminal.copyWith(revision: terminal.revision + 1, delivery: delivered),

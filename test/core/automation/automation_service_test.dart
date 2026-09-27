@@ -665,6 +665,87 @@ void main() {
     });
   });
 
+  group('period identity', () {
+    test(
+      'a manual run at the due instant does not consume the period',
+      () async {
+        final repository = GatedAutomationRepository(
+          InMemoryAutomationRepository(),
+        );
+        final clock = FakeAutomationClock(DateTime.utc(2026, 1, 1, 12));
+        final executor = ScriptedAutomationExecutor();
+        final service = AutomationService(
+          tasks: repository,
+          runs: repository,
+          executor: executor,
+          timeZones: automationTestZones(),
+          clock: clock,
+          ids: SequentialAutomationIdGenerator(),
+        );
+        await service.start();
+        final task = await service.createTask(automationDraft());
+        // Hold the timer tick before it reserves the task, so the manual run can
+        // happen at exactly the due instant and finish first.
+        repository.gate('listTasks');
+        clock.advance(const Duration(minutes: 5));
+
+        final manual = await service.runTaskNow(task.taskId);
+        await manual.done;
+        expect(manual.scheduledAt, DateTime.utc(2026, 1, 1, 12, 5));
+
+        repository.release('listTasks');
+        await service.tick();
+        await service.waitForIdle();
+
+        final runs = await repository.listRuns(taskId: task.taskId);
+        expect(runs, hasLength(2));
+        final manualRuns = runs
+            .where((run) => run.trigger == AutomationRunTrigger.manual)
+            .toList();
+        final scheduledRuns = runs
+            .where((run) => run.trigger == AutomationRunTrigger.scheduled)
+            .toList();
+        expect(manualRuns, hasLength(1));
+        expect(scheduledRuns, hasLength(1));
+        expect(manualRuns.single.scheduledAt, DateTime.utc(2026, 1, 1, 12, 5));
+        expect(
+          scheduledRuns.single.scheduledAt,
+          DateTime.utc(2026, 1, 1, 12, 5),
+        );
+        expect(manualRuns.single.runId, isNot(scheduledRuns.single.runId));
+        expect(executor.requests, hasLength(2));
+        final stored = await repository.findTask(task.taskId);
+        expect(stored!.nextDueAt, DateTime.utc(2026, 1, 1, 12, 10));
+        await service.dispose();
+      },
+    );
+
+    test('two manual runs at the same instant stay distinct', () async {
+      final harness = build();
+      await harness.service.start();
+      final task = await harness.service.createTask(automationDraft());
+
+      final first = await harness.service.runTaskNow(task.taskId);
+      await first.done;
+      final second = await harness.service.runTaskNow(task.taskId);
+      await second.done;
+
+      expect(first.runId, isNot(second.runId));
+      expect(first.scheduledAt, second.scheduledAt);
+      final runs = await harness.repository.listRuns(taskId: task.taskId);
+      expect(runs, hasLength(2));
+      expect(
+        runs.every((run) => run.trigger == AutomationRunTrigger.manual),
+        isTrue,
+      );
+      expect(harness.executor.requests, hasLength(2));
+      // The plan never moved.
+      final stored = await harness.repository.findTask(task.taskId);
+      expect(stored!.nextDueAt, DateTime.utc(2026, 1, 1, 12, 5));
+      await harness.service.dispose();
+    });
+  });
+
   group('privilege boundaries', () {
     test('a scheduled origin cannot create tasks or start runs', () async {
       final harness = build();
