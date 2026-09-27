@@ -1,5 +1,6 @@
 import '../llm/identifiers.dart';
 import '../llm/json.dart';
+import 'pattern_safety.dart';
 
 /// JSON Schema keywords this core can enforce when validating MCP arguments
 /// and results.
@@ -68,6 +69,13 @@ const toolSchemaFormats = <String>{
 };
 
 const _maximumSchemaDepth = 32;
+
+/// Maximum array length whose `uniqueItems` contract is verified exactly.
+///
+/// The check is exact and O(n log n), but large arrays are refused with a
+/// visible reason instead of consuming unbounded validation work, mirroring
+/// the work budget used by the rest of the validator.
+const maxUniqueItemsToVerify = 50000;
 
 /// Capability boundary of one LLM wire family.
 ///
@@ -297,6 +305,11 @@ String? _schemaProblem(
       if (!_isValidPattern(entry.key)) {
         return 'patternProperties key "${entry.key}" is not a valid regex.';
       }
+      final safety = toolPatternProblem(entry.key);
+      if (safety != null) {
+        return 'patternProperties key "${entry.key}" cannot be matched with '
+            'bounded work: $safety';
+      }
       final nested = asJsonObject(entry.value);
       if (nested == null) {
         return 'patternProperties value must be a schema object.';
@@ -445,6 +458,10 @@ String? _schemaProblem(
   if (pattern != null) {
     if (pattern is! String || !_isValidPattern(pattern)) {
       return 'pattern at $path is not a valid regex.';
+    }
+    final safety = toolPatternProblem(pattern);
+    if (safety != null) {
+      return 'pattern at $path cannot be matched with bounded work: $safety';
     }
   }
   final format = schema['format'];
@@ -598,6 +615,18 @@ void _collectObjectProblems(
   }
   final properties = asJsonObject(schema['properties']);
   final patternProperties = asJsonObject(schema['patternProperties']);
+  if (patternProperties != null &&
+      patternProperties.keys.any(
+        (pattern) => toolPatternProblem(pattern) != null,
+      )) {
+    // The schema must have been rejected before validation; never run a
+    // pattern that cannot be bounded.
+    problems.add(
+      'object at $path cannot be validated: a patternProperties pattern is '
+      'not safely boundable.',
+    );
+    return;
+  }
   final additional = schema['additionalProperties'];
   for (final entry in value.entries) {
     if (problems.length >= maxProblems) {
@@ -682,12 +711,34 @@ void _collectArrayProblems(
     return;
   }
   if (schema['uniqueItems'] == true) {
-    for (var i = 0; i < value.length; i++) {
-      for (var j = i + 1; j < value.length; j++) {
-        if (jsonEquals(value[i], value[j])) {
-          problems.add('array at $path must not repeat items.');
-          return;
-        }
+    if (value.length > maxUniqueItemsToVerify) {
+      problems.add(
+        'array at $path has more than $maxUniqueItemsToVerify items and its '
+        'uniqueItems contract cannot be verified safely.',
+      );
+      return;
+    }
+    // Exact and O(n log n): canonical keys compare equal for mathematically
+    // equal JSON values, so no quadratic element-by-element comparison runs.
+    final keys = <String>[];
+    for (final item in value) {
+      budget.step();
+      if (budget.exhausted) {
+        problems.add('schema validation budget exceeded at $path.');
+        return;
+      }
+      keys.add(_uniqueValueKey(item));
+    }
+    keys.sort();
+    for (var index = 1; index < keys.length; index += 1) {
+      budget.step();
+      if (budget.exhausted) {
+        problems.add('schema validation budget exceeded at $path.');
+        return;
+      }
+      if (keys[index] == keys[index - 1]) {
+        problems.add('array at $path must not repeat items.');
+        return;
       }
     }
   }
@@ -727,9 +778,20 @@ void _collectStringProblems(
     return;
   }
   final pattern = schema['pattern'];
-  if (pattern is String && !RegExp(pattern).hasMatch(value)) {
-    problems.add('string at $path does not match the required pattern.');
-    return;
+  if (pattern is String) {
+    if (toolPatternProblem(pattern) != null) {
+      // The schema must have been rejected before validation; never run a
+      // pattern that cannot be bounded.
+      problems.add(
+        'string at $path cannot be validated: the pattern is not safely '
+        'boundable.',
+      );
+      return;
+    }
+    if (!RegExp(pattern).hasMatch(value)) {
+      problems.add('string at $path does not match the required pattern.');
+      return;
+    }
   }
   final format = schema['format'];
   if (format is String && !_matchesFormat(format, value)) {
@@ -958,6 +1020,48 @@ String _describeType(Object? type) {
     return type.map((item) => item.toString()).join(' or ');
   }
   return 'a supported value';
+}
+
+String _uniqueValueKey(Object? value) {
+  if (value == null) {
+    return 'z';
+  }
+  if (value is bool) {
+    return value ? 'b1' : 'b0';
+  }
+  if (value is num) {
+    final asDouble = value.toDouble();
+    if (asDouble.isFinite && asDouble == asDouble.truncateToDouble()) {
+      return 'n${asDouble.truncate()}';
+    }
+    return 'n$asDouble';
+  }
+  if (value is String) {
+    return 's${value.length}:$value';
+  }
+  if (value is List) {
+    final buffer = StringBuffer('l${value.length}[');
+    for (final item in value) {
+      buffer.write(_uniqueValueKey(item));
+      buffer.write(',');
+    }
+    buffer.write(']');
+    return buffer.toString();
+  }
+  if (value is Map) {
+    final entries = value.entries.toList()
+      ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
+    final buffer = StringBuffer('m${entries.length}{');
+    for (final entry in entries) {
+      buffer.write('s${entry.key.toString().length}:${entry.key}');
+      buffer.write(':');
+      buffer.write(_uniqueValueKey(entry.value));
+      buffer.write(',');
+    }
+    buffer.write('}');
+    return buffer.toString();
+  }
+  return 'u${value.toString()}';
 }
 
 bool _isValidPattern(String pattern) {

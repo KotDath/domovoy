@@ -10,6 +10,7 @@ export 'hooks.dart';
 export 'ids.dart';
 export 'mcp_tools.dart';
 export 'messaging.dart';
+export 'pattern_safety.dart';
 export 'policies.dart';
 export 'pi_default_tools.dart';
 export 'record.dart';

@@ -271,5 +271,101 @@ void main() {
       // spinning on an untrusted catalog entry.
       expect(firstToolSchemaValueProblem(schema, value), contains('budget'));
     });
+
+    test('unavailable patterns are reported instead of matched', () {
+      final representation = representToolSchema(<String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'query': <String, Object?>{'type': 'string', 'pattern': r'(a+)+$'},
+        },
+      }, profile: ToolSchemaProfile.openaiChatCompletions);
+      expect(representation.isRepresented, isFalse);
+      expect(representation.reason, contains('bounded work'));
+      expect(representation.reason, contains('quantified group'));
+
+      final patternProperties = representToolSchema(<String, Object?>{
+        'type': 'object',
+        'patternProperties': <String, Object?>{
+          r'(a+)+$': <String, Object?>{'type': 'string'},
+        },
+      }, profile: ToolSchemaProfile.openaiChatCompletions);
+      expect(patternProperties.isRepresented, isFalse);
+      expect(patternProperties.reason, contains('bounded work'));
+
+      // Defence in depth: even if an unsafe schema reaches validation, the
+      // pattern is never executed.
+      final problem = firstToolSchemaValueProblem(<String, Object?>{
+        'type': 'string',
+        'pattern': r'(a+)+$',
+      }, 'aaaa');
+      expect(problem, contains('safely'));
+    });
+
+    test('safe patterns still validate normally', () {
+      expect(
+        firstToolSchemaValueProblem(<String, Object?>{
+          'type': 'string',
+          'pattern': r'^[a-z]+$',
+        }, 'papers'),
+        isNull,
+      );
+      expect(
+        firstToolSchemaValueProblem(<String, Object?>{
+          'type': 'string',
+          'pattern': r'^[a-z]+$',
+        }, 'Papers1'),
+        contains('pattern'),
+      );
+      expect(
+        firstToolSchemaValueProblem(
+          <String, Object?>{
+            'type': 'object',
+            'patternProperties': <String, Object?>{
+              r'^[a-z]+$': <String, Object?>{'type': 'string'},
+            },
+          },
+          <String, Object?>{'alpha': 'one'},
+        ),
+        isNull,
+      );
+    });
+
+    test('uniqueItems is exact, fast and bounded', () {
+      final schema = <String, Object?>{'type': 'array', 'uniqueItems': true};
+      final unique = List<Object?>.generate(50000, (index) => index);
+      final stopwatch = Stopwatch()..start();
+      expect(firstToolSchemaValueProblem(schema, unique), isNull);
+      stopwatch.stop();
+      // The check must not be quadratic in the number of items: the pre-fix
+      // pairwise comparison needs tens of seconds for this input.
+      expect(stopwatch.elapsedMilliseconds, lessThan(1000));
+
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[1, 2, 1]),
+        contains('repeat'),
+      );
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[1, 1.0]),
+        contains('repeat'),
+      );
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>[
+          <String, Object?>{'a': 1},
+          <String, Object?>{'a': 1},
+        ]),
+        contains('repeat'),
+      );
+      expect(
+        firstToolSchemaValueProblem(schema, <Object?>['a', 'b', 'c']),
+        isNull,
+      );
+      expect(
+        firstToolSchemaValueProblem(
+          schema,
+          List<Object?>.generate(50001, (index) => index),
+        ),
+        contains('cannot be verified safely'),
+      );
+    });
   });
 }
