@@ -109,9 +109,19 @@ void main() {
       find.byKey(const ValueKey('mcp-tool-scope-selector')),
       findsOneWidget,
     );
+    // The sheet explains that chat selection overrides the project scope.
+    expect(
+      find.byKey(const ValueKey('mcp-tool-scope-explanation')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('переопределяет выбор проекта'), findsOneWidget);
 
     await tester.tap(find.text('Проект'));
     await tester.pumpAndSettle();
+    expect(
+      find.textContaining('чатов без собственного выбора'),
+      findsOneWidget,
+    );
     await tester.tap(find.byKey(ValueKey('mcp-tool-checkbox-$searchToolId')));
     await tester.pumpAndSettle();
 

@@ -141,10 +141,10 @@ void main() {
     expect(find.text('top-secret-token'), findsNothing);
     final stored = await fixture.repository.load(McpConnectionId('remote'));
     expect(stored, isNotNull);
+    final transport = stored!.transport as McpHttpTransportConfig;
+    expect(transport.bearerSecret, isNotNull);
     expect(
-      await fixture.vault.read(
-        McpSecretReference.bearer(McpConnectionId('remote')),
-      ),
+      await fixture.vault.read(transport.bearerSecret!),
       'top-secret-token',
     );
   });
@@ -355,7 +355,7 @@ void main() {
       find.byKey(const ValueKey('mcp-secret-cleanup-remote')),
       findsOneWidget,
     );
-    expect(find.textContaining('не удалены'), findsOneWidget);
+    expect(find.textContaining('не удалены'), findsWidgets);
 
     vault.failDelete = false;
     await tester.tap(

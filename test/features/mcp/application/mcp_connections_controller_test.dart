@@ -104,15 +104,16 @@ void main() {
     expect(config!.alias, 'My remote');
     expect(config.revision, 0);
     final transport = config.transport as McpHttpTransportConfig;
+    // The submitted token gets a fresh immutable reference, never the legacy
+    // fixed key.
+    expect(transport.bearerSecret, isNotNull);
     expect(
       transport.bearerSecret,
-      McpSecretReference.bearer(McpConnectionId('remote')),
+      isNot(McpSecretReference.bearer(McpConnectionId('remote'))),
     );
     expect(jsonEncode(config.toJson()), isNot(contains('super-secret-token')));
     expect(
-      await fixture.vault.read(
-        McpSecretReference.bearer(McpConnectionId('remote')),
-      ),
+      await fixture.vault.read(transport.bearerSecret!),
       'super-secret-token',
     );
     expect(fixture.connections.state.draft, isNull);
@@ -387,12 +388,23 @@ void main() {
       containsAll(<String>['API_TOKEN', 'NEW_TOKEN']),
     );
     expect(
-      await fixture.vault.read(
+      transport.secretEnvironment['API_TOKEN'],
+      McpSecretReference.stdioEnvironment(
+        McpConnectionId('local'),
+        'API_TOKEN',
+      ),
+    );
+    expect(
+      transport.secretEnvironment['NEW_TOKEN'],
+      isNot(
         McpSecretReference.stdioEnvironment(
           McpConnectionId('local'),
           'NEW_TOKEN',
         ),
       ),
+    );
+    expect(
+      await fixture.vault.read(transport.secretEnvironment['NEW_TOKEN']!),
       'new-secret',
     );
     expect(jsonEncode(stored.toJson()), isNot(contains('new-secret')));

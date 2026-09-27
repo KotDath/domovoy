@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
 import '../../../core/llm/cancellation.dart';
+import '../../../core/llm/json.dart';
 import '../../../core/mcp/mcp.dart';
 import '../domain/connection_draft.dart';
 import '../domain/platform_capabilities.dart';
@@ -14,6 +16,13 @@ import 'mcp_connections_state.dart';
 /// Owns the device-local CRUD flow, explicit handshake/catalog checks and
 /// credential handling. Secrets are written to the injected [McpSecretVault]
 /// and never returned to the UI: the editor only learns that a value exists.
+///
+/// Editing a secret is append-only with respect to the vault: every newly
+/// submitted value is written under a fresh, unique [McpSecretReference], the
+/// stored configuration continues to reference its previous value until the
+/// commit succeeds, and only then are superseded references cleaned up. A
+/// failed or uncertain commit therefore never leaves the saved configuration
+/// pointing at a different secret.
 ///
 /// Edits are compare-and-update against [McpConnectionRepository]: a form
 /// opened at revision `r` is rejected with a visible conflict when the stored
@@ -28,13 +37,15 @@ final class McpConnectionsController extends ChangeNotifier {
     required McpConnectionProbe probe,
     Listenable? hostChanges,
     Set<String> builtInConnectionIds = const <String>{},
+    String Function()? secretRefIds,
   }) : _host = host,
        _repository = repository,
        _secrets = secrets,
        _capabilities = capabilities,
        _probe = probe,
        _hostChanges = hostChanges,
-       _builtInConnectionIds = Set<String>.unmodifiable(builtInConnectionIds);
+       _builtInConnectionIds = Set<String>.unmodifiable(builtInConnectionIds),
+       _secretRefIds = secretRefIds ?? _defaultSecretRefId;
 
   final McpHost _host;
   final McpConnectionRepository _repository;
@@ -43,6 +54,9 @@ final class McpConnectionsController extends ChangeNotifier {
   final McpConnectionProbe _probe;
   final Listenable? _hostChanges;
   final Set<String> _builtInConnectionIds;
+
+  /// Unique suffix factory for versioned secret references (test seam).
+  final String Function() _secretRefIds;
 
   final Map<String, McpConnectionConfig> _configs =
       <String, McpConnectionConfig>{};
@@ -142,10 +156,17 @@ final class McpConnectionsController extends ChangeNotifier {
   ///
   /// Returns `false` (and records a visible error) for unknown or built-in
   /// connections, which are owned by the composition. The configuration is
-  /// read from the repository so an edit always starts from the latest
-  /// revision, even when another writer changed it after the list was drawn.
+  /// read authoritatively from the repository so an edit always starts from
+  /// the latest revision; a failed read is surfaced instead of falling back to
+  /// a cached snapshot.
   Future<bool> beginEdit(String connectionId) async {
-    final config = await _loadConfig(connectionId) ?? _configs[connectionId];
+    final McpConnectionConfig? config;
+    try {
+      config = await _readConfig(connectionId);
+    } on McpException catch (error) {
+      _emit(_state.copyWith(editorError: _readFailureMessage(error)));
+      return false;
+    }
     if (config == null) {
       _emit(
         _state.copyWith(
@@ -304,14 +325,46 @@ final class McpConnectionsController extends ChangeNotifier {
         );
         return;
       }
-      final config = _composeConfig(draft, revision: draft.baseRevision ?? 0);
-      // Draft values plus every value the resolver actually reads are the
+      final id = McpConnectionId(draft.effectiveConnectionId);
+      // An edit must resolve preserved references from the authoritative
+      // stored configuration; a failed read is surfaced instead of probing
+      // with guessed references.
+      McpConnectionConfig? existing;
+      if (draft.isEditing) {
+        try {
+          existing = await _readConfig(id.value);
+        } on McpException catch (error) {
+          if (!identical(_probeCancellation, cancellation) || _disposed) {
+            return;
+          }
+          _emit(
+            _state.copyWith(
+              probeStatus: McpProbeStatus.failure,
+              probeResult: McpProbeResult.failure(
+                errorKind: error.error.kind,
+                error: _readFailureMessage(error),
+              ),
+            ),
+          );
+          return;
+        }
+      }
+      final plan = _planSecrets(id, draft, existing);
+      final config = _composeConfigFromPlan(
+        draft,
+        plan,
+        revision: draft.baseRevision ?? 0,
+      );
+      // Submitted values plus every value the resolver actually reads are the
       // redaction set for any server/transport error text.
-      final redactions = <String>{..._draftSecretValues(draft)};
+      final redactions = <String>{...plan.stagedWrites.values};
       final result = await _probe.run(
         config,
         secrets: McpRecordingSecretResolver(
-          inner: _draftResolver(draft),
+          inner: McpDraftSecretResolver(
+            base: _secrets,
+            overrides: plan.stagedWrites,
+          ),
           redactions: redactions,
         ),
         redactions: redactions,
@@ -339,7 +392,7 @@ final class McpConnectionsController extends ChangeNotifier {
             errorKind: error.error.kind,
             error: sanitizeMcpFailureForUi(
               error.error.message,
-              secretValues: _draftSecretValues(draft),
+              secretValues: _submittedSecretValues(draft),
               fallback: sanitizedMcpUnavailableMessage(),
             ),
           ),
@@ -366,20 +419,22 @@ final class McpConnectionsController extends ChangeNotifier {
   /// Returns `false` and leaves the editor open with [McpConnectionsState
   /// .editorError] set for validation, conflict and persistence failures.
   ///
-  /// Secret sequencing is fail-safe: values this save is about to overwrite
-  /// are snapshotted first, and any failure after a vault write (stale
-  /// revision, host save failure) restores the previous values or removes
-  /// values written for a create that never landed. A value another writer
-  /// changed after our write is left untouched, and rollback failures are
-  /// reported without echoing any secret.
+  /// Secret replacement is append-only: newly submitted values are written
+  /// under fresh [McpSecretReference]s before the commit, the new
+  /// configuration references them, and the previous references (and values)
+  /// stay untouched until the commit is known to have landed. On rejection or
+  /// an uncertain commit the staged references become visible, retryable
+  /// cleanup, and the saved configuration keeps using its previous values.
+  /// When a commit may have landed despite a thrown error, the persisted
+  /// configuration is read back and treated as committed truth.
   Future<bool> saveDraft() async {
     final draft = _state.draft;
     if (draft == null || _state.saving || _disposed) {
       return false;
     }
     _emit(_state.copyWith(saving: true, clearEditorError: true));
-    var previousSecrets = <McpSecretReference, String?>{};
-    final writtenSecrets = <McpSecretReference, String>{};
+    final staged = <McpSecretReference>{};
+    var committed = false;
     try {
       final capabilityError = _capabilityError(draft);
       if (capabilityError != null) {
@@ -393,13 +448,15 @@ final class McpConnectionsController extends ChangeNotifier {
         _setEditorError(initialConflict);
         return false;
       }
-      final writes = _draftSecretWrites(id, draft);
-      // Read the previous values before overwriting: when the vault cannot be
-      // read, the save aborts before any value is touched.
-      previousSecrets = await _snapshotSecrets(writes.keys);
-      // Write new secret values before the configuration that references
-      // them, so a failed save never leaves a dangling reference.
-      await _writeDraftSecrets(writes, writtenSecrets);
+      final plan = _planSecrets(id, draft, initial);
+      if (!await _stageSecrets(plan.stagedWrites, staged)) {
+        final failures = await _deleteSecrets(staged);
+        _setEditorError(sanitizedMcpPersistenceMessage());
+        if (failures.isNotEmpty) {
+          _showSecretCleanupFailure(id.value, failures);
+        }
+        return false;
+      }
       // Re-check immediately before the host captures the live revision:
       // with no await in between, a writer that landed during the vault write
       // is either already visible here (rejected) or fails the host's own
@@ -407,19 +464,68 @@ final class McpConnectionsController extends ChangeNotifier {
       final current = await _repository.load(id);
       final conflict = _editConflict(draft, current);
       if (conflict != null) {
-        final note = await _rollbackWrittenSecrets(
-          previousSecrets,
-          writtenSecrets,
-        );
-        writtenSecrets.clear();
-        _setEditorError(conflict + note);
+        final failures = await _deleteSecrets(staged);
+        _setEditorError(conflict);
+        if (failures.isNotEmpty) {
+          _showSecretCleanupFailure(id.value, failures);
+        }
         return false;
       }
-      final config = _composeConfig(draft, revision: draft.baseRevision ?? 0);
-      await _host.upsertConnection(config);
-      // The new configuration is stored; never roll back from here.
-      writtenSecrets.clear();
-      final cleanupFailures = await _deleteRemovedSecrets(id, draft);
+      final config = _composeConfigFromPlan(
+        draft,
+        plan,
+        revision: draft.baseRevision ?? 0,
+      );
+      McpConnectionConfig? persisted;
+      try {
+        await _host.upsertConnection(config);
+        committed = true;
+      } on Object catch (error) {
+        // A config write may commit and then throw: read back the persisted
+        // revision/configuration before deciding which references are active.
+        var readFailed = false;
+        try {
+          persisted = await _repository.load(id);
+        } on Object {
+          readFailed = true;
+        }
+        committed =
+            !readFailed &&
+            persisted != null &&
+            _matchesConfig(persisted, config);
+        if (!committed) {
+          if (readFailed) {
+            // The read-back failed: the outcome is unknown, so staged
+            // references are kept (never delete a possibly active secret).
+            _setEditorError(
+              '${_commitFailureMessage(draft, error)} '
+              'Не удалось подтвердить результат сохранения: обновите список '
+              'и проверьте подключение.',
+            );
+            return false;
+          }
+          final activeReferences =
+              persisted?.secretReferences.toSet() ??
+              const <McpSecretReference>{};
+          final orphans = staged
+              .where((reference) => !activeReferences.contains(reference))
+              .toList(growable: false);
+          final failures = await _deleteSecrets(orphans);
+          _setEditorError(_commitFailureMessage(draft, error));
+          if (failures.isNotEmpty) {
+            _showSecretCleanupFailure(id.value, failures);
+          }
+          return false;
+        }
+      }
+      // Committed (possibly despite a thrown error): only references that the
+      // persisted configuration no longer uses are superseded.
+      persisted ??= await _safeLoadConfig(id.value);
+      final activeReferences =
+          persisted?.secretReferences.toSet() ??
+          config.secretReferences.toSet();
+      final superseded = plan.previousReferences.difference(activeReferences);
+      final cleanupFailures = await _deleteSecrets(superseded);
       if (_disposed) {
         return true;
       }
@@ -438,27 +544,28 @@ final class McpConnectionsController extends ChangeNotifier {
       }
       return true;
     } on McpException catch (error) {
-      final note = await _rollbackWrittenSecrets(
-        previousSecrets,
-        writtenSecrets,
-      );
-      writtenSecrets.clear();
+      if (!committed) {
+        final failures = await _deleteSecrets(staged);
+        if (failures.isNotEmpty) {
+          _showSecretCleanupFailure(draft.effectiveConnectionId, failures);
+        }
+      }
       _setEditorError(
         sanitizeMcpFailureForUi(
-              error.error.message,
-              secretValues: _draftSecretValues(draft),
-              fallback: sanitizedMcpPersistenceMessage(),
-            ) +
-            note,
+          error.error.message,
+          secretValues: _submittedSecretValues(draft),
+          fallback: sanitizedMcpPersistenceMessage(),
+        ),
       );
       return false;
     } on Object {
-      final note = await _rollbackWrittenSecrets(
-        previousSecrets,
-        writtenSecrets,
-      );
-      writtenSecrets.clear();
-      _setEditorError(sanitizedMcpPersistenceMessage() + note);
+      if (!committed) {
+        final failures = await _deleteSecrets(staged);
+        if (failures.isNotEmpty) {
+          _showSecretCleanupFailure(draft.effectiveConnectionId, failures);
+        }
+      }
+      _setEditorError(sanitizedMcpPersistenceMessage());
       return false;
     }
   }
@@ -467,24 +574,46 @@ final class McpConnectionsController extends ChangeNotifier {
   // Lifecycle actions
   // ---------------------------------------------------------------------
 
+  /// Enables or disables a stored connection without clobbering other fields.
+  ///
+  /// The configuration is re-read immediately before the host captures the
+  /// live revision, so an edit that landed while an earlier read was in flight
+  /// is preserved instead of being overwritten by a stale full-config write.
+  /// A failed authoritative read is surfaced and no write is attempted.
   Future<void> setEnabled(String connectionId, bool enabled) async {
-    final config = await _loadConfig(connectionId) ?? _configs[connectionId];
-    if (config == null || _disposed) {
-      return;
-    }
-    await _runBusy(connectionId, () async {
-      await _host.upsertConnection(config.copyWith(enabled: enabled));
+    final id = McpConnectionId(connectionId);
+    final ok = await _runBusy(connectionId, () async {
+      final latest = await _repository.load(id);
+      if (latest == null) {
+        throwMcp(
+          McpErrorKind.configuration,
+          'Подключение не найдено. Обновите список.',
+        );
+      }
+      // Second, fresh read: the first one may be a stale snapshot taken while
+      // another writer committed an endpoint/alias edit.
+      final confirmed = await _repository.load(id) ?? latest;
+      await _host.upsertConnection(confirmed.copyWith(enabled: enabled));
     });
-    await refresh();
+    if (ok) {
+      await refresh();
+    }
   }
 
   /// Removes a stored external connection and its vault entries.
   Future<bool> removeConnection(String connectionId) async {
-    final config = await _loadConfig(connectionId) ?? _configs[connectionId];
+    final McpConnectionConfig? config;
+    try {
+      config = await _readConfig(connectionId);
+    } on McpException catch (error) {
+      _emit(_state.copyWith(error: _readFailureMessage(error)));
+      return false;
+    }
     if (config == null || _disposed) {
       return false;
     }
-    if (_isBuiltIn(config)) {
+    final resolved = config;
+    if (_isBuiltIn(resolved)) {
       _emit(
         _state.copyWith(
           error: 'Встроенный сервер нельзя удалить из этого раздела.',
@@ -494,14 +623,14 @@ final class McpConnectionsController extends ChangeNotifier {
     }
     var removed = false;
     await _runBusy(connectionId, () async {
-      await _host.removeConnection(config.connectionId);
+      await _host.removeConnection(resolved.connectionId);
       removed = true;
     });
     if (!removed) {
       return false;
     }
     await refresh();
-    final cleanupFailures = await _deleteSecrets(config.secretReferences);
+    final cleanupFailures = await _deleteSecrets(resolved.secretReferences);
     if (cleanupFailures.isNotEmpty) {
       // The connection is gone, but the user must not believe the sensitive
       // values were erased when the vault rejected the deletion.
@@ -538,8 +667,8 @@ final class McpConnectionsController extends ChangeNotifier {
           connectionId: failures.length,
         },
         error:
-            'Не удалось удалить сохранённые секреты подключения '
-            '«$connectionId» (${failures.length}). Повторите очистку позже.',
+            'Устаревшие секреты подключения «$connectionId» не удалены '
+            '(${failures.length}). Повторите очистку позже.',
       ),
     );
     return false;
@@ -547,7 +676,7 @@ final class McpConnectionsController extends ChangeNotifier {
 
   /// Tears the connection down and connects again (handshake plus catalog).
   Future<void> reconnect(String connectionId) async {
-    if (await _loadConfig(connectionId) == null || _disposed) {
+    if (!await _connectionExists(connectionId) || _disposed) {
       return;
     }
     await _runBusy(
@@ -558,13 +687,24 @@ final class McpConnectionsController extends ChangeNotifier {
 
   /// Refreshes one connection's tool catalog.
   Future<void> refreshTools(String connectionId) async {
-    if (await _loadConfig(connectionId) == null || _disposed) {
+    if (!await _connectionExists(connectionId) || _disposed) {
       return;
     }
     await _runBusy(
       connectionId,
       () => _host.refreshCatalog(McpConnectionId(connectionId)),
     );
+  }
+
+  /// Authoritative existence check that surfaces read failures instead of
+  /// trusting the in-memory cache.
+  Future<bool> _connectionExists(String connectionId) async {
+    try {
+      return await _readConfig(connectionId) != null;
+    } on McpException catch (error) {
+      _emit(_state.copyWith(error: _readFailureMessage(error)));
+      return false;
+    }
   }
 
   /// Explicit check of a stored connection: reconnect and re-list tools.
@@ -617,8 +757,76 @@ final class McpConnectionsController extends ChangeNotifier {
     return null;
   }
 
-  McpConnectionConfig _composeConfig(
-    McpConnectionDraft draft, {
+  /// Plans the vault references the composed configuration will use and the
+  /// fresh writes that must be staged before commit.
+  ///
+  /// Values the user did not replace keep their existing reference (including
+  /// legacy fixed-key references); only newly submitted values receive a fresh
+  /// immutable reference. Explicitly removed values simply disappear from the
+  /// plan and their references become superseded after a successful commit.
+  _SecretPlan _planSecrets(
+    McpConnectionId id,
+    McpConnectionDraft draft,
+    McpConnectionConfig? existing,
+  ) {
+    final stagedWrites = <McpSecretReference, String>{};
+    final previousReferences = existing == null
+        ? const <McpSecretReference>{}
+        : existing.secretReferences.toSet();
+    final secretEnvironment = <String, McpSecretReference>{};
+    McpSecretReference? bearerReference;
+    switch (draft.transport) {
+      case McpConnectionTransportChoice.streamableHttp:
+        final storedRef = switch (existing?.transport) {
+          McpHttpTransportConfig(:final bearerSecret) => bearerSecret,
+          _ => null,
+        };
+        if (!draft.removeBearerToken) {
+          final value = draft.bearerToken.trim();
+          if (value.isNotEmpty) {
+            final reference = _newSecretReference(id, 'bearer');
+            stagedWrites[reference] = value;
+            bearerReference = reference;
+          } else if (storedRef != null) {
+            bearerReference = storedRef;
+          } else if (draft.bearerTokenStored) {
+            bearerReference = McpSecretReference.bearer(id);
+          }
+        }
+      case McpConnectionTransportChoice.stdio:
+        final storedRefs = switch (existing?.transport) {
+          McpStdioTransportConfig(:final secretEnvironment) =>
+            secretEnvironment,
+          _ => const <String, McpSecretReference>{},
+        };
+        for (final name in draft.retainedSecretEnvironment) {
+          secretEnvironment[name] =
+              storedRefs[name] ?? McpSecretReference.stdioEnvironment(id, name);
+        }
+        for (final entry in draft.secretEnvironment.entries) {
+          if (entry.value.isEmpty) {
+            continue;
+          }
+          final reference = _newSecretReference(id, 'env.${entry.key}');
+          stagedWrites[reference] = entry.value;
+          secretEnvironment[entry.key] = reference;
+        }
+    }
+    return _SecretPlan(
+      bearerReference: bearerReference,
+      secretEnvironment: secretEnvironment,
+      stagedWrites: stagedWrites,
+      previousReferences: previousReferences,
+    );
+  }
+
+  /// Fresh, immutable reference for one newly submitted value.
+  McpSecretReference _newSecretReference(McpConnectionId id, String label) =>
+      McpSecretReference('mcp.${id.value}.$label.${_secretRefIds()}');
+
+  McpConnectionConfig _composeConfigFromPlan(
+    McpConnectionDraft draft,
+    _SecretPlan plan, {
     required int revision,
   }) {
     final id = McpConnectionId(draft.effectiveConnectionId);
@@ -630,11 +838,11 @@ final class McpConnectionsController extends ChangeNotifier {
             ? null
             : draft.workingDirectory,
         environment: draft.environment,
-        secretEnvironment: _secretEnvironmentRefs(id, draft),
+        secretEnvironment: plan.secretEnvironment,
       ),
       McpConnectionTransportChoice.streamableHttp => McpHttpTransportConfig(
         url: draft.url,
-        bearerSecret: _bearerReference(id, draft),
+        bearerSecret: plan.bearerReference,
       ),
     };
     return McpConnectionConfig(
@@ -646,179 +854,97 @@ final class McpConnectionsController extends ChangeNotifier {
     );
   }
 
-  McpSecretReference? _bearerReference(
-    McpConnectionId id,
-    McpConnectionDraft draft,
-  ) {
-    if (draft.removeBearerToken) {
-      return null;
-    }
-    if (draft.bearerToken.trim().isNotEmpty || draft.bearerTokenStored) {
-      return McpSecretReference.bearer(id);
-    }
-    return null;
-  }
-
-  Map<String, McpSecretReference> _secretEnvironmentRefs(
-    McpConnectionId id,
-    McpConnectionDraft draft,
-  ) {
-    final refs = <String, McpSecretReference>{
-      for (final name in draft.retainedSecretEnvironment)
-        name: McpSecretReference.stdioEnvironment(id, name),
-      for (final entry in draft.secretEnvironment.entries)
-        if (entry.value.isNotEmpty)
-          entry.key: McpSecretReference.stdioEnvironment(id, entry.key),
-    };
-    return refs;
-  }
-
-  McpSecretResolver _draftResolver(McpConnectionDraft draft) {
-    final id = McpConnectionId(draft.effectiveConnectionId);
-    final overrides = <McpSecretReference, String>{};
-    final removed = <McpSecretReference>{};
-    if (draft.removeBearerToken) {
-      removed.add(McpSecretReference.bearer(id));
-    } else if (draft.bearerToken.trim().isNotEmpty) {
-      overrides[McpSecretReference.bearer(id)] = draft.bearerToken.trim();
-    }
-    for (final entry in draft.secretEnvironment.entries) {
-      if (entry.value.isNotEmpty) {
-        overrides[McpSecretReference.stdioEnvironment(id, entry.key)] =
-            entry.value;
+  /// Stages freshly submitted values, tolerating a vault that commits and then
+  /// throws: the value is read back before a write is declared failed.
+  Future<bool> _stageSecrets(
+    Map<McpSecretReference, String> writes,
+    Set<McpSecretReference> staged,
+  ) async {
+    for (final entry in writes.entries) {
+      try {
+        await _secrets.write(entry.key, entry.value);
+        staged.add(entry.key);
+        continue;
+      } on Object {
+        var committed = false;
+        try {
+          committed = await _secrets.read(entry.key) == entry.value;
+        } on Object {
+          committed = false;
+        }
+        if (!committed) {
+          return false;
+        }
+        staged.add(entry.key);
       }
     }
-    for (final name in draft.removedSecretEnvironment) {
-      removed.add(McpSecretReference.stdioEnvironment(id, name));
-    }
-    return McpDraftSecretResolver(
-      base: _secrets,
-      overrides: overrides,
-      removed: removed,
-    );
+    return true;
   }
 
-  /// Exact draft secret values that must never appear in UI text or logs.
-  Set<String> _draftSecretValues(McpConnectionDraft draft) {
+  /// Submitted values that must never appear in UI text or logs.
+  Set<String> _submittedSecretValues(McpConnectionDraft draft) {
     final values = <String>{};
     final bearer = draft.bearerToken.trim();
     if (bearer.isNotEmpty) {
       values.add(bearer);
     }
     for (final value in draft.secretEnvironment.values) {
-      if (value.isNotEmpty) {
-        values.add(value);
-        final trimmed = value.trim();
-        if (trimmed.isNotEmpty) {
-          values.add(trimmed);
-        }
+      if (value.isEmpty) {
+        continue;
+      }
+      values.add(value);
+      final trimmed = value.trim();
+      if (trimmed.isNotEmpty) {
+        values.add(trimmed);
       }
     }
     return values;
   }
 
-  /// New secret values this save would store, keyed by vault reference.
-  Map<McpSecretReference, String> _draftSecretWrites(
-    McpConnectionId id,
-    McpConnectionDraft draft,
-  ) {
-    final writes = <McpSecretReference, String>{};
-    if (draft.transport == McpConnectionTransportChoice.streamableHttp &&
-        !draft.removeBearerToken) {
-      final value = draft.bearerToken.trim();
-      if (value.isNotEmpty) {
-        writes[McpSecretReference.bearer(id)] = value;
-      }
-    }
-    if (draft.transport == McpConnectionTransportChoice.stdio) {
-      for (final entry in draft.secretEnvironment.entries) {
-        if (entry.value.isEmpty) {
-          continue;
-        }
-        writes[McpSecretReference.stdioEnvironment(id, entry.key)] =
-            entry.value;
-      }
-    }
-    return writes;
-  }
-
-  Future<Map<McpSecretReference, String?>> _snapshotSecrets(
-    Iterable<McpSecretReference> references,
-  ) async {
-    final snapshot = <McpSecretReference, String?>{};
-    for (final reference in references) {
-      snapshot[reference] = await _secrets.read(reference);
-    }
-    return snapshot;
-  }
-
-  /// Writes [writes], recording each completed value in [written] so a failure
-  /// halfway through can still be rolled back.
-  Future<void> _writeDraftSecrets(
-    Map<McpSecretReference, String> writes,
-    Map<McpSecretReference, String> written,
-  ) async {
-    for (final entry in writes.entries) {
-      await _secrets.write(entry.key, entry.value);
-      written[entry.key] = entry.value;
-    }
-  }
-
-  /// Restores values overwritten by this save, or removes values written for a
-  /// create that never landed.
+  /// Authoritative configuration read used by mutations.
   ///
-  /// Returns a user-facing suffix when the vault rejected a restore. A value
-  /// that no longer matches what this save wrote belongs to a newer writer and
-  /// is never clobbered.
-  Future<String> _rollbackWrittenSecrets(
-    Map<McpSecretReference, String?> previous,
-    Map<McpSecretReference, String> written,
-  ) async {
-    if (written.isEmpty) {
-      return '';
+  /// Throws when storage cannot be read, so callers never treat a cached
+  /// in-memory snapshot as a current revision for a write.
+  Future<McpConnectionConfig?> _readConfig(String connectionId) =>
+      _repository.load(McpConnectionId(connectionId));
+
+  /// Post-commit read-back; `null` also means "unreadable".
+  Future<McpConnectionConfig?> _safeLoadConfig(String connectionId) async {
+    try {
+      return await _repository.load(McpConnectionId(connectionId));
+    } on Object {
+      return null;
     }
-    var failures = 0;
-    for (final entry in written.entries) {
-      final reference = entry.key;
-      final ourValue = entry.value;
-      try {
-        final current = await _secrets.read(reference);
-        if (current != ourValue) {
-          continue;
-        }
-        final oldValue = previous[reference];
-        if (oldValue != null) {
-          await _secrets.write(reference, oldValue);
-        } else {
-          await _secrets.delete(reference);
-        }
-      } on Object {
-        failures += 1;
-      }
-    }
-    if (failures == 0) {
-      return '';
-    }
-    return ' Не удалось полностью восстановить прежние секреты; введите '
-        'значение заново перед повторным сохранением.';
   }
 
-  /// Deletes explicitly removed values and returns the references that could
-  /// not be erased.
-  Future<List<McpSecretReference>> _deleteRemovedSecrets(
-    McpConnectionId id,
-    McpConnectionDraft draft,
+  /// True when the persisted record carries exactly the configuration this
+  /// save attempted, so a commit that threw is still recognized as committed.
+  bool _matchesConfig(
+    McpConnectionConfig persisted,
+    McpConnectionConfig expected,
   ) {
-    final references = <McpSecretReference>[
-      if (draft.transport == McpConnectionTransportChoice.streamableHttp &&
-          draft.removeBearerToken)
-        McpSecretReference.bearer(id),
-      if (draft.transport == McpConnectionTransportChoice.stdio)
-        for (final name in draft.removedSecretEnvironment)
-          McpSecretReference.stdioEnvironment(id, name),
-    ];
-    return _deleteSecrets(references);
+    return persisted.connectionId == expected.connectionId &&
+        persisted.alias == expected.alias &&
+        persisted.enabled == expected.enabled &&
+        jsonEquals(persisted.transport.toJson(), expected.transport.toJson());
   }
+
+  String _commitFailureMessage(McpConnectionDraft draft, Object error) {
+    if (error is McpException) {
+      return sanitizeMcpFailureForUi(
+        error.error.message,
+        secretValues: _submittedSecretValues(draft),
+        fallback: sanitizedMcpPersistenceMessage(),
+      );
+    }
+    return sanitizedMcpPersistenceMessage();
+  }
+
+  String _readFailureMessage(McpException error) => sanitizeMcpFailureForUi(
+    error.error.message,
+    secretValues: const <String>[],
+    fallback: sanitizedMcpPersistenceMessage(),
+  );
 
   Future<List<McpSecretReference>> _deleteSecrets(
     Iterable<McpSecretReference> references,
@@ -835,40 +961,53 @@ final class McpConnectionsController extends ChangeNotifier {
   }
 
   /// Records a visible, retryable cleanup failure for [connectionId].
+  ///
+  /// Failures merge with references already pending so a later retry cannot
+  /// forget an earlier leftover.
   void _showSecretCleanupFailure(
     String connectionId,
     List<McpSecretReference> failures,
   ) {
+    final pending = <McpSecretReference>{
+      ...?_pendingSecretCleanup[connectionId],
+      ...failures,
+    };
     _pendingSecretCleanup[connectionId] = List<McpSecretReference>.unmodifiable(
-      failures,
+      pending,
     );
     _emit(
       _state.copyWith(
         secretCleanupFailures: <String, int>{
           ..._state.secretCleanupFailures,
-          connectionId: failures.length,
+          connectionId: pending.length,
         },
         error:
-            'Не удалось удалить сохранённые секреты подключения '
-            '«$connectionId» (${failures.length}). Повторите очистку.',
+            'Устаревшие секреты подключения «$connectionId» не удалены '
+            '(${pending.length}). Повторите очистку.',
       ),
     );
   }
 
-  Future<void> _runBusy(
+  /// Runs [action] with a per-connection busy marker.
+  ///
+  /// Returns `true` only when the action completed; callers must not refresh
+  /// (which clears the error banner) after a failed action.
+  Future<bool> _runBusy(
     String connectionId,
     Future<void> Function() action,
   ) async {
     if (_state.busyConnectionIds.contains(connectionId)) {
-      return;
+      return false;
     }
     _emit(
       _state.copyWith(
         busyConnectionIds: <String>{..._state.busyConnectionIds, connectionId},
       ),
     );
+    var ok = false;
     try {
       await action();
+      ok = true;
     } on McpException catch (error) {
       _emit(
         _state.copyWith(
@@ -890,6 +1029,7 @@ final class McpConnectionsController extends ChangeNotifier {
         );
       }
     }
+    return ok;
   }
 
   void _setEditorError(String message) {
@@ -902,15 +1042,6 @@ final class McpConnectionsController extends ChangeNotifier {
   bool _isBuiltIn(McpConnectionConfig config) =>
       config.transport is McpInProcessStreamTransportConfig ||
       _builtInConnectionIds.contains(config.connectionId.value);
-
-  /// Authoritative configuration read used by editor/lifecycle actions.
-  Future<McpConnectionConfig?> _loadConfig(String connectionId) async {
-    try {
-      return await _repository.load(McpConnectionId(connectionId));
-    } on McpException {
-      return _configs[connectionId];
-    }
-  }
 
   void _applyConfigs(List<McpConnectionConfig> configs) {
     _configs
@@ -1019,4 +1150,31 @@ final class McpConnectionsController extends ChangeNotifier {
     _hostChanges?.removeListener(_syncFromHost);
     super.dispose();
   }
+}
+
+/// Immutable plan for one save: the references the composed configuration will
+/// use, fresh staged writes, and the references the previous configuration had.
+final class _SecretPlan {
+  const _SecretPlan({
+    required this.bearerReference,
+    required this.secretEnvironment,
+    required this.stagedWrites,
+    required this.previousReferences,
+  });
+
+  final McpSecretReference? bearerReference;
+  final Map<String, McpSecretReference> secretEnvironment;
+  final Map<McpSecretReference, String> stagedWrites;
+  final Set<McpSecretReference> previousReferences;
+}
+
+var _secretRefSequence = 0;
+
+/// Unique suffix for a versioned secret reference.
+String _defaultSecretRefId() {
+  _secretRefSequence += 1;
+  final random = Random.secure();
+  return '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}'
+      '-${random.nextInt(1 << 32).toRadixString(36)}'
+      '-$_secretRefSequence';
 }

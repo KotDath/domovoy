@@ -165,6 +165,7 @@ final class McpFeatureFixture {
     McpConnectionRepository? repository,
     McpSecretVault? vault,
     McpTransportFactory? probeTransports,
+    String Function()? secretRefIds,
     McpTimeouts timeouts = const McpTimeouts(
       connect: Duration(milliseconds: 200),
       catalog: Duration(milliseconds: 200),
@@ -195,6 +196,7 @@ final class McpFeatureFixture {
       ),
       hostChanges: host,
       builtInConnectionIds: builtInConnectionIds,
+      secretRefIds: secretRefIds,
     );
     final toolAccess = McpToolAccessController(
       host: host,
@@ -229,4 +231,223 @@ final class McpFeatureFixture {
     await host.stop();
     host.dispose();
   }
+}
+
+/// Vault that commits a write and then throws, like an adapter that lost the
+/// response after the value was stored.
+final class CommitThenThrowMcpSecretVault implements McpSecretVault {
+  CommitThenThrowMcpSecretVault([Map<String, String>? initial])
+    : inner = InMemoryMcpSecretVault(initial);
+
+  final InMemoryMcpSecretVault inner;
+  bool throwAfterWrite = true;
+
+  @override
+  Future<String?> read(McpSecretReference reference) => inner.read(reference);
+
+  @override
+  Future<void> write(McpSecretReference reference, String value) async {
+    await inner.write(reference, value);
+    if (throwAfterWrite) {
+      throw StateError('vault write committed then failed');
+    }
+  }
+
+  @override
+  Future<void> delete(McpSecretReference reference) => inner.delete(reference);
+}
+
+/// Vault that throws before storing anything.
+final class FailBeforeCommitMcpSecretVault implements McpSecretVault {
+  FailBeforeCommitMcpSecretVault([Map<String, String>? initial])
+    : inner = InMemoryMcpSecretVault(initial);
+
+  final InMemoryMcpSecretVault inner;
+  bool failWrite = true;
+
+  @override
+  Future<String?> read(McpSecretReference reference) => inner.read(reference);
+
+  @override
+  Future<void> write(McpSecretReference reference, String value) {
+    if (failWrite) {
+      return Future<void>.error(StateError('vault write failed'));
+    }
+    return inner.write(reference, value);
+  }
+
+  @override
+  Future<void> delete(McpSecretReference reference) => inner.delete(reference);
+}
+
+/// Repository that commits a save and then throws.
+final class CommitThenThrowMcpConnectionRepository
+    implements McpConnectionRepository {
+  CommitThenThrowMcpConnectionRepository(this.inner);
+
+  final McpConnectionRepository inner;
+  bool throwAfterSave = true;
+
+  @override
+  Future<McpConnectionConfig?> load(McpConnectionId id) => inner.load(id);
+
+  @override
+  Future<List<McpConnectionConfig>> loadAll() => inner.loadAll();
+
+  @override
+  Future<Map<String, int>> loadTombstones() => inner.loadTombstones();
+
+  @override
+  Future<void> save(
+    McpConnectionConfig config, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) async {
+    await inner.save(
+      config,
+      expectedRevision: expectedRevision,
+      cancellation: cancellation,
+    );
+    if (throwAfterSave) {
+      throw McpException(
+        McpError(
+          kind: McpErrorKind.persistence,
+          message: sanitizedMcpPersistenceMessage(),
+        ),
+      );
+    }
+  }
+
+  @override
+  Future<void> delete(
+    McpConnectionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
+}
+
+/// Repository whose single-target read fails on demand, while writes are
+/// counted so tests can prove no mutation was attempted.
+final class FailingReadMcpConnectionRepository
+    implements McpConnectionRepository {
+  FailingReadMcpConnectionRepository(this.inner);
+
+  final McpConnectionRepository inner;
+  bool failLoad = true;
+  int saveCalls = 0;
+
+  @override
+  Future<McpConnectionConfig?> load(McpConnectionId id) {
+    if (failLoad) {
+      return Future<McpConnectionConfig?>.error(
+        McpException(
+          McpError(
+            kind: McpErrorKind.persistence,
+            message: sanitizedMcpPersistenceMessage(),
+          ),
+        ),
+      );
+    }
+    return inner.load(id);
+  }
+
+  @override
+  Future<List<McpConnectionConfig>> loadAll() => inner.loadAll();
+
+  @override
+  Future<Map<String, int>> loadTombstones() => inner.loadTombstones();
+
+  @override
+  Future<void> save(
+    McpConnectionConfig config, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) {
+    saveCalls += 1;
+    return inner.save(
+      config,
+      expectedRevision: expectedRevision,
+      cancellation: cancellation,
+    );
+  }
+
+  @override
+  Future<void> delete(
+    McpConnectionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
+}
+
+/// Repository whose targeted read captures a snapshot and then waits, so a
+/// test can commit a concurrent edit while the read is still in flight.
+final class GatedLoadMcpConnectionRepository
+    implements McpConnectionRepository {
+  GatedLoadMcpConnectionRepository(this.inner);
+
+  final McpConnectionRepository inner;
+  McpConnectionId? _gateId;
+  Completer<void>? _gate;
+  Completer<void>? _reached;
+
+  /// Gates only the next read of [id]; later reads pass through.
+  void armLoadGate(McpConnectionId id) {
+    _gateId = id;
+    _gate = Completer<void>();
+    _reached = Completer<void>();
+  }
+
+  Future<void> waitForLoadGate() => _reached!.future;
+
+  void releaseLoadGate() {
+    _gate?.complete();
+    _gate = null;
+    _gateId = null;
+  }
+
+  @override
+  Future<McpConnectionConfig?> load(McpConnectionId id) async {
+    final snapshot = await inner.load(id);
+    if (_gateId == id && _gate != null && !_gate!.isCompleted) {
+      _reached!.complete();
+      await _gate!.future;
+    }
+    return snapshot;
+  }
+
+  @override
+  Future<List<McpConnectionConfig>> loadAll() => inner.loadAll();
+
+  @override
+  Future<Map<String, int>> loadTombstones() => inner.loadTombstones();
+
+  @override
+  Future<void> save(
+    McpConnectionConfig config, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => inner.save(
+    config,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
+
+  @override
+  Future<void> delete(
+    McpConnectionId id, {
+    required int expectedRevision,
+    required CancellationToken cancellation,
+  }) => inner.delete(
+    id,
+    expectedRevision: expectedRevision,
+    cancellation: cancellation,
+  );
 }

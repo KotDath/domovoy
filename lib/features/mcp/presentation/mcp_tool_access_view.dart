@@ -85,6 +85,19 @@ class McpToolAccessView extends StatelessWidget {
               key: const ValueKey('mcp-tool-scope-label'),
               style: Theme.of(context).textTheme.labelLarge,
             ),
+          const SizedBox(height: DomovoyDimensions.space2),
+          Text(
+            state.scope == McpToolAccessTargetKind.chat
+                ? 'Действует выбор чата: он переопределяет выбор проекта. '
+                      'Пустой выбор чата явно запрещает инструменты MCP в этом '
+                      'чате, даже если проект их разрешает.'
+                : 'Выбор проекта действует для чатов без собственного выбора; '
+                      'собственный выбор чата всегда переопределяет проект.',
+            key: const ValueKey('mcp-tool-scope-explanation'),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: tokens.textMuted),
+          ),
           if (state.error != null) ...[
             const SizedBox(height: DomovoyDimensions.space3),
             _notice(
