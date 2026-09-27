@@ -15,6 +15,7 @@ void main() {
 
   ArxivClient clientWith(
     FakeArxivHttpAdapter adapter, {
+    FakeArxivClock? fakeClock,
     Duration requestTimeout = const Duration(seconds: 15),
     Duration minRequestInterval = const Duration(seconds: 3),
     Duration cacheTtl = const Duration(minutes: 10),
@@ -23,7 +24,7 @@ void main() {
   }) {
     return ArxivClient(
       http: adapter,
-      clock: clock,
+      clock: fakeClock ?? clock,
       requestTimeout: requestTimeout,
       minRequestInterval: minRequestInterval,
       cacheTtl: cacheTtl,
@@ -339,6 +340,53 @@ void main() {
       );
     });
 
+    test(
+      'Retry-After is anchored to the response, not the request start',
+      () async {
+        for (final status in <int>[429, 503]) {
+          final localClock = FakeArxivClock();
+          final adapter = FakeArxivHttpAdapter(
+            clock: localClock,
+            responder: (url, index) async {
+              if (index == 0) {
+                // The API took five seconds to answer; Retry-After starts when
+                // the response arrives, so the next request is ten seconds
+                // after that moment (fifteen after the first attempt).
+                localClock.advance(const Duration(seconds: 5));
+                return atomResponse(
+                  'slow down',
+                  statusCode: status,
+                  headers: <String, String>{'retry-after': '10'},
+                );
+              }
+              return atomResponse(atomFeed(entries: <String>[atomEntry()]));
+            },
+          );
+          final client = clientWith(adapter, fakeClock: localClock);
+
+          final failure = await _failureOf(
+            client.search(ArxivSearchRequest(query: 'first $status')),
+          );
+          expect(
+            failure.kind,
+            status == 429
+                ? ArxivFailureKind.rateLimited
+                : ArxivFailureKind.network,
+            reason: 'HTTP $status',
+          );
+
+          await client.search(ArxivSearchRequest(query: 'second $status'));
+
+          expect(adapter.requests, hasLength(2), reason: 'HTTP $status');
+          expect(
+            adapter.requestTimes[1].difference(adapter.requestTimes[0]),
+            const Duration(seconds: 15),
+            reason: 'HTTP $status',
+          );
+        }
+      },
+    );
+
     test('timeout is distinguishable from a domain failure', () async {
       final pending = Completer<ArxivHttpResponse>();
       final adapter = FakeArxivHttpAdapter(
@@ -389,6 +437,56 @@ void main() {
         isTrue,
       );
     });
+
+    test(
+      'a call that times out in the queue never reaches the adapter',
+      () async {
+        final gate = Completer<void>();
+        final adapter = FakeArxivHttpAdapter(
+          clock: clock,
+          responder: (url, index) async {
+            if (index == 0) {
+              await gate.future;
+            }
+            return atomResponse(atomFeed(entries: <String>[atomEntry()]));
+          },
+        );
+        final client = clientWith(
+          adapter,
+          requestTimeout: const Duration(milliseconds: 120),
+        );
+
+        final first = client.search(ArxivSearchRequest(query: 'first'));
+        final firstSettled = first.then<void>((_) {}, onError: (Object _) {});
+        await Future<void>.delayed(Duration.zero);
+
+        // The second call is queued behind the gated first one and times out
+        // while still waiting; its deadline must cancel the attempt itself.
+        final second = client.search(ArxivSearchRequest(query: 'second'));
+        await expectLater(
+          second,
+          throwsA(
+            isA<ArxivFailure>().having(
+              (failure) => failure.kind,
+              'kind',
+              ArxivFailureKind.timeout,
+            ),
+          ),
+        );
+        expect(adapter.requests, hasLength(1));
+
+        gate.complete();
+        await firstSettled;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // The expired queued attempt must never send an API request.
+        expect(adapter.requests, hasLength(1));
+
+        // The queue itself stays usable for a fresh call.
+        await client.search(ArxivSearchRequest(query: 'third'));
+        expect(adapter.requests, hasLength(2));
+      },
+    );
 
     test(
       'serves a cache hit without a second request and expires by TTL',

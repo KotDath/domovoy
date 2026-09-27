@@ -254,21 +254,39 @@ final class ArxivClient {
     _queryTerms(request.query);
   }
 
-  /// Cache check + serialized load. The second cache check inside the
+  /// Cache check + serialized load.
+  ///
+  /// Each call carries an expiry marker: when the caller's deadline fires
+  /// while the action is still waiting in the queue, the action must neither
+  /// send a request nor publish a result. The second cache check inside the
   /// exclusive section coalesces identical concurrent requests.
   Future<T> _load<T>(String key, Future<T> Function() loader) async {
     final hit = _cacheGet<T>(key);
     if (hit != null) {
       return hit;
     }
+    final attempt = _LoadAttempt();
     try {
-      final result = await _runExclusive(() async {
-        final second = _cacheGet<T>(key);
-        if (second != null) {
-          return second;
-        }
-        return loader();
-      }).timeout(requestTimeout);
+      final result =
+          await _runExclusive(() async {
+            attempt.throwIfExpired();
+            final second = _cacheGet<T>(key);
+            if (second != null) {
+              return second;
+            }
+            attempt.throwIfExpired();
+            final value = await loader();
+            attempt.throwIfExpired();
+            return value;
+          }).timeout(
+            requestTimeout,
+            onTimeout: () {
+              // Mark before the queued action gets its turn: `Future.timeout`
+              // cannot cancel the action, so the action checks this marker itself.
+              attempt.expire();
+              throw TimeoutException('arXiv request deadline exceeded.');
+            },
+          );
       _cachePut(key, result);
       return result;
     } on ArxivFailure {
@@ -331,7 +349,9 @@ final class ArxivClient {
     }
     final retryAfter = _parseRetryAfter(response.header('retry-after'));
     if (retryAfter != null) {
-      _notBefore = startedAt.add(_clampRetryAfter(retryAfter));
+      // Retry-After is measured from the moment the response arrives, not
+      // from the request start: a slow request must not eat into the backoff.
+      _notBefore = _clock.nowUtc().add(_clampRetryAfter(retryAfter));
     }
     switch (response.statusCode) {
       case 429:
@@ -617,6 +637,24 @@ final class _CacheEntry {
 
   final Object? value;
   final DateTime storedAt;
+}
+
+/// One in-flight [ArxivClient._load] whose caller deadline may expire while
+/// the serialized action is still queued behind another request.
+final class _LoadAttempt {
+  bool _expired = false;
+
+  void expire() => _expired = true;
+
+  /// Refuses to start or publish work for an attempt the caller abandoned.
+  void throwIfExpired() {
+    if (_expired) {
+      throwArxiv(
+        ArxivFailureKind.timeout,
+        'Запрос arXiv истёк в очереди и не был отправлен.',
+      );
+    }
+  }
 }
 
 /// `YYYYMMDDHHMM` in UTC, the documented `submittedDate` grammar (minutes).
