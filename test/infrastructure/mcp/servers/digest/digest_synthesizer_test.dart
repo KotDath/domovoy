@@ -70,7 +70,14 @@ void main() {
           'https://arxiv.org/abs/2501.01234',
         );
         expect(digest.items.single.finding, 'Finding for 2501.01234');
-        expect(digest.items.single.limitation, 'Изучена только аннотация');
+        expect(
+          digest.items.single.limitation,
+          startsWith(digestAbstractOnlyLimitation),
+        );
+        expect(
+          digest.items.single.limitation,
+          contains('Изучена только аннотация'),
+        );
 
         expect(provider.requests, hasLength(1));
         final request = provider.requests.single;
@@ -150,6 +157,63 @@ void main() {
         expect(digest.items.single.limitation, digestAbstractOnlyLimitation);
       },
     );
+
+    test('keeps the abstract boundary next to a model caveat', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              items: <Map<String, Object?>>[
+                digestAnswerItem(
+                  '2501.01234',
+                  limitation: 'Нет сравнения с базовыми методами.',
+                ),
+              ],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(provider);
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      final limitation = digest.items.single.limitation!;
+      expect(limitation, startsWith(digestAbstractOnlyLimitation));
+      expect(limitation, contains('Нет сравнения с базовыми методами.'));
+    });
+
+    test('bounds the combined limitation to the field limit', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              items: <Map<String, Object?>>[
+                digestAnswerItem('2501.01234', limitation: 'x' * 60),
+              ],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(
+        provider,
+        limits: const DigestLimits(maxLimitationCharacters: 80),
+      );
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      final limitation = digest.items.single.limitation!;
+      expect(limitation, startsWith(digestAbstractOnlyLimitation));
+      expect(limitation.length, lessThanOrEqualTo(80));
+      expect(limitation, endsWith('…'));
+    });
 
     test('uses the pinned model and never another catalog model', () async {
       final provider = digestProvider()
@@ -272,6 +336,142 @@ void main() {
       },
     );
 
+    test('rejects an outside arXiv reference in the overview text', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          overview: 'See arXiv:2501.99999 for the full picture.',
+          items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('2501.99999'));
+    });
+
+    test('rejects an outside arxiv.org URL in a finding', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem(
+              '2501.01234',
+              finding: 'https://arxiv.org/abs/2501.99999 proves this.',
+            ),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('2501.99999'));
+    });
+
+    test('rejects a bare outside arXiv id in a finding', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem(
+              '2501.01234',
+              finding: 'Outperforms 2501.99999 on every benchmark.',
+            ),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('2501.99999'));
+    });
+
+    test('rejects an outside arXiv reference in a limitation', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem(
+              '2501.01234',
+              limitation: 'Compare with arXiv:2501.99999.',
+            ),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, contains('2501.99999'));
+    });
+
+    test('rejects a malformed arXiv reference without echoing it', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          overview: 'See arXiv:1234.567 for details.',
+          items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, isNot(contains('1234.567')));
+      expect(failure.message.length, lessThan(300));
+    });
+
+    test('does not echo the model answer in a citation error', () async {
+      final filler = 'Длинное пояснение к сводке. ' * 40;
+      final failure = await failureFor(
+        digestAnswerJson(
+          overview: '$filler См. arXiv:2501.99999.',
+          items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, isNot(contains('Длинное пояснение')));
+      expect(failure.message.length, lessThan(300));
+    });
+
+    test('ignores arXiv prose that is not an identifier', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              overview: 'По данным arXiv: см. таблицу 2 в приложении.',
+              items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(provider);
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      expect(digest.overview, contains('arXiv'));
+    });
+
+    test('accepts references to supplied papers in model text', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              overview:
+                  'See arXiv:2501.01234 and arxiv.org/abs/2501.01234v2 — '
+                  'the same work.',
+              items: <Map<String, Object?>>[
+                digestAnswerItem(
+                  '2501.01234',
+                  finding:
+                      'https://arxiv.org/abs/2501.01234 подтверждает вывод; '
+                      'см. также 2501.01234v2.',
+                ),
+              ],
+            ),
+          ),
+        );
+      final synthesizer = synthesizerFor(provider);
+
+      final digest = await synthesizer.synthesize(
+        requestFor(<Paper>[digestPaper()]),
+        model: digestModelA,
+        cancellation: CancellationSource().token,
+      );
+
+      expect(digest.overview, contains('2501.01234'));
+      expect(digest.items.single.finding, contains('2501.01234'));
+      expect(provider.requests, hasLength(1));
+    });
+
     test('rejects a duplicated item', () async {
       final failure = await failureFor(
         digestAnswerJson(
@@ -376,6 +576,32 @@ void main() {
         ],
       );
       expect(failure.kind, DigestFailureKind.provider);
+    });
+
+    test('rejects a model limitation that claims full-text review', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem('2501.01234', limitation: 'Полный PDF изучен.'),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
+      expect(failure.message, isNot(contains('Полный PDF')));
+    });
+
+    test('rejects an English full-text claim', () async {
+      final failure = await failureFor(
+        digestAnswerJson(
+          items: <Map<String, Object?>>[
+            digestAnswerItem(
+              '2501.01234',
+              limitation: 'The full text was reviewed.',
+            ),
+          ],
+        ),
+      );
+      expect(failure.kind, DigestFailureKind.modelResponse);
     });
   });
 

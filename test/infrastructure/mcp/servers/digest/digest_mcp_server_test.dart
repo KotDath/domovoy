@@ -184,6 +184,56 @@ void main() {
       },
     );
 
+    test(
+      'structuredContent and text keep the abstract boundary with a caveat',
+      () async {
+        final provider = digestProvider()
+          ..script(
+            digestModelAId,
+            digestTurn(
+              digestAnswerJson(
+                items: <Map<String, Object?>>[
+                  digestAnswerItem(
+                    '2501.01234',
+                    limitation: 'Нет данных о воспроизводимости.',
+                  ),
+                ],
+              ),
+            ),
+          );
+        final harness = await DigestHarness.start(
+          registry: digestRegistryWith(provider),
+          provider: provider,
+          pins: QueueDigestPinResolver(<DigestModelPin?>[
+            DigestModelPin(model: digestModelA),
+          ]),
+          clock: clock,
+        );
+        addTearDown(harness.close);
+
+        final result = await harness.call(
+          digestSummarizeToolName,
+          arguments: <String, Object?>{
+            'topic': 'Research topic',
+            'papers': <Object?>[digestPaper().toJson()],
+          },
+        );
+
+        expect(result.isError, isFalse);
+        final digest = Digest.fromJson(result.structuredContent);
+        expect(
+          digest.items.single.limitation,
+          startsWith(digestAbstractOnlyLimitation),
+        );
+        expect(
+          digest.items.single.limitation,
+          contains('Нет данных о воспроизводимости.'),
+        );
+        expect(result.textContent, contains('Изучена только аннотация'));
+        expect(result.textContent, contains('только по переданным аннотациям'));
+      },
+    );
+
     test('a two-paper result satisfies the advertised output schema', () async {
       final provider = digestProvider()
         ..script(
@@ -377,6 +427,41 @@ void main() {
       expect(result.isError, isTrue);
       expect(result.textContent, startsWith('[digest:model_response]'));
       expect(result.structuredContent, isNull);
+    });
+
+    test('rejects a foreign arXiv citation in model text', () async {
+      final provider = digestProvider()
+        ..script(
+          digestModelAId,
+          digestTurn(
+            digestAnswerJson(
+              overview: 'См. arXiv:2501.99999.',
+              items: <Map<String, Object?>>[digestAnswerItem('2501.01234')],
+            ),
+          ),
+        );
+      final harness = await DigestHarness.start(
+        registry: digestRegistryWith(provider),
+        provider: provider,
+        pins: QueueDigestPinResolver(<DigestModelPin?>[
+          DigestModelPin(model: digestModelA),
+        ]),
+        clock: clock,
+      );
+      addTearDown(harness.close);
+
+      final result = await harness.call(
+        digestSummarizeToolName,
+        arguments: <String, Object?>{
+          'topic': 'Research topic',
+          'papers': <Object?>[digestPaper().toJson()],
+        },
+      );
+
+      expect(result.isError, isTrue);
+      expect(result.textContent, startsWith('[digest:model_response]'));
+      expect(result.structuredContent, isNull);
+      expect(provider.requests, hasLength(1));
     });
 
     test('reports provider failures as isError results', () async {

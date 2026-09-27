@@ -7,11 +7,11 @@ import '../../../../core/research/research.dart';
 import 'digest_failure.dart';
 import 'digest_limits.dart';
 
-/// Limitation text the server adds when the model omitted one.
+/// Server-authored source boundary that starts every `DigestItem.limitation`.
 ///
-/// It is server-authored and always true for this tool: only the supplied
-/// abstracts were reviewed. It is never presented as something the model
-/// discovered.
+/// It is always true for this tool: only the supplied abstracts were reviewed.
+/// The note leads the field regardless of model output, so a model caveat can
+/// neither replace it nor make an unverified full-text claim look verified.
 const digestAbstractOnlyLimitation =
     'Изучена только аннотация arXiv; полный текст не проверялся.';
 
@@ -471,6 +471,9 @@ final class DigestSynthesizer {
 
   Digest _parseDigest(String answer, DigestSynthesisRequest request) {
     final json = _decodeAnswerObject(answer);
+    final expected = <String, Paper>{
+      for (final paper in request.papers) paper.arxivId.value: paper,
+    };
     final overviewRaw = json['overview'];
     if (overviewRaw is! String) {
       throwDigest(
@@ -492,6 +495,7 @@ final class DigestSynthesizer {
         '${limits.maxOverviewCharacters} символов.',
       );
     }
+    _requireNoForeignReferences(overview, 'overview', expected);
     final itemsRaw = json['items'];
     if (itemsRaw is! List || itemsRaw.isEmpty) {
       throwDigest(
@@ -499,10 +503,7 @@ final class DigestSynthesizer {
         'В ответе модели нет непустого массива "items".',
       );
     }
-    final expected = <String, Paper>{
-      for (final paper in request.papers) paper.arxivId.value: paper,
-    };
-    final parsed = <String, ({String finding, String? limitation})>{};
+    final parsed = <String, ({String finding, String limitation})>{};
     for (final rawItem in itemsRaw) {
       final item = asJsonObject(rawItem);
       if (item == null) {
@@ -550,7 +551,8 @@ final class DigestSynthesizer {
           'Поле "finding" для $id пустое.',
         );
       }
-      String? limitation;
+      _requireNoForeignReferences(finding, 'finding', expected);
+      String? modelLimitation;
       final limitationRaw = item['limitation'];
       if (limitationRaw != null) {
         if (limitationRaw is! String) {
@@ -566,10 +568,21 @@ final class DigestSynthesizer {
           id,
         );
         if (cleaned.isNotEmpty) {
-          limitation = cleaned;
+          _requireNoForeignReferences(cleaned, 'limitation', expected);
+          if (_claimsFullTextReview(cleaned)) {
+            throwDigest(
+              DigestFailureKind.modelResponse,
+              'Поле "limitation" для $id заявляет проверку полного текста, '
+              'хотя инструмент получает только аннотации.',
+            );
+          }
+          modelLimitation = cleaned;
         }
       }
-      parsed[id] = (finding: finding, limitation: limitation);
+      parsed[id] = (
+        finding: finding,
+        limitation: _limitationWithAbstractNote(modelLimitation),
+      );
     }
     final missing = expected.keys.where((id) => !parsed.containsKey(id));
     if (missing.isNotEmpty) {
@@ -583,9 +596,7 @@ final class DigestSynthesizer {
         DigestItem(
           arxivId: paper.arxivId.value,
           finding: parsed[paper.arxivId.value]!.finding,
-          limitation:
-              parsed[paper.arxivId.value]!.limitation ??
-              digestAbstractOnlyLimitation,
+          limitation: parsed[paper.arxivId.value]!.limitation,
         ),
     ];
     try {
@@ -680,7 +691,173 @@ final class DigestSynthesizer {
     }
     return cleaned;
   }
+
+  /// Rejects explicit arXiv references to papers outside the supplied set.
+  ///
+  /// `items[].arxivId` is already checked, but model-authored free text could
+  /// smuggle a foreign citation (`See arXiv:2501.99999`,
+  /// `https://arxiv.org/abs/2501.99999`, or a bare id) into the digest. The
+  /// check is structural: it guarantees that every arXiv identifier mentioned
+  /// in the digest belongs to the input, not that a natural-language claim is
+  /// factually supported by the abstract.
+  ///
+  /// Error text names only the offending normalized id, never the surrounding
+  /// model output, which stays out of traces.
+  void _requireNoForeignReferences(
+    String text,
+    String field,
+    Map<String, Paper> expected,
+  ) {
+    for (final reference in _arxivReferencesIn(text)) {
+      final String id;
+      try {
+        id = normalizeArxivId(reference);
+      } on ResearchException {
+        throwDigest(
+          DigestFailureKind.modelResponse,
+          'Поле "$field" содержит некорректную ссылку arXiv.',
+        );
+      }
+      if (!expected.containsKey(id)) {
+        throwDigest(
+          DigestFailureKind.modelResponse,
+          'Поле "$field" ссылается на статью вне входа: $id.',
+        );
+      }
+    }
+  }
+
+  /// Extracts explicit and clearly bounded arXiv references from [text].
+  ///
+  /// Order is irrelevant; duplicates of the same paper are allowed. The
+  /// extractor is deliberately conservative: it accepts `arXiv:<id>`,
+  /// `arxiv.org/abs/<id>` and bare modern ids whose `YYMM` prefix is a real
+  /// month and whose boundaries cannot be part of a longer number.
+  List<String> _arxivReferencesIn(String text) {
+    final references = <String>[];
+    void collect(RegExp pattern, int group) {
+      for (final match in pattern.allMatches(text)) {
+        final token = match.group(group);
+        if (token == null) {
+          continue;
+        }
+        final trimmed = token.replaceFirst(RegExp(r'[.,;:!?/)\]>»"]+$'), '');
+        if (trimmed.isNotEmpty && _looksLikeIdentifierToken(trimmed)) {
+          references.add(trimmed);
+        }
+      }
+    }
+
+    collect(_prefixedReferencePattern, 1);
+    collect(_absUrlReferencePattern, 1);
+    collect(_bareReferencePattern, 1);
+    return references;
+  }
+
+  /// True when a captured token carries at least one digit.
+  ///
+  /// `arXiv:` can appear in ordinary prose ("по данным arXiv: см. таблицу");
+  /// only id-shaped tokens are treated as references, so a missing digit is
+  /// not a malformed id and is ignored.
+  static bool _looksLikeIdentifierToken(String token) =>
+      RegExp(r'\d').hasMatch(token);
+
+  /// True when [text] claims that the full paper (not the abstract) was read.
+  ///
+  /// Only unambiguous assertions are rejected; ambiguous phrasing stays
+  /// allowed because [digestAbstractOnlyLimitation] always leads the field
+  /// and therefore keeps the true source boundary visible.
+  bool _claimsFullTextReview(String text) {
+    for (final pattern in _fullTextClaimPatterns) {
+      if (pattern.hasMatch(text)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Builds the limitation of one item.
+  ///
+  /// The server-authored abstract-only note always comes first, so a Digest
+  /// item can never present a model caveat as if the full text had been
+  /// verified. A model limitation may only be appended inside the field limit.
+  String _limitationWithAbstractNote(String? modelLimitation) {
+    final base = digestAbstractOnlyLimitation;
+    final limit = limits.maxLimitationCharacters;
+    if (base.length >= limit) {
+      return base.substring(0, limit);
+    }
+    if (modelLimitation == null || modelLimitation.isEmpty) {
+      return base;
+    }
+    const separator = ' ';
+    final available = limit - base.length - separator.length;
+    if (available <= 0) {
+      return base;
+    }
+    final clipped = modelLimitation.length <= available
+        ? modelLimitation
+        : '${modelLimitation.substring(0, available - 1)}…';
+    return '$base$separator$clipped';
+  }
 }
+
+/// Explicit `arXiv:<id>` mention; the id token is validated afterwards.
+final RegExp _prefixedReferencePattern = RegExp(
+  r'arxiv\s*:\s*([^\s,;:)\]}"<>«»]+)',
+  caseSensitive: false,
+);
+
+/// Explicit `arxiv.org/abs/<id>` mention.
+final RegExp _absUrlReferencePattern = RegExp(
+  r'arxiv\.org/abs/([^\s,;:)\]}"<>«»?#]+)',
+  caseSensitive: false,
+);
+
+/// Bare modern id with a real month prefix and non-embedded boundaries.
+final RegExp _bareReferencePattern = RegExp(
+  r'(?<![A-Za-z0-9._/-])'
+  r'(\d{2}(?:0[1-9]|1[0-2])\.\d{4,5}(?:v\d{1,4})?)'
+  r'(?![A-Za-z0-9]|\.\d)',
+);
+
+/// Unambiguous claims that the full text (not the abstract) was reviewed.
+///
+/// Cyrillic words use explicit `[а-яё]` classes: Dart's `\w` is ASCII-only
+/// and would silently stop at the first non-Latin letter.
+final List<RegExp> _fullTextClaimPatterns = <RegExp>[
+  RegExp(
+    r'полн[а-яё]*\s+(текст|pdf|стать[а-яё]*)[^.]{0,40}'
+    r'(изучен|прочитан|проверен|разобран|использ)',
+    caseSensitive: false,
+  ),
+  RegExp(
+    r'(изучен|прочитан|проверен|разобран|использ)[а-яё]*\s+'
+    r'полн[а-яё]*\s+(текст|pdf|стать[а-яё]*)',
+    caseSensitive: false,
+  ),
+  RegExp(
+    r'(основан|базируется|опирается)[а-яё]*[^.]{0,30}'
+    r'полн[а-яё]*\s+(текст|pdf|стать[а-яё]*)',
+    caseSensitive: false,
+  ),
+  RegExp(
+    r'(full[-\s]?text|entire\s+(paper|article|text|document)|'
+    r'whole\s+(paper|article|pdf))[^.]{0,40}'
+    r'(read|reviewed|analy[sz]ed|studied|used)',
+    caseSensitive: false,
+  ),
+  RegExp(
+    r'(read|reviewed|analy[sz]ed|studied|used)\s+the\s+'
+    r'(full|entire|whole)\s+(text|paper|article|pdf|document)',
+    caseSensitive: false,
+  ),
+  RegExp(
+    r'(based\s+on|from)\s+the\s+(full|entire|whole)\s+'
+    r'(text|paper|article|pdf)',
+    caseSensitive: false,
+  ),
+];
 
 /// Cleans model-authored text before it becomes part of a `Digest`.
 String _cleanText(String value) => value
