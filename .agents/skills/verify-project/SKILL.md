@@ -84,5 +84,7 @@ required checks remain unverified. Confirm working sources were preserved.
 
 Do not silently format, regenerate, weaken rules, add packages, or substitute
 versions. On failure, report the concrete next repair step for the implementing
-task. If the skill itself changed, also run the installed `skill-creator`
-`quick_validate.py` against its folder; this checks skill structure, not behavior.
+task. If the skill itself changed, also validate its Agent Skills frontmatter:
+`name`, `description`, and a name matching the skill directory. Use an available
+Agent Skills validator when present; validation must not require a Codex-specific
+installation. Structural validation does not prove the skill's behavior.

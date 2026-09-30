@@ -85,7 +85,8 @@ requires explicit user approval; update this table and the manifest together.
 - Keep `package:flutter_lints/flutter.yaml`; do not weaken lint settings just
   to make checks pass.
 - Before completing code, dependency, architecture, or platform changes, use
-  the project skill `.agents/skills/verify-project/SKILL.md` (`$verify-project`).
+  the project skill `.agents/skills/verify-project/SKILL.md`. Load it through
+  your agent's native skill mechanism, or read the file directly if unavailable.
   It reports results and does not repair working files.
 - Format implementation changes with `dart format .`. Required code checks:
   `dart format --output=none --set-exit-if-changed lib test`,
@@ -102,6 +103,21 @@ requires explicit user approval; update this table and the manifest together.
   migration entries when updating `.metadata`. Generated RPMs and build caches
   stay untracked. An RPM build alone does not certify on-device behavior.
 - Use Conventional Commits, e.g. `chore(project): define project invariants`.
+
+## Shared agent instructions and skills
+
+- Maintain project skills in `.agents/skills/` using the Agent Skills format
+  (`<name>/SKILL.md` with `name` and `description` frontmatter).
+- Codex, OpenCode, and Pi discover this directory directly. Claude Code uses
+  `.claude/skills`, a relative symlink to the same directory. Add future skills
+  to the shared directory; keep one maintained copy of each skill.
+- Keep `AGENTS.md` as the single repository contract. All agents must load it
+  before project work and use `.agents/skills/` or their supported skill-path
+  configuration. Native Claude Code loading of `AGENTS.md` requires 2.1.277
+  or later; load it explicitly when using an older version.
+- Invoke `verify-project` as `$verify-project` in Codex,
+  `/verify-project` in Claude Code, `/skill:verify-project` in Pi, or through
+  OpenCode's `skill` tool. Other agents can read its `SKILL.md` directly.
 
 ## Accepted Aurora RPM diagnostics
 
