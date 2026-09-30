@@ -33,6 +33,9 @@ migration:
     - platform: windows
       create_revision: f5a8537f90d143abd5bb2f658fa69c388da9677b
       base_revision: f5a8537f90d143abd5bb2f658fa69c388da9677b
+    - platform: aurora
+      create_revision: a0d3b222d7f9dd055cab6173011a147ac7e0c873
+      base_revision: a0d3b222d7f9dd055cab6173011a147ac7e0c873
 
   # User provided section
 

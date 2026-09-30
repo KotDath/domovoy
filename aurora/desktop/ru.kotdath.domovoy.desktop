@@ -1,0 +1,14 @@
+# This file will be recreated at the next build. To avoid this, delete this line.
+
+[Desktop Entry]
+Type=Application
+Name=domovoy
+Comment=Personal AI assistant.
+Icon=ru.kotdath.domovoy
+Exec=/usr/bin/ru.kotdath.domovoy
+X-Nemo-Application-Type=silica-qt5
+
+[X-Application]
+Permissions=
+OrganizationName=ru.kotdath
+ApplicationName=domovoy
