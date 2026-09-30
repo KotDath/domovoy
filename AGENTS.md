@@ -102,3 +102,24 @@ requires explicit user approval; update this table and the manifest together.
   migration entries when updating `.metadata`. Generated RPMs and build caches
   stay untracked. An RPM build alone does not certify on-device behavior.
 - Use Conventional Commits, e.g. `chore(project): define project invariants`.
+
+## Accepted Aurora RPM diagnostics
+
+Ignore the following existing `rpmlint` diagnostics from the Flutter Aurora
+3.41.4 template with PSDK 5.2.0.180, including those labelled `E` by the tool.
+They are accepted, do not fail project verification, and do not require repairs
+or repeated warnings in routine reports.
+
+| Diagnostic | Accepted occurrence |
+| --- | --- |
+| `arch-dependent-file-in-usr-share` | `libapp.so`, `libaurora_embedder.so`, and `libflutter_engine.so` under `/usr/share/ru.kotdath.domovoy/lib/` |
+| `shared-library-without-dependency-information` | The generated `libapp.so` |
+| `no-changelogname-tag` | The application's generated RPM spec without `%changelog` |
+| `unstripped-binary-or-object` | `/usr/bin/ru.kotdath.domovoy` |
+| `summary-ended-with-dot` | The application summary `Personal AI assistant.` |
+| `no-url-tag` | The application's generated RPM spec without a URL |
+| `no-soname` | The generated `libapp.so` |
+| `hidden-file-or-dir` | `/usr/share/ru.kotdath.domovoy/flutter_assets/.last_build_id` |
+
+Apply these exceptions when interpreting output; keep the SDK and `rpmlint`
+configuration unchanged. Evaluate diagnostics outside this list normally.

@@ -64,6 +64,10 @@ updates. Use the upstream SDK's Dart for formatting and codegen as well.
   macOS, and Aurora; native changes require their affected targets. Windows/macOS
   need suitable hosts. Use debug standard builds and the documented release Aurora
   baseline. Report unavailable hosts/tools explicitly.
+- Apply the accepted Aurora RPM diagnostics in `AGENTS.md` when interpreting
+  `rpmlint` output. Those occurrences do not fail verification, trigger repairs,
+  or appear as violations in routine reports. Preserve raw tool output and
+  evaluate other diagnostics normally; do not change SDK or linter configuration.
 - If the app does not yet use approved libraries, a plain scaffold build does not
   test them. Add a separate temporary smoke entrypoint using generated Riverpod,
   typed auto_route, and `http` stream/cancellation APIs, then generate/analyze/build
