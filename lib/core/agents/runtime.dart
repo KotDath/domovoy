@@ -3406,7 +3406,6 @@ final class _LiveRun implements AgentRun {
             ),
           );
         }
-        request = _providerRequest();
       }
       request = _providerRequest();
       _runModelTurns += 1;

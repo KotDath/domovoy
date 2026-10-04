@@ -162,6 +162,7 @@ final class RagChatController extends ChangeNotifier
       progress = 'Найдено источников: ${prepared.evidence.length}';
       _notify();
       return ChatPreparedRun(
+        recordCompletedTurn: !neutral,
         options: AgentRunOptions(
           maxModelTurns: QuotaOverride.value(1),
           maxToolCalls: QuotaOverride.value(0),
@@ -254,9 +255,25 @@ final class RagChatController extends ChangeNotifier
               history = await traces.list(project, session);
               _notify();
             }
+          } on Object {
+            final accepted = ledger.any(
+              (item) =>
+                  item.entry.outcome == AgentModelInvocationOutcome.completed &&
+                  item.entry.responseMessageId != null,
+            );
+            error = accepted
+                ? 'Ответ сохранён в истории, но связь с источниками '
+                      'не удалось сохранить. Трасса запроса сохранена отдельно.'
+                : 'Не удалось сохранить результат попытки в RAG-трассе. '
+                      'Трасса запроса сохранена отдельно.';
+            _notify();
           } finally {
             busy = false;
-            progress = 'Ответ завершён';
+            progress = terminal is AgentRunCompleted
+                ? 'Ответ завершён'
+                : terminal is AgentRunCancelled || terminal == null
+                ? 'Подготовка или ответ отменены'
+                : 'Ответ не завершён';
             _notify();
           }
         },

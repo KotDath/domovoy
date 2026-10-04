@@ -501,6 +501,53 @@ void main() {
       );
     });
 
+    test(
+      'trusted support alias restores roots but leaf links stay denied',
+      () async {
+        final temporary = await Directory.systemTemp.createTemp(
+          'domovoy-root-alias-',
+        );
+        addTearDown(() => temporary.delete(recursive: true));
+        final support = await Directory(
+          '${temporary.path}/real-support',
+        ).create();
+        final alias = await Link(
+          '${temporary.path}/support-alias',
+        ).create(support.path);
+        final project = ProjectId('default');
+        IoMobileProjectSandbox sandbox() => IoMobileProjectSandbox(
+          platformKind: ProjectPlatformKind.android,
+          applicationSupportDirectoryResolver: () async =>
+              Directory(alias.path),
+        );
+        final created = await sandbox().createRoot(project);
+        expect(
+          (await sandbox().currentRoot(project))!.fingerprint,
+          created.fingerprint,
+        );
+        final provisioner = MobileSandboxProjectRootProvisioner(
+          capabilities: ProjectPlatformCapabilities.android,
+          sandbox: sandbox(),
+        );
+        expect(
+          await provisioner.revalidateRoot(
+            rootId: ProjectRootId('default'),
+            projectId: project,
+          ),
+          ProjectAccessStatus.active,
+        );
+        final leaf = Directory(
+          '${support.path}/project-sandbox-roots-v1/default',
+        );
+        await leaf.delete();
+        final outside = await Directory('${temporary.path}/outside').create();
+        await Link(leaf.path).create(outside.path);
+        expect(await sandbox().currentRoot(project), isNull);
+        expect(await sandbox().removeIfEmpty(project, created), false);
+        expect(await outside.exists(), true);
+      },
+    );
+
     test('web adapter writes nothing', () async {
       final provisioner = WebUnsupportedProjectRootProvisioner();
       final staged = await provisioner.stageRoot(

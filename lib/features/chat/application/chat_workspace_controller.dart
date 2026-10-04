@@ -534,7 +534,9 @@ final class ChatWorkspaceController {
         return const ChatCommandResult.cancelled();
       }
       if (event is AgentRunCompleted) {
-        final callback = prepared == null ? onTurnCompleted : null;
+        final callback = prepared?.recordCompletedTurn == false
+            ? null
+            : onTurnCompleted;
         if (callback != null) {
           unawaited(
             Future<void>.sync(

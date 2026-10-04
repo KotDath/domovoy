@@ -8,7 +8,9 @@ import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/projects/ids.dart';
 import 'package:domovoy/core/rag/models.dart';
+import 'package:domovoy/core/rag/evidence_coverage.dart';
 import 'package:domovoy/core/rag/turn.dart';
+import 'package:domovoy/design_system/design_system.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_controller.dart';
 import 'package:domovoy/features/chat/presentation/chat_workspace_page.dart';
 import 'package:domovoy/features/knowledge/application/knowledge_controller.dart';
@@ -101,12 +103,14 @@ void main() {
         runPreparer: rag,
       );
       addTearDown(chat.dispose);
+      await tester.runAsync(chat.initialize);
       await tester.pumpWidget(
         MaterialApp(
+          theme: DomovoyTheme.light(),
+          darkTheme: DomovoyTheme.dark(),
           home: ChatWorkspacePage(controller: chat, ragChat: rag),
         ),
       );
-      await tester.runAsync(chat.initialize);
       final golden = File('eval/rag/golden_questions.jsonl')
           .readAsLinesSync()
           .where((l) => l.isNotEmpty)
@@ -136,9 +140,10 @@ void main() {
               : ChunkStrategy.structure,
         );
         for (final question in golden) {
-          await tester.runAsync(
+          final created = await tester.runAsync(
             () => chat.createChat(projectId: ProjectId(project)),
           );
+          expect(created!.isSuccess, isTrue, reason: chat.state.error?.message);
           await tester.pump();
           final session = chat.state.selectedSession!;
           expect(session.transcript.messages, isEmpty);
@@ -238,23 +243,12 @@ void main() {
   );
 }
 
-bool _covered(Map unit, List candidates) {
-  var cursor = unit['start_utf16'] as int;
-  final end = unit['end_utf16'] as int;
-  final chunks =
-      candidates
-          .map((c) => c['chunk'] as Map)
-          .where(
-            (c) =>
-                c['document'] == unit['document_id'] &&
-                c['revision'] == unit['document_revision'],
-          )
-          .toList()
-        ..sort((a, b) => (a['start'] as int).compareTo(b['start'] as int));
-  for (final chunk in chunks) {
-    if ((chunk['start'] as int) > cursor) break;
-    if ((chunk['end'] as int) > cursor) cursor = chunk['end'] as int;
-    if (cursor >= end) return true;
-  }
-  return false;
-}
+bool _covered(Map unit, List candidates) => ragEvidenceCoversSpan(
+  documentId: unit['document_id'] as String,
+  revision: unit['document_revision'] as String,
+  start: unit['start_utf16'] as int,
+  end: unit['end_utf16'] as int,
+  chunks: candidates.map(
+    (c) => RagChunk.fromJson(Map<String, dynamic>.from(c['chunk'] as Map)),
+  ),
+);
