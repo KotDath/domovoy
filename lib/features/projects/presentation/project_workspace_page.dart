@@ -1,3 +1,4 @@
+import '../../knowledge/application/rag_chat_controller.dart';
 import 'package:flutter/material.dart';
 
 import '../../chat/presentation/chat_workspace_page.dart';
@@ -20,6 +21,7 @@ class ProjectWorkspacePage extends StatelessWidget {
     this.onOpenTasks,
     this.onOpenLibrary,
     this.onOpenKnowledge,
+    this.ragChat,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -35,6 +37,7 @@ class ProjectWorkspacePage extends StatelessWidget {
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
   final VoidCallback? onOpenKnowledge;
+  final RagChatController? ragChat;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -52,6 +55,7 @@ class ProjectWorkspacePage extends StatelessWidget {
       onOpenTasks: onOpenTasks,
       onOpenLibrary: onOpenLibrary,
       onOpenKnowledge: onOpenKnowledge,
+      ragChat: ragChat,
       onOpenMcpConnections: onOpenMcpConnections,
     );
   }

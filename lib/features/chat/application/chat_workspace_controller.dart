@@ -8,6 +8,7 @@ import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 import '../domain/chat_deletion_intent.dart';
 import 'chat_stream_pacing.dart';
 import 'chat_workspace_state.dart';
+import 'chat_run_preparer.dart';
 
 abstract interface class ChatSettingsLauncher {
   Future<void> openSettings();
@@ -27,6 +28,7 @@ final class ChatWorkspaceController {
     this.chatDeliveries,
     this.runToolContexts,
     this.additionalRunTools,
+    this.runPreparer,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
     AgentClock? clock,
@@ -64,6 +66,8 @@ final class ChatWorkspaceController {
   /// tools are added to the one run and checked again by the live policy.
   final List<ToolId> Function(AgentSessionSnapshot snapshot)?
   additionalRunTools;
+  final ChatRunPreparer? runPreparer;
+  CancellationSource? _preparing;
 
   final ChatStreamPacingPolicy pacingPolicy;
   final ChatStreamScheduler scheduler;
@@ -421,6 +425,12 @@ final class ChatWorkspaceController {
     int generation,
   ) async {
     AgentRunEvent? terminal;
+    ChatPreparedRun? prepared;
+    var preparedSettled = false;
+    final done = Completer<void>();
+    _activeRunDone = done;
+    final preparing = CancellationSource();
+    _preparing = preparing;
     // App-owned context of this run: registers the digest model pin for the
     // session's current model and releases it when the run settles, including
     // cancellation and failure paths.
@@ -428,21 +438,31 @@ final class ChatWorkspaceController {
       model: session.snapshot.selection.model,
     );
     try {
-      final extraTools =
-          additionalRunTools?.call(session.snapshot) ?? const <ToolId>[];
+      prepared = await runPreparer?.prepare(
+        session.snapshot,
+        input,
+        preparing.token,
+      );
+      if (!_isCurrent(generation) || preparing.token.isCancelled) {
+        return const ChatCommandResult.cancelled();
+      }
+      _preparing = null;
+      final extraTools = prepared == null
+          ? additionalRunTools?.call(session.snapshot) ?? const <ToolId>[]
+          : const <ToolId>[];
       final run = session.run(
         input,
         titlePolicy: titlePolicy,
-        options: runContext == null && extraTools.isEmpty
-            ? null
-            : AgentRunOptions(
-                toolContext: runContext,
-                additionalEnabledTools: extraTools,
-              ),
+        options:
+            prepared?.options ??
+            (runContext == null && extraTools.isEmpty
+                ? null
+                : AgentRunOptions(
+                    toolContext: runContext,
+                    additionalEnabledTools: extraTools,
+                  )),
       );
       _activeRun = run;
-      final done = Completer<void>();
-      _activeRunDone = done;
       _emit(
         _state.copyWith(
           selectedSession: session.snapshot,
@@ -495,6 +515,8 @@ final class ChatWorkspaceController {
       }
       _emit(_state.copyWith(selectedSession: session.snapshot));
       final event = terminal;
+      preparedSettled = true;
+      await prepared?.onSettled?.call(session.snapshot, event);
       if (event is AgentRunFailed &&
           event.error.kind == AgentErrorKind.conflict) {
         await _recoverSelected(session.id, generation);
@@ -512,7 +534,7 @@ final class ChatWorkspaceController {
         return const ChatCommandResult.cancelled();
       }
       if (event is AgentRunCompleted) {
-        final callback = onTurnCompleted;
+        final callback = prepared == null ? onTurnCompleted : null;
         if (callback != null) {
           unawaited(
             Future<void>.sync(
@@ -523,8 +545,19 @@ final class ChatWorkspaceController {
       }
       return const ChatCommandResult.succeeded();
     } on Object catch (error) {
+      if (preparing.token.isCancelled) {
+        return const ChatCommandResult.cancelled();
+      }
       return _recordFailure(error, generation);
     } finally {
+      if (!preparedSettled) {
+        try {
+          await prepared?.onSettled?.call(session.snapshot, terminal);
+        } on Object {
+          /* Main failure remains authoritative. */
+        }
+      }
+      _preparing = null;
       _activeRun = null;
       final done = _activeRunDone;
       if (done != null && !done.isCompleted) {
@@ -547,6 +580,16 @@ final class ChatWorkspaceController {
     }
     final run = _activeRun;
     final selection = _activeSelection;
+    final preparing = _preparing;
+    if (preparing != null) {
+      preparing.cancel();
+      awaitPreparation() async {
+        await _activeRunDone?.future;
+        return const ChatCommandResult.cancelled();
+      }
+
+      return awaitPreparation();
+    }
     if (run == null && selection == null) {
       return Future<ChatCommandResult>.value(
         const ChatCommandResult.unchanged(),
@@ -949,6 +992,8 @@ final class ChatWorkspaceController {
     }
     _disposed = true;
     _generation += 1;
+    _preparing?.cancel();
+    if (_preparing != null) await _activeRunDone?.future;
     _cancelScheduledNotification();
     await _providerCatalogSubscription?.cancel();
     await _deliverySubscription?.cancel();
