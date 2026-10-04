@@ -16,6 +16,12 @@ import 'core/personalization/personalization.dart';
 import 'design_system/design_system.dart';
 import 'features/chat/application/chat_workspace_controller.dart';
 import 'features/chat/presentation/chat_workspace_page.dart';
+import 'features/knowledge/application/knowledge_controller.dart';
+import 'features/knowledge/presentation/knowledge_page.dart';
+import 'infrastructure/rag/document_importer.dart';
+import 'infrastructure/rag/jsonl_rag_repository.dart';
+import 'infrastructure/rag/model_service_client.dart';
+import 'infrastructure/rag/rag_storage_factory.dart';
 import 'features/library/application/library_controller.dart';
 import 'features/library/presentation/library_page.dart';
 import 'features/mcp/mcp.dart';
@@ -688,6 +694,7 @@ final class DomovoyDependencies {
     DeepSeekModelSettingsStore? modelSettingsStore,
     http.Client? httpClient,
     this.disposeCallback,
+    this.knowledge,
   }) : modelSettingsStore =
            modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
        _httpClient = httpClient;
@@ -828,6 +835,7 @@ final class DomovoyDependencies {
       toggles: memoryToggles,
       extraction: memoryExtraction,
     );
+    final ragStorage = createRagStorage();
     return DomovoyDependencies(
       runtime: stack.runtime,
       registry: stack.registry,
@@ -846,6 +854,23 @@ final class DomovoyDependencies {
       profileController: profileController,
       profileInterviewLlm: profileInterviewLlm,
       mcp: mcp,
+      knowledge: ragStorage == null
+          ? null
+          : KnowledgeController(
+              repository: JsonlRagRepository(ragStorage),
+              models: RagModelServiceClient(
+                client,
+                Uri.parse(
+                  const String.fromEnvironment(
+                    'RAG_MODEL_BASE_URL',
+                    defaultValue: kDebugMode
+                        ? 'http://127.0.0.1:8765'
+                        : 'https://localhost:8765',
+                  ),
+                ),
+              ),
+              importer: NativeRagDocumentImporter(client),
+            ),
     );
   }
 
@@ -865,6 +890,7 @@ final class DomovoyDependencies {
   final ProfileController? profileController;
   final ProfileInterviewLlm? profileInterviewLlm;
   final DomovoyMcpComposition? mcp;
+  final KnowledgeController? knowledge;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -886,6 +912,7 @@ final class DomovoyDependencies {
   Future<void> _close() async {
     AgentError? firstError;
     try {
+      knowledge?.dispose();
       memoryInspector?.dispose();
       profileController?.dispose();
     } on Object catch (error) {
@@ -1063,6 +1090,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               mcpToolAccess: widget.dependencies.mcp?.feature.toolAccess,
               onOpenTasks: _openTasks,
               onOpenLibrary: _openLibrary,
+              onOpenKnowledge: _openKnowledge,
               onOpenMcpConnections: _openMcpConnections,
             )
           : ProjectWorkspacePage(
@@ -1076,6 +1104,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               mcpToolAccess: widget.dependencies.mcp?.feature.toolAccess,
               onOpenTasks: _openTasks,
               onOpenLibrary: _openLibrary,
+              onOpenKnowledge: _openKnowledge,
               onOpenMcpConnections: _openMcpConnections,
             ),
     );
@@ -1096,6 +1125,18 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
         composition: composition,
       ),
     );
+  }
+
+  VoidCallback? get _openKnowledge {
+    final knowledge = widget.dependencies.knowledge;
+    if (knowledge == null) return null;
+    return () {
+      final projectId =
+          _projectController?.state.selectedProjectId?.value ?? 'default';
+      knowledge.initialize(projectId: projectId).then((_) {
+        if (mounted) _pushSection(KnowledgePage(controller: knowledge));
+      });
+    };
   }
 
   VoidCallback? get _openLibrary {
