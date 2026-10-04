@@ -24,6 +24,7 @@ class ChatSidebar extends StatelessWidget {
     this.providersSelected = false,
     this.onOpenTasks,
     this.onOpenLibrary,
+    this.onOpenKnowledge,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -47,6 +48,7 @@ class ChatSidebar extends StatelessWidget {
   final bool providersSelected;
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenKnowledge;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -212,6 +214,25 @@ class ChatSidebar extends StatelessWidget {
                         ),
                       ],
                     ),
+                  ),
+                ),
+              if (onOpenKnowledge != null)
+                DomovoyQuietButton(
+                  key: const ValueKey('open-knowledge'),
+                  onPressed: onOpenKnowledge,
+                  expand: true,
+                  child: const Row(
+                    children: [
+                      Icon(Icons.menu_book_outlined),
+                      SizedBox(width: DomovoyDimensions.space3),
+                      Expanded(
+                        child: Text(
+                          'База знаний',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               if (onOpenLibrary != null)

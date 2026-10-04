@@ -40,8 +40,12 @@ dependencies:
   shared_preferences: ^2.5.3
   timezone: ^0.11.1
   url_launcher: ^6.3.2
+  crypto: ^3.0.7
+  pdfrx: ^2.4.7
 
 dev_dependencies:
+  integration_test:
+    sdk: flutter
   flutter_test:
     sdk: flutter
   shared_preferences_web: ^2.4.3
@@ -60,6 +64,8 @@ dev_dependencies:
 flutter:
   assets:
     - assets/models_fallback.json
+    - assets/rag_demo/
+    - assets/rag_demo/docs/
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

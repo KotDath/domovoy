@@ -19,6 +19,7 @@ class ProjectWorkspacePage extends StatelessWidget {
     this.mcpToolAccess,
     this.onOpenTasks,
     this.onOpenLibrary,
+    this.onOpenKnowledge,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -33,6 +34,7 @@ class ProjectWorkspacePage extends StatelessWidget {
   final McpToolAccessController? mcpToolAccess;
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenKnowledge;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -49,6 +51,7 @@ class ProjectWorkspacePage extends StatelessWidget {
       mcpToolAccess: mcpToolAccess,
       onOpenTasks: onOpenTasks,
       onOpenLibrary: onOpenLibrary,
+      onOpenKnowledge: onOpenKnowledge,
       onOpenMcpConnections: onOpenMcpConnections,
     );
   }

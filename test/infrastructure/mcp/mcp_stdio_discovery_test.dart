@@ -41,7 +41,6 @@ void main() {
       final config = stdioConfig(
         id: 'stdio-delayed',
         args: const <String>[
-          'run',
           'test/support/mcp_fixtures/stdio_fixture_server.dart',
         ],
         environment: const <String, String>{
@@ -83,7 +82,6 @@ void main() {
       final config = stdioConfig(
         id: 'stdio-legacy',
         args: const <String>[
-          'run',
           'test/support/mcp_fixtures/legacy_stdio_fixture_server.dart',
         ],
       );

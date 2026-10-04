@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/mcp_fakes.dart';
 
-/// Real stdio integration: spawns the fixture server with `dart run`,
+/// Real stdio integration: spawns the fixture script directly with `dart` (without native build hooks),
 /// negotiates MCP, lists and calls tools, and checks environment isolation.
 ///
 /// The fixture reports whether `DEEPSEEK_API_KEY` and
@@ -34,7 +34,6 @@ void main() {
       transport: McpStdioTransportConfig(
         command: 'dart',
         args: const <String>[
-          'run',
           'test/support/mcp_fixtures/stdio_fixture_server.dart',
         ],
         environment: const <String, String>{
@@ -116,7 +115,6 @@ void main() {
         transport: McpStdioTransportConfig(
           command: 'dart',
           args: const <String>[
-            'run',
             'test/support/mcp_fixtures/stdio_fixture_server.dart',
           ],
           environment: const <String, String>{

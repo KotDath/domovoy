@@ -45,6 +45,7 @@ class ChatWorkspacePage extends StatefulWidget {
     this.mcpToolAccess,
     this.onOpenTasks,
     this.onOpenLibrary,
+    this.onOpenKnowledge,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -64,6 +65,7 @@ class ChatWorkspacePage extends StatefulWidget {
   /// Navigation of the composed sections; null hides the entry point.
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenKnowledge;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -261,6 +263,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
             ),
       onOpenTasks: widget.onOpenTasks,
       onOpenLibrary: widget.onOpenLibrary,
+      onOpenKnowledge: widget.onOpenKnowledge,
       onOpenMcpConnections: widget.onOpenMcpConnections,
     );
   }

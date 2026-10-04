@@ -43,6 +43,7 @@ class WorkspaceShell extends StatefulWidget {
     this.headerAction,
     this.onOpenTasks,
     this.onOpenLibrary,
+    this.onOpenKnowledge,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -86,6 +87,7 @@ class WorkspaceShell extends StatefulWidget {
   /// Composed sections opened from the sidebar; null hides the entry point.
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
+  final VoidCallback? onOpenKnowledge;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -135,6 +137,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       providersSelected: widget.providersSelected,
       onOpenTasks: widget.onOpenTasks,
       onOpenLibrary: widget.onOpenLibrary,
+      onOpenKnowledge: widget.onOpenKnowledge,
       onOpenMcpConnections: widget.onOpenMcpConnections,
     );
     return CallbackShortcuts(

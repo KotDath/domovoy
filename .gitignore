@@ -47,3 +47,8 @@ app.*.map.json
 # Eclipse / Buildship leftovers
 android/.project
 android/.settings/
+
+# Local credentials and Python caches
+.env
+.env.*
+__pycache__/

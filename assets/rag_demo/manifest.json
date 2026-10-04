@@ -1,0 +1,74 @@
+[
+  {
+    "source": "README.md",
+    "asset": "assets/rag_demo/README.md",
+    "sha256": "997bf6b6688d961ac0aa6cad6fc53171acd4b6833f37a3fd714857461ab50b01",
+    "revision": "f159084"
+  },
+  {
+    "source": "AGENTS.md",
+    "asset": "assets/rag_demo/AGENTS.md",
+    "sha256": "40ad44daaae5cc0ed79d33324ea73dcd1687b3bfb62ad4531285d8563d5a50cc",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/architecture.md",
+    "asset": "assets/rag_demo/docs/architecture.md",
+    "sha256": "4de8beced6d63db7e28261a65bf48248e1bccbf5ffc2bb905c57a3b56c84967e",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/memory.md",
+    "asset": "assets/rag_demo/docs/memory.md",
+    "sha256": "e15ec060b3e02b5a37c2e2dba5d4cef9f207787aca678070bcdb0886c2c48441",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/personalization.md",
+    "asset": "assets/rag_demo/docs/personalization.md",
+    "sha256": "238f4627dcdc1ce980e434b1221620fa08d46151c90baae224dd2af790094494",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/automation-user-guide.md",
+    "asset": "assets/rag_demo/docs/automation-user-guide.md",
+    "sha256": "0bceca484ae58401c6ae174ab84f644546a1ffcd5b7e95c25ca2e40587925551",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/mcp-b1-platform-spike.md",
+    "asset": "assets/rag_demo/docs/mcp-b1-platform-spike.md",
+    "sha256": "dd4125077e81ed46f6b663da61e9296e22e8f700bd88553b2cd196dce2d6f960",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/mcp-b2-agent-bridge.md",
+    "asset": "assets/rag_demo/docs/mcp-b2-agent-bridge.md",
+    "sha256": "bfab01dacad80da4ece9a781ef83a0437c316970a1bf1dd02e445fcd00fa50af",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/mcp-b3-arxiv-server.md",
+    "asset": "assets/rag_demo/docs/mcp-b3-arxiv-server.md",
+    "sha256": "7b1daf627dd83b8bca332b239398b6df568d55eca2c6fb38c67944ca487e156f",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/mcp-b4-digest-server.md",
+    "asset": "assets/rag_demo/docs/mcp-b4-digest-server.md",
+    "sha256": "5081f3f907d035193410927a285aa568cb96cc69b212ec01fa19c7c54e81f7d6",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/mcp-b5-library-server.md",
+    "asset": "assets/rag_demo/docs/mcp-b5-library-server.md",
+    "sha256": "ec450a92c086b9fc883ddd370cc1395393df4f8dd358cf51aa7380b92945ec2f",
+    "revision": "f159084"
+  },
+  {
+    "source": "docs/mcp-b6-automation.md",
+    "asset": "assets/rag_demo/docs/mcp-b6-automation.md",
+    "sha256": "7171861125e8f60dabe71451215ad4c868404d2f5ca505d72c91947d9dee1c73",
+    "revision": "f159084"
+  }
+]
