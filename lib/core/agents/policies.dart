@@ -4,6 +4,7 @@ import '../llm/json.dart';
 import 'errors.dart';
 import 'ids.dart';
 import 'run_context.dart';
+import 'prepared_context.dart';
 
 enum ToolPermission { allow, deny, ask }
 
@@ -317,6 +318,7 @@ final class AgentRunOptions {
     this.reasoning,
     this.typedInput,
     this.toolContext,
+    this.preparedContext,
     Iterable<ToolId> additionalEnabledTools = const <ToolId>[],
   }) : additionalEnabledTools = List<ToolId>.unmodifiable(
          additionalEnabledTools,
@@ -353,6 +355,7 @@ final class AgentRunOptions {
   final QuotaOverride<int>? noProgressStop;
   final AgentReasoningOverride? reasoning;
   final Object? typedInput;
+  final AgentPreparedContext? preparedContext;
 
   /// App-owned context of this exact run (B4 digest pin scope, B5 scheduled
   /// run id binding). Copied into every [ToolInvocation] of the run; never

@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import 'core/rag/turn.dart';
+import 'features/knowledge/application/rag_chat_controller.dart';
+import 'infrastructure/rag/jsonl_rag_trace_repository.dart';
 import 'core/agents/agents.dart';
 import 'core/automation/automation.dart';
 import 'core/environment/platform_environment_reader.dart';
@@ -695,6 +698,7 @@ final class DomovoyDependencies {
     http.Client? httpClient,
     this.disposeCallback,
     this.knowledge,
+    this.ragChat,
   }) : modelSettingsStore =
            modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
        _httpClient = httpClient;
@@ -745,20 +749,21 @@ final class DomovoyDependencies {
     // The interactive policy starts fail-closed and is replaced by the MCP
     // composition below; no run can start before that replacement happens.
     final interactivePolicy = _McpInteractivePolicySlot();
+    final dynamicContext =
+        CompositeAgentDynamicContextProvider(<AgentDynamicContextProvider>[
+          PersonalizationDynamicContextProvider(catalog: profileCatalog),
+          MemoryDynamicContextProvider(
+            retrieval: memoryRetrieval,
+            toggles: memoryToggles,
+          ),
+        ]);
     final stack = buildProductionAgentStack(
       httpClient: client,
       credentials: credentials,
       tools: localTools.registry,
       enabledTools: localTools.enabled,
       interactivePolicy: interactivePolicy,
-      dynamicContextProvider:
-          CompositeAgentDynamicContextProvider(<AgentDynamicContextProvider>[
-            PersonalizationDynamicContextProvider(catalog: profileCatalog),
-            MemoryDynamicContextProvider(
-              retrieval: memoryRetrieval,
-              toggles: memoryToggles,
-            ),
-          ]),
+      dynamicContextProvider: dynamicContext,
     );
     final aurora = isAuroraBuildFlavor;
     final resolvedMcpInputs =
@@ -836,6 +841,20 @@ final class DomovoyDependencies {
       extraction: memoryExtraction,
     );
     final ragStorage = createRagStorage();
+    final ragModels = RagModelServiceClient(
+      client,
+      Uri.parse(
+        const String.fromEnvironment(
+          'RAG_MODEL_BASE_URL',
+          defaultValue: kDebugMode
+              ? 'http://127.0.0.1:8765'
+              : 'https://localhost:8765',
+        ),
+      ),
+    );
+    final ragRepository = ragStorage == null
+        ? null
+        : JsonlRagRepository(ragStorage);
     return DomovoyDependencies(
       runtime: stack.runtime,
       registry: stack.registry,
@@ -857,19 +876,20 @@ final class DomovoyDependencies {
       knowledge: ragStorage == null
           ? null
           : KnowledgeController(
-              repository: JsonlRagRepository(ragStorage),
-              models: RagModelServiceClient(
-                client,
-                Uri.parse(
-                  const String.fromEnvironment(
-                    'RAG_MODEL_BASE_URL',
-                    defaultValue: kDebugMode
-                        ? 'http://127.0.0.1:8765'
-                        : 'https://localhost:8765',
-                  ),
-                ),
-              ),
+              repository: ragRepository!,
+              models: ragModels,
               importer: NativeRagDocumentImporter(client),
+            ),
+      ragChat: ragStorage == null
+          ? null
+          : RagChatController(
+              coordinator: RagTurnCoordinator(
+                repository: ragRepository!,
+                models: ragModels,
+              ),
+              traces: JsonlRagTraceRepository(ragStorage),
+              registry: stack.registry,
+              dynamicContext: dynamicContext,
             ),
     );
   }
@@ -891,6 +911,7 @@ final class DomovoyDependencies {
   final ProfileInterviewLlm? profileInterviewLlm;
   final DomovoyMcpComposition? mcp;
   final KnowledgeController? knowledge;
+  final RagChatController? ragChat;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -913,6 +934,7 @@ final class DomovoyDependencies {
     AgentError? firstError;
     try {
       knowledge?.dispose();
+      ragChat?.dispose();
       memoryInspector?.dispose();
       profileController?.dispose();
     } on Object catch (error) {
@@ -995,6 +1017,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
       onTurnCompleted: dependencies.memoryInspector?.recordCompletedTurn,
       chatDeliveries: mcp?.chatDeliveryStore,
       runToolContexts: mcp?.runToolContexts,
+      runPreparer: dependencies.ragChat,
       additionalRunTools: mcp == null
           ? null
           : (snapshot) => <ToolId>[
@@ -1091,6 +1114,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               onOpenTasks: _openTasks,
               onOpenLibrary: _openLibrary,
               onOpenKnowledge: _openKnowledge,
+              ragChat: widget.dependencies.ragChat,
               onOpenMcpConnections: _openMcpConnections,
             )
           : ProjectWorkspacePage(
@@ -1105,6 +1129,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               onOpenTasks: _openTasks,
               onOpenLibrary: _openLibrary,
               onOpenKnowledge: _openKnowledge,
+              ragChat: widget.dependencies.ragChat,
               onOpenMcpConnections: _openMcpConnections,
             ),
     );

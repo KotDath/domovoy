@@ -1,3 +1,5 @@
+import '../../knowledge/presentation/rag_chat_bar.dart';
+import '../../knowledge/application/rag_chat_controller.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -46,6 +48,7 @@ class ChatWorkspacePage extends StatefulWidget {
     this.onOpenTasks,
     this.onOpenLibrary,
     this.onOpenKnowledge,
+    this.ragChat,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -66,6 +69,7 @@ class ChatWorkspacePage extends StatefulWidget {
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
   final VoidCallback? onOpenKnowledge;
+  final RagChatController? ragChat;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -138,6 +142,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   }
 
   void _syncMemory() {
+    unawaited(widget.ragChat?.attach(_visibleSelectedSession));
     final memory = widget.memory;
     if (memory == null) {
       return;
@@ -357,7 +362,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
   Widget _composer() {
     final snapshot = _visibleSelectedSession;
     if (snapshot == null) return const ChatUnavailableComposer();
-    return ChatComposer(
+    final composer = ChatComposer(
       providerGroups: _state.providerGroups,
       selection: snapshot.selection,
       onSend: widget.controller.send,
@@ -375,6 +380,10 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       onOpenProviders: _openSettings,
       selectedModel: _selectedModel(snapshot),
     );
+    final rag = widget.ragChat;
+    return rag == null
+        ? composer
+        : RagChatBar(controller: rag, enabled: !_state.isBusy, child: composer);
   }
 
   String? _announcement() {

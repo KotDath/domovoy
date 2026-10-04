@@ -12,6 +12,7 @@ export 'mcp_tools.dart';
 export 'messaging.dart';
 export 'pattern_safety.dart';
 export 'policies.dart';
+export 'prepared_context.dart';
 export 'pi_default_tools.dart';
 export 'record.dart';
 export 'repository.dart';

@@ -3265,8 +3265,11 @@ final class _LiveRun implements AgentRun {
     }
   }
 
-  LlmRequest _currentRequest() =>
-      _requestWithSystemPrompt(session.definition.systemPrompt);
+  LlmRequest _currentRequest() => _requestWithSystemPrompt(_baseSystemPrompt);
+
+  String get _baseSystemPrompt =>
+      options.preparedContext?.systemPromptOverride ??
+      session.definition.systemPrompt;
 
   /// Provider requests append the resolved dynamic context. Compaction and
   /// planning keep using [_currentRequest] so memory never enters their input.
@@ -3286,8 +3289,10 @@ final class _LiveRun implements AgentRun {
   void _resolveTools() {
     _enabledTools = List<ToolId>.unmodifiable(
       <String, ToolId>{
-        for (final id in session.definition.enabledTools) id.value: id,
-        for (final id in options.additionalEnabledTools) id.value: id,
+        if (options.preparedContext?.disableTools != true) ...{
+          for (final id in session.definition.enabledTools) id.value: id,
+          for (final id in options.additionalEnabledTools) id.value: id,
+        },
       }.values,
     );
     _toolView = session.runtime.tools.view(
@@ -3324,12 +3329,12 @@ final class _LiveRun implements AgentRun {
   );
 
   String? _composedSystemPrompt() {
-    final contribution = _dynamicContext?.systemPromptText;
-    if (contribution == null || contribution.isEmpty) {
-      return session.definition.systemPrompt;
-    }
-    final base = session.definition.systemPrompt.trim();
-    return base.isEmpty ? contribution : '$base\n\n$contribution';
+    return [
+      _baseSystemPrompt,
+      if (_dynamicContext != null) _dynamicContext!.systemPromptText,
+      if (options.preparedContext?.contribution != null)
+        options.preparedContext!.contribution!.systemPromptText,
+    ].where((part) => part.trim().isNotEmpty).join('\n\n');
   }
 
   Future<AgentDynamicContext?> _resolveDynamicContext() async {
@@ -3389,7 +3394,8 @@ final class _LiveRun implements AgentRun {
         request: request,
       );
       request = _currentRequest();
-      if (session.runtime.dynamicContextProvider != null) {
+      if (session.runtime.dynamicContextProvider != null &&
+          options.preparedContext?.suppressDynamicContext != true) {
         _dynamicContext = await _resolveDynamicContext();
         final dynamic = _dynamicContext;
         if (dynamic != null && !dynamic.isEmpty) {
@@ -3400,8 +3406,8 @@ final class _LiveRun implements AgentRun {
             ),
           );
         }
-        request = _providerRequest();
       }
+      request = _providerRequest();
       _runModelTurns += 1;
       session.modelTurns += 1;
       late _ToolCallAssembler assembler;
@@ -3438,6 +3444,22 @@ final class _LiveRun implements AgentRun {
           contextRevision: session._effectiveTokenAccounting.contextRevision,
         );
         _pendingAttempt = attempt;
+        final prepared = options.preparedContext;
+        final maxBytes = prepared?.maxRequestBytes;
+        if (maxBytes != null &&
+            (maxBytes <= 0 ||
+                utf8.encode(jsonEncode(request.snapshot().toJson())).length >
+                    maxBytes)) {
+          throwAgent(
+            AgentErrorKind.configuration,
+            'Prepared request exceeds the reserved context byte budget.',
+          );
+        }
+        await prepared?.beforeRequest?.call(
+          request.snapshot(),
+          cancelSource.token,
+        );
+        _throwIfCancelled();
         await for (final event in _providerEvents(request)) {
           _throwIfCancelled();
           switch (event) {
@@ -3507,6 +3529,12 @@ final class _LiveRun implements AgentRun {
       _throwIfCancelled();
       _checkBudgets(preWork: false);
       final calls = List<LlmToolCallPart>.unmodifiable(assembler.complete());
+      if (options.preparedContext?.disableTools == true && calls.isNotEmpty) {
+        throwAgent(
+          AgentErrorKind.protocol,
+          'This run forbids tool calls; no action was executed.',
+        );
+      }
       try {
         assertResponsesTurnStateMatchesAssistant(
           state: completedTurnState,

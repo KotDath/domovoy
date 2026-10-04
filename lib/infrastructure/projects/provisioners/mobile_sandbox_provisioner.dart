@@ -117,7 +117,13 @@ final class IoMobileProjectSandbox implements MobileProjectSandbox {
 
   Future<Directory> _container() async {
     final support = await applicationSupportDirectoryResolver();
-    return Directory(p.join(support.path, 'project-sandbox-roots-v1'));
+    // Android's trusted application-support parent can be an OS alias
+    // (/data/user/0 -> /data/data). Canonicalize that parent, while retaining
+    // the leaf/root symlink rejection in currentRoot below.
+    final supportPath = await support.exists()
+        ? await support.resolveSymbolicLinks()
+        : support.path;
+    return Directory(p.join(supportPath, 'project-sandbox-roots-v1'));
   }
 
   Future<Directory> _root(ProjectId projectId) async =>
