@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/rag/grounding.dart';
 import 'package:domovoy/core/rag/turn.dart';
+import 'package:domovoy/design_system/design_system.dart';
 import 'package:domovoy/features/knowledge/application/rag_chat_controller.dart';
 import 'package:domovoy/features/knowledge/presentation/rag_chat_bar.dart';
 import 'package:domovoy/infrastructure/rag/jsonl_rag_repository.dart';
@@ -63,7 +64,10 @@ void main() {
           },
         ];
         await tester.pumpWidget(
-          MaterialApp(home: RagInspectorPage(controller: controller)),
+          MaterialApp(
+            theme: DomovoyTheme.light(),
+            home: RagInspectorPage(controller: controller),
+          ),
         );
         final button = find.text('Открыть цитату в источнике');
         await tester.scrollUntilVisible(
@@ -98,6 +102,12 @@ void main() {
           final span = rich.textSpan!.children![1] as TextSpan;
           expect(span.text, RagGroundingFixture.quote);
           expect(span.style!.backgroundColor, isNotNull);
+          expect(
+            span.style!.color,
+            Theme.of(
+              tester.element(find.text('Чанк целиком с подсветкой')),
+            ).colorScheme.onSecondaryContainer,
+          );
           expect(rich.textSpan!.toPlainText(), f.chunk.text);
         }
       },

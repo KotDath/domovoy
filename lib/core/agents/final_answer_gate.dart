@@ -4,6 +4,8 @@ import '../llm/request.dart';
 
 /// Optional host policy for a buffered final answer. Drafts are never emitted
 /// or admitted to the transcript before this policy accepts their replacement.
+/// Opaque provider continuation state is discarded: it describes the raw draft,
+/// rather than the host-approved replacement. Gated final turns have no tools.
 abstract interface class AgentFinalAnswerGate {
   Future<AgentFinalAnswerDecision> evaluate(
     AgentFinalAnswerDraft draft,

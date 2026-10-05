@@ -434,7 +434,7 @@ class _CitationPage extends StatelessWidget {
             Text('${chunk['source']} · ${chunk['section']}'),
             SelectableText(
               'chunk_id ${chunk['id']}\nrevision ${chunk['revision']}\n'
-              'UTF-16 [${citation['start_utf16']}, ${citation['end_utf16']}) · страницы ${citation['page_start']}–${citation['page_end']}',
+              'UTF-16 [${citation['start_utf16']}, ${citation['end_utf16']}) · страницы ${citation['page_start'] ?? '—'}–${citation['page_end'] ?? '—'}',
             ),
             if (!valid)
               const Text(
@@ -445,7 +445,12 @@ class _CitationPage extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(12),
                 color: Theme.of(context).colorScheme.secondaryContainer,
-                child: SelectableText(text.substring(start, end)),
+                child: SelectableText(
+                  text.substring(start, end),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSecondaryContainer,
+                  ),
+                ),
               ),
               ExpansionTile(
                 title: const Text('Чанк целиком с подсветкой'),
@@ -461,6 +466,9 @@ class _CitationPage extends StatelessWidget {
                             backgroundColor: Theme.of(
                               context,
                             ).colorScheme.secondaryContainer,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSecondaryContainer,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
