@@ -28,5 +28,5 @@ external artifacts. The day-25 video retains 38 whole clips with seekable chapte
 failed replay trials. Its independent semantic score is 36/48 on Android and
 39/48 for terminal Linux-native answers; citation validity is not factual accuracy.
 
-The source ZIP is generated from the final tracked challenge
-tree after all delivery checks; its filename contains the archived commit.
+The source ZIP was cancelled at the user’s request; the deliverables are the
+five retained remote feature branches and the five durable videos.
