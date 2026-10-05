@@ -187,9 +187,12 @@ final class RagTaskUpdate {
 }
 
 final class RagTaskPatch {
-  RagTaskPatch(Iterable<RagTaskUpdate> updates)
-    : updates = List.unmodifiable(updates);
+  RagTaskPatch(
+    Iterable<RagTaskUpdate> updates, {
+    this.ignoredReadOnlyUpdates = 0,
+  }) : updates = List.unmodifiable(updates);
   final List<RagTaskUpdate> updates;
+  final int ignoredReadOnlyUpdates;
 
   factory RagTaskPatch.parse(
     String raw,
@@ -207,6 +210,9 @@ final class RagTaskPatch {
       throw const FormatException('Task-state patch schema');
     }
     final updates = <RagTaskUpdate>[];
+    final seenUpdates = <String>{};
+    var ignored = 0;
+    final readOnly = _readOnlyTaskQuestion(userInput);
     for (final row in root['updates'] as List) {
       if (row is! Map ||
           !((row.length == 3 && !row.containsKey('action')) ||
@@ -225,10 +231,27 @@ final class RagTaskPatch {
           quote.trim().isEmpty ||
           quote.length > 1000 ||
           !userInput.contains(quote) ||
-          updates.any((u) => u.id == id)) {
+          !seenUpdates.add(id)) {
         throw const FormatException('Task-state quote/identity invalid');
       }
+      // Recovery/factual questions can only read state. Record the ignored
+      // extractor rows in its audit; do not turn their mentions into values.
+      if (readOnly) {
+        ignored++;
+        continue;
+      }
       final retire = row['action'] == 'retire';
+      final priorGoal = before.facts
+          .where((f) => f.kind == RagTaskFactKind.goal)
+          .firstOrNull;
+      if (kind == RagTaskFactKind.goal &&
+          priorGoal != null &&
+          (retire || quote != priorGoal.quote) &&
+          !_explicitGoalChange(userInput, retire: retire)) {
+        throw const FormatException(
+          'Replacing a stored goal requires explicit goal-change wording',
+        );
+      }
       if (!retire) _validateChosenSlot(id, quote);
       if (retire && !before.facts.any((f) => f.id == id && f.kind == kind)) {
         throw const FormatException('Retirement requires an existing slot');
@@ -247,7 +270,7 @@ final class RagTaskPatch {
     if (ids.where((id) => id.startsWith('goal.')).length > 1) {
       throw const FormatException('Only one active task goal is supported');
     }
-    return RagTaskPatch(updates);
+    return RagTaskPatch(updates, ignoredReadOnlyUpdates: ignored);
   }
 
   RagTaskState apply(
@@ -256,6 +279,8 @@ final class RagTaskPatch {
     required String submissionId,
     String sourceKind = 'automatic_user_quote',
   }) {
+    if (sourceKind == 'automatic_user_quote' && _readOnlyTaskQuestion(userText))
+      return before;
     final active = {for (final fact in before.facts) fact.id: fact};
     final old = before.superseded.toList();
     final retired = before.retirements.toList();
@@ -263,6 +288,13 @@ final class RagTaskPatch {
     for (final update in updates) {
       if (!update.retire && active[update.id]?.quote == update.quote) continue;
       final previous = active[update.id];
+      if (sourceKind == 'automatic_user_quote' &&
+          previous?.kind == RagTaskFactKind.goal &&
+          !_explicitGoalChange(userText, retire: update.retire)) {
+        throw const FormatException(
+          'Replacing a stored goal requires explicit goal-change wording',
+        );
+      }
       if (previous != null) old.add(previous);
       if (!update.retire) _validateChosenSlot(update.id, update.quote);
       final nextFact = RagTaskFact(
@@ -322,3 +354,19 @@ abstract interface class RagTaskExtractor {
     CancellationToken cancellation,
   );
 }
+
+/// Conservative automatic goal lifecycle: factual diversions must never replace
+/// the task goal. Other wording can be handled by explicit manual editing.
+bool _explicitGoalChange(String input, {required bool retire}) {
+  final pattern = retire
+      ? r'^\s*(?:(?:remove|retire|forget) (?:our|my|the) goal\b|(?:сними|удали|забудь) (?:нашу |мою )?цель(?:\s|[:—-]|$))'
+      : r'^\s*(?:(?:our|my) new goal is\b|(?:change|replace|set|update) (?:our|my|the) goal (?:to|with)\b|(?:наша |моя )?новая цель\s*[:—-]|(?:измени|поменяй|замени) (?:нашу |мою )?цель(?:\s|[:—-]|$))';
+  return RegExp(pattern, caseSensitive: false, multiLine: true).hasMatch(input);
+}
+
+/// Recognizable requests to read/recover/explain existing conditions are never
+/// permission to replace them. Explicit change statements should be separate.
+bool _readOnlyTaskQuestion(String input) => RegExp(
+  r'^\s*(?:return\b|after\s+(?:restart(?:ing)?|reopening)\b|recover\b|remind\b|what\b|how\b|why\b|when\b|where\b|which\b|(?:(?:brief|another)\s+)?diversion\b|unrelated(?:\s+documentation)?\s+question\b|new(?:\s+(?:source|paper))?\s+question\b|(?:вернись|вспомни|восстанови|напомни|как|почему|когда|где|какие|что)(?:\s|[:?]|$)|после\s+перезапуска)',
+  caseSensitive: false,
+).hasMatch(input);

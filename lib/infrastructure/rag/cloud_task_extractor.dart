@@ -16,7 +16,13 @@ Every quote is a VERBATIM nonempty substring of NEWEST user message, at most1000
 characters. No paraphrase, translation, invented values, copied old quotes or metadata.
 Kinds: goal,constraint,glossary,clarification,open_question. IDs start with kind+dot,
 use lowercase ASCII letters/digits/underscore/dot/hyphen, at most64 characters.
-Use goal.main for the single ongoing task goal. Reuse existing semantic slots
+Use goal.main for the single ongoing task goal. Once a goal exists, retain it
+VERBATIM across all factual questions, returns to the topic and requested recovery.
+A question starting "Return to CP" or "Return to our original task" does not
+choose a new goal. Never replace it with a question or paraphrase. Automatic
+replacement requires the NEW user message to start explicitly "Our new goal is"
+or "Change our goal to" (or the corresponding Russian explicit goal-change form);
+otherwise omit any goal update. Users can also edit the goal in the task-state UI. Reuse existing semantic slots
 when values change. Store independent fields separately: constraint.time is ONLY
 the chosen HH:MM; constraint.timezone is ONLY the IANA zone. Never combine time
 and timezone in one quote: later time changes must preserve the timezone slot.
@@ -29,7 +35,10 @@ from prior state: that is an explicit unresolved decision, not a factual questio
 Split multiple unresolved choices into separate slots, e.g. open_question.model
 and open_question.delivery; both may quote the same complete newest-user sentence.
 Do not skip an explicit undecided choice just because it has no selected value.
-Keep the ongoing goal across detours. Hypotheticals/question premises are not choices.
+Recovery questions and returns to a topic are READ-ONLY: return {"updates":[]}
+even if they mention "CP definition", "confirmation requirement", "output format"
+or "undecided settings". Such names are NOT new values. Keep ALL prior semantic
+slots across these questions, not just the goal. Keep the ongoing goal across detours. Hypotheticals/question premises are not choices.
 When a user explicitly resolves/retracts an existing slot, emit that existing
 id+kind with action:"retire" and an exact NEW user quote evidencing the resolution.
 Retire a resolved open_question as well as storing the selected choice in its own
@@ -192,6 +201,10 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         'request': requestJson,
         'usage': usage?.toJson(),
         'elapsed_ms': clock.elapsedMilliseconds,
+        'ignored_read_only_updates': patch.ignoredReadOnlyUpdates,
+        'patch_policy': patch.ignoredReadOnlyUpdates > 0
+            ? 'no_op_read_only_question'
+            : 'validated_updates',
         'validation':
             'exact new-user quotation; host scope/revision; not semantic proof',
       });

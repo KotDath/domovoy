@@ -91,7 +91,9 @@ void main() {
         -300,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.byType(SwitchListTile));
+      await tester.ensureVisible(find.byType(Switch));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch));
       await tester.pumpAndSettle();
       expect(controller.taskStateEnabled, false);
       expect((await states.load('p', 's')).facts.single.quote, '07:45');

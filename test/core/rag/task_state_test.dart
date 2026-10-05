@@ -216,6 +216,97 @@ void main() {
     },
   );
 
+  test('factual return cannot replace goal, explicit goal change can', () {
+    final before =
+        RagTaskPatch([
+          const RagTaskUpdate(
+            'goal.main',
+            RagTaskFactKind.goal,
+            'Our goal is CP',
+          ),
+        ]).apply(
+          RagTaskState(project: 'p', session: 's'),
+          userText: 'Our goal is CP',
+          submissionId: 'first',
+        );
+    for (final input in ['Do not change our goal to automation.']) {
+      expect(
+        () => RagTaskPatch.parse(
+          jsonEncode({
+            'updates': [
+              {'id': 'goal.main', 'kind': 'goal', 'quote': input},
+            ],
+          }),
+          input,
+          before,
+        ),
+        throwsFormatException,
+      );
+    }
+    for (final explicit in [
+      'Новая цель: расписание',
+      'Измени нашу цель на расписание',
+    ]) {
+      expect(
+        RagTaskPatch.parse(
+          jsonEncode({
+            'updates': [
+              {'id': 'goal.main', 'kind': 'goal', 'quote': explicit},
+            ],
+          }),
+          explicit,
+          before,
+        ).updates,
+        hasLength(1),
+      );
+    }
+    expect(
+      () => RagTaskPatch([
+        const RagTaskUpdate('goal.main', RagTaskFactKind.goal, 'A diversion?'),
+      ]).apply(before, userText: 'A diversion?', submissionId: 'bad'),
+      throwsFormatException,
+    );
+    const recovery =
+        'Return to our original task. Recover CP definition and confirmation requirement.';
+    final readOnly = RagTaskPatch.parse(
+      jsonEncode({
+        'updates': [
+          {
+            'id': 'goal.main',
+            'kind': 'goal',
+            'quote': 'Return to our original task.',
+          },
+          {'id': 'glossary.cp', 'kind': 'glossary', 'quote': 'CP definition'},
+          {
+            'id': 'constraint.confirmation',
+            'kind': 'constraint',
+            'quote': 'confirmation requirement',
+          },
+        ],
+      }),
+      recovery,
+      before,
+    );
+    expect(readOnly.updates, isEmpty);
+    expect(readOnly.ignoredReadOnlyUpdates, 3);
+    expect(
+      readOnly.apply(before, userText: recovery, submissionId: 'read'),
+      same(before),
+    );
+    const input = 'Our new goal is scheduling';
+    final next = RagTaskPatch.parse(
+      jsonEncode({
+        'updates': [
+          {'id': 'goal.main', 'kind': 'goal', 'quote': input},
+        ],
+      }),
+      input,
+      before,
+    ).apply(before, userText: input, submissionId: 'new');
+    expect(next.facts.single.quote, input);
+    expect(next.superseded.single.quote, 'Our goal is CP');
+  });
+
   test(
     'old state, documents and fabricated metadata cannot supply new user facts',
     () {
