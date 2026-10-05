@@ -54,6 +54,13 @@ final class _FailingReceiptRepository implements RagTraceRepository {
   final RagTraceRepository delegate;
   final bool failRequest;
   @override
+  Future<void> saveDiagnostic(
+    String project,
+    String session,
+    String id,
+    Map<String, Object?> diagnostic,
+  ) => delegate.saveDiagnostic(project, session, id, diagnostic);
+  @override
   Future<void> saveRequest(
     String project,
     String session,

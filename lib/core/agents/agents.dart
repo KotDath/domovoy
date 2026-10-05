@@ -6,6 +6,7 @@ export 'definition.dart';
 export 'dynamic_context.dart';
 export 'errors.dart';
 export 'events.dart';
+export 'final_answer_gate.dart';
 export 'hooks.dart';
 export 'ids.dart';
 export 'mcp_tools.dart';

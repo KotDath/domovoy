@@ -2,6 +2,7 @@ import '../llm/errors.dart';
 import '../llm/generation.dart';
 import '../llm/json.dart';
 import 'errors.dart';
+import 'final_answer_gate.dart';
 import 'ids.dart';
 import 'run_context.dart';
 import 'prepared_context.dart';
@@ -319,10 +320,18 @@ final class AgentRunOptions {
     this.typedInput,
     this.toolContext,
     this.preparedContext,
+    this.finalAnswerGate,
+    this.respondWithoutModel,
     Iterable<ToolId> additionalEnabledTools = const <ToolId>[],
   }) : additionalEnabledTools = List<ToolId>.unmodifiable(
          additionalEnabledTools,
        ) {
+    if (finalAnswerGate != null && respondWithoutModel != null) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'A host response cannot also validate a model draft.',
+      );
+    }
     _validatePositiveOverride('maxModelTurns', maxModelTurns);
     _validateNonNegativeOverride('maxToolCalls', maxToolCalls);
     _validateDurationOverride('maxDuration', maxDuration);
@@ -356,6 +365,8 @@ final class AgentRunOptions {
   final AgentReasoningOverride? reasoning;
   final Object? typedInput;
   final AgentPreparedContext? preparedContext;
+  final AgentFinalAnswerGate? finalAnswerGate;
+  final AgentRespondWithoutModel? respondWithoutModel;
 
   /// App-owned context of this exact run (B4 digest pin scope, B5 scheduled
   /// run id binding). Copied into every [ToolInvocation] of the run; never

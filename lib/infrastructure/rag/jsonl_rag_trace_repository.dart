@@ -82,6 +82,23 @@ final class JsonlRagTraceRepository implements RagTraceRepository {
   }
 
   @override
+  Future<void> saveDiagnostic(
+    String project,
+    String session,
+    String id,
+    Map<String, Object?> diagnostic,
+  ) {
+    final encoded = encodeRagJsonl([diagnostic]);
+    final key = _key(project, session, 'diagnostic:$id');
+    return _serial(key, () async {
+      if (await storage.read(key) != null) {
+        throw StateError('Validation diagnostics are immutable');
+      }
+      await storage.publish(key, encoded);
+    });
+  }
+
+  @override
   Future<List<Map<String, dynamic>>> list(
     String project,
     String session,
@@ -96,7 +113,15 @@ final class JsonlRagTraceRepository implements RagTraceRepository {
       }
       final completion = await _read(_key(project, session, 'completion:$id'));
       if (completion.length > 1) throw const FormatException('Invalid receipt');
-      result.add({...trace.single, 'completion': completion.singleOrNull});
+      final diagnostic = await _read(_key(project, session, 'diagnostic:$id'));
+      if (diagnostic.length > 1) {
+        throw const FormatException('Invalid diagnostic');
+      }
+      result.add({
+        ...trace.single,
+        'completion': completion.singleOrNull,
+        if (diagnostic.isNotEmpty) 'diagnostic': diagnostic.single,
+      });
     }
     return result;
   }
