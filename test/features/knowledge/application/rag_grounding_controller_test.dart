@@ -65,6 +65,40 @@ void main() {
     },
   );
 
+  test(
+    'unavailable history quote is explicitly removed, never broadened to old sources',
+    () async {
+      final f = RagGroundingFixture();
+      final gate = RagFinalAnswerGate(
+        turn: f.turn,
+        persistDiagnostic: (_) async {},
+      );
+      final req = LlmRequest(
+        model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
+        context: LlmContext(),
+      ).snapshot();
+      final result = await gate.evaluate(
+        AgentFinalAnswerDraft(
+          text: jsonEncode(
+            f.json(quote: 'A quotation from a different historical document.'),
+          ),
+          request: req,
+          finishReason: LlmFinishReason.stop,
+          repairAttempt: false,
+        ),
+        CancellationSource().token,
+      );
+      final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+      final payload = jsonDecode(
+        (repair.context.messages.single.parts.single as LlmTextPart).text,
+      );
+      final hint = (payload['exact_quote_repair_hints'] as List).single;
+      expect(hint['action'], 'remove_unmatched_citation');
+      expect(hint.containsKey('actual_exact_quote'), false);
+      expect(gate.accepted, isNull);
+    },
+  );
+
   test('repair hints preserve exact Markdown and line breaks', () async {
     const original =
         '**Spring forward.** If time does not exist,\n  the run is **skipped**.';

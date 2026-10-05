@@ -12,6 +12,7 @@ import '../../../core/rag/grounding.dart';
 import '../../../core/rag/task_state.dart';
 import '../../chat/application/chat_run_preparer.dart';
 import 'rag_final_answer_gate.dart';
+import 'rag_replay_comparison.dart';
 
 typedef RagQueryRewriterFactory =
     RagQueryRewriter Function(
@@ -924,6 +925,7 @@ final class RagChatController extends ChangeNotifier
           await runtime.close();
         }
       }
+      validateRagReplayComparison(rows.first, rows.last, frozen);
       return List.unmodifiable(rows);
     } finally {
       busy = false;

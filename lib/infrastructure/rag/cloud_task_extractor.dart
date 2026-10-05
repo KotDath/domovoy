@@ -16,7 +16,12 @@ Every quote is a VERBATIM nonempty substring of NEWEST user message, at most1000
 characters. No paraphrase, translation, invented values, copied old quotes or metadata.
 Kinds: goal,constraint,glossary,clarification,open_question. IDs start with kind+dot,
 use lowercase ASCII letters/digits/underscore/dot/hyphen, at most64 characters.
-Use goal.main for the single ongoing task goal. Once a goal exists, retain it
+Use goal.main for the single ongoing task goal. The goal must capture the actual
+objective/topic, not only a disclaimer. For a first message "I want to plan a
+birthday party. Our goal is discussion only, no actions", store "I want to plan a
+birthday party" as goal.main and the discussion-only disclaimer as constraint.scope.
+Prefer the first explicit objective span; do not discard its task/topic merely
+because a later sentence says "Our goal is discussion only". Once a goal exists, retain it
 VERBATIM across all factual questions, returns to the topic and requested recovery.
 A question starting "Return to CP" or "Return to our original task" does not
 choose a new goal. Never replace it with a question or paraphrase. Automatic
@@ -28,6 +33,11 @@ the chosen HH:MM; constraint.timezone is ONLY the IANA zone. Never combine time
 and timezone in one quote: later time changes must preserve the timezone slot.
 Only explicit intentions, chosen conditions, defined terms and clarifications
 belong in state. A factual/documentation question or diversion is NOT an
+operating restriction. Declarative operating conditions (for example, the device
+may be offline or the application may be stopped) ARE constraints to retain,
+even when the same message ends with a documentation question.
+Do not drop an explicitly stated operating condition merely because it says "may".
+A question itself is NOT an
 open_question, goal or constraint. open_question is ONLY an explicitly undecided
 USER CHOICE, e.g. a model or delivery channel the user says they have not chosen.
 If the user says choices "remain undecided", they MUST be recorded if absent
