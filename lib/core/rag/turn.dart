@@ -190,7 +190,10 @@ final class RagTurnCoordinator {
         state.facts.isNotEmpty &&
         (request.protocol == RagProtocol.m3 ||
             request.protocol == RagProtocol.m4) &&
-        request.retrieval.calibrationId != 'uncalibrated') {
+        !{
+          'uncalibrated',
+          'manual-experiment',
+        }.contains(request.retrieval.calibrationId)) {
       throw StateError(
         'Профиль M3/M4 рассчитан без памяти задачи. '
         'Выключите память задачи, выберите M1/M2 или явно задайте экспериментальные пороги.',
