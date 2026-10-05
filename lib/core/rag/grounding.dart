@@ -2,6 +2,18 @@ import 'dart:convert';
 
 import 'models.dart';
 import 'turn.dart';
+import 'task_state.dart';
+
+const ragTaskGroundingInstruction = '''Additional USER_TASK_STATE_EVIDENCE_JSON
+contains scoped user conditions, NOT document facts or manually confirmed memory.
+Use its actual chunk_id for user choices/terms/goals and copy the exact text.
+User-state quotes may be one character; document quotes still require eight.
+Never attribute a user choice to a document or vice versa. For calculations based
+on user conditions and documented rules (e.g. a proposed daily cron), add
+"kind":"derived" to that claim and cite BOTH the active user-state evidence
+and relevant document rules. Distinguish a proposed calculation from an executed
+action; no tools/actions are available. Unknown choices remain unspecified.
+Factual task diversions do not change the stored task goal.''';
 
 const ragGroundedAnswerInstruction = '''Return ONLY JSON with exactly two keys:
 {"status":"answered|partial|abstained","claims":[{"text":"one factual claim",
@@ -28,31 +40,61 @@ final class RagValidatedCitation {
     required this.quote,
     required this.start,
     required this.end,
-  });
-  final RagChunk chunk;
+  }) : state = null,
+       fact = null;
+  const RagValidatedCitation.userState({
+    required this.state,
+    required this.fact,
+    required this.quote,
+    required this.start,
+    required this.end,
+  }) : chunk = null;
+  final RagChunk? chunk;
+  final RagTaskState? state;
+  final RagTaskFact? fact;
   final String quote;
   final int start, end;
+  String get source => chunk?.source ?? 'Условия пользователя';
+  String get section => chunk?.section ?? fact!.id;
+  String get id => chunk?.id ?? state!.evidenceId(fact!);
   Map<String, Object?> toJson() => {
-    'chunk_id': chunk.id,
-    'document_id': chunk.documentId,
-    'revision': chunk.documentRevision,
-    'source': chunk.source,
-    'section': chunk.section,
+    'chunk_id': id,
+    if (chunk != null) ...{
+      'source_kind': 'document',
+      'document_id': chunk!.documentId,
+      'revision': chunk!.documentRevision,
+      'page_start': chunk!.pageStart,
+      'page_end': chunk!.pageEnd,
+    } else ...{
+      'source_kind': 'user_state',
+      'project': state!.project,
+      'session': state!.session,
+      'state_revision': state!.revision,
+      'fact_id': fact!.id,
+      'submission_id': fact!.submissionId,
+      'provenance': fact!.sourceKind,
+      'user_text_sha256': ragHash(fact!.userText),
+    },
+    'source': source,
+    'section': section,
     'quote': quote,
     'start_utf16': start,
     'end_utf16': end,
-    'page_start': chunk.pageStart,
-    'page_end': chunk.pageEnd,
   };
 }
 
 final class RagGroundedClaim {
-  RagGroundedClaim(this.text, Iterable<RagValidatedCitation> evidence)
-    : evidence = List.unmodifiable(evidence);
+  RagGroundedClaim(
+    this.text,
+    Iterable<RagValidatedCitation> evidence, {
+    this.kind = 'document',
+  }) : evidence = List.unmodifiable(evidence);
   final String text;
+  final String kind;
   final List<RagValidatedCitation> evidence;
   Map<String, Object?> toJson() => {
     'text': text,
+    'source_kind': kind,
     'evidence': evidence.map((c) => c.toJson()).toList(),
   };
 }
@@ -82,9 +124,20 @@ final class RagGroundedAnswer {
       throw const FormatException('answer_claims');
     }
     final sent = {for (final hit in turn.evidence) hit.chunk.id: hit.chunk};
+    final state = turn.request.taskState;
+    if (state != null &&
+        (state.project != turn.request.project ||
+            state.session != turn.request.session)) {
+      throw const FormatException('citation_task_state_scope');
+    }
+    final userSent = {
+      if (state != null)
+        for (final f in state.facts) state.evidenceId(f): f,
+    };
     final claims = <RagGroundedClaim>[];
     for (final row in rows) {
-      final claim = _exactMap(row, {'text', 'evidence'});
+      final derived = row is Map && row['kind'] == 'derived' && state != null;
+      final claim = _exactMap(row, {'text', 'evidence', if (derived) 'kind'});
       final text = claim['text'];
       final evidence = claim['evidence'];
       if (text is! String ||
@@ -100,32 +153,66 @@ final class RagGroundedAnswer {
       for (final value in evidence) {
         final citation = _exactMap(value, {'chunk_id', 'quote'});
         final chunk = sent[citation['chunk_id']];
+        final userFact = userSent[citation['chunk_id']];
         final quote = citation['quote'];
-        if (chunk == null) throw const FormatException('citation_not_sent');
+        if (chunk == null && userFact == null) {
+          throw const FormatException('citation_not_sent');
+        }
         if (quote is! String ||
-            quote.trim().length < 8 ||
+            quote.trim().length < (userFact == null ? 8 : 1) ||
             quote.length > 1600) {
           throw const FormatException('citation_quote_length');
         }
-        final relative = chunk.text.indexOf(quote);
+        final relative = (chunk?.text ?? userFact!.quote).indexOf(quote);
         if (relative < 0) throw const FormatException('citation_not_exact');
-        if (chunk.end - chunk.start != chunk.text.length ||
-            chunk.documentRevision.isEmpty) {
+        if (chunk != null &&
+            (chunk.end - chunk.start != chunk.text.length ||
+                chunk.documentRevision.isEmpty)) {
           throw const FormatException('citation_invalid_coordinates');
         }
-        if (!seen.add(jsonEncode([chunk.id, quote]))) {
+        if (!seen.add(jsonEncode([citation['chunk_id'], quote]))) {
           throw const FormatException('citation_duplicate');
         }
-        citations.add(
-          RagValidatedCitation(
-            chunk: chunk,
-            quote: quote,
-            start: chunk.start + relative,
-            end: chunk.start + relative + quote.length,
-          ),
-        );
+        if (chunk == null) {
+          final start = userFact!.userText.indexOf(userFact.quote) + relative;
+          citations.add(
+            RagValidatedCitation.userState(
+              state: state!,
+              fact: userFact,
+              quote: quote,
+              start: start,
+              end: start + quote.length,
+            ),
+          );
+        } else {
+          citations.add(
+            RagValidatedCitation(
+              chunk: chunk,
+              quote: quote,
+              start: chunk.start + relative,
+              end: chunk.start + relative + quote.length,
+            ),
+          );
+        }
       }
-      claims.add(RagGroundedClaim(text.trim(), citations));
+      final hasUser = citations.any((c) => c.fact != null);
+      final hasDocument = citations.any((c) => c.chunk != null);
+      if (derived && (!hasUser || !hasDocument)) {
+        throw const FormatException('derived_claim_requires_both_sources');
+      }
+      claims.add(
+        RagGroundedClaim(
+          text.trim(),
+          citations,
+          kind: derived
+              ? 'derived'
+              : hasUser && hasDocument
+              ? 'mixed'
+              : hasUser
+              ? 'user_state'
+              : 'document',
+        ),
+      );
     }
     return RagGroundedAnswer(status, claims);
   }
@@ -143,12 +230,15 @@ final class RagGroundedAnswer {
     }
     final out = StringBuffer();
     for (final claim in claims) {
+      if (claim.kind == 'derived') {
+        out.writeln('Расчёт/вывод по условиям пользователя и документации:');
+      }
       out.writeln(claim.text);
       for (final citation in claim.evidence) {
         out.writeln('\n> ${citation.quote.replaceAll('\n', '\n> ')}');
         out.writeln(
-          '\nИсточник: ${citation.chunk.source} · '
-          '${citation.chunk.section} · chunk ${citation.chunk.id}',
+          '\nИсточник: ${citation.source} · '
+          '${citation.section} · ${citation.fact == null ? 'chunk' : 'user_state r${citation.state!.revision}'} ${citation.id}',
         );
       }
       out.writeln();

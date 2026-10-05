@@ -7,3 +7,8 @@ JsonlStreamStorage createRagStorage() => JsonlFilesystemStreamStorage(
   applicationSupportDirectoryResolver: getApplicationSupportDirectory,
   namespaceDirectoryName: 'rag-jsonl-v1',
 );
+
+JsonlStreamStorage createRagTaskStateStorage() => JsonlFilesystemStreamStorage(
+  applicationSupportDirectoryResolver: getApplicationSupportDirectory,
+  namespaceDirectoryName: 'rag-task-state-jsonl-v1',
+);

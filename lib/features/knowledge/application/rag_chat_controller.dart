@@ -9,6 +9,7 @@ import '../../../core/rag/models.dart';
 import '../../../core/rag/turn.dart';
 import '../../../core/rag/retrieval.dart';
 import '../../../core/rag/grounding.dart';
+import '../../../core/rag/task_state.dart';
 import '../../chat/application/chat_run_preparer.dart';
 import 'rag_final_answer_gate.dart';
 
@@ -17,6 +18,13 @@ typedef RagQueryRewriterFactory =
       ModelRef model,
       Future<void> Function(Map<String, Object?>) beforeRequest,
       Future<void> Function(RagRewriteResult) afterResult,
+    );
+
+typedef RagTaskExtractorFactory =
+    RagTaskExtractor Function(
+      ModelRef model,
+      Future<void> Function(Map<String, Object?>) beforeRequest,
+      Future<void> Function(Map<String, Object?>) afterResult,
     );
 
 final class RagChatController extends ChangeNotifier
@@ -29,6 +37,8 @@ final class RagChatController extends ChangeNotifier
     this.queryRewriterFactory,
     this.defaultRetrieval = const RagRetrievalConfig(),
     this.strictGrounding = false,
+    this.taskStates,
+    this.taskExtractorFactory,
   }) : retrieval = defaultRetrieval,
        strategy = defaultRetrieval.strategy ?? ChunkStrategy.structure;
   final RagTurnCoordinator coordinator;
@@ -36,6 +46,12 @@ final class RagChatController extends ChangeNotifier
   final LlmProviderRegistry registry;
   final AgentDynamicContextProvider? dynamicContext;
   final RagQueryRewriterFactory? queryRewriterFactory;
+  final RagTaskStateRepository? taskStates;
+  final RagTaskExtractorFactory? taskExtractorFactory;
+  bool taskStateEnabled = true;
+  RagTaskState? taskState;
+  Map<String, Object?>? taskExtractionAudit;
+  List<Map<String, Object?>> taskStateDiff = [];
   bool enabled = false;
   bool neutralEvaluation = false;
   bool strictGrounding;
@@ -66,6 +82,7 @@ final class RagChatController extends ChangeNotifier
     RagRetrievalConfig? retrieval,
     bool? strictGrounding,
     RagGroundingFault? groundingFault,
+    bool? taskStateEnabled,
   }) {
     if (busy) return;
     this.enabled = enabled ?? this.enabled;
@@ -76,6 +93,7 @@ final class RagChatController extends ChangeNotifier
     this.retrieval = retrieval ?? this.retrieval;
     this.strictGrounding = strictGrounding ?? this.strictGrounding;
     this.groundingFault = groundingFault ?? this.groundingFault;
+    this.taskStateEnabled = taskStateEnabled ?? this.taskStateEnabled;
     _notify();
   }
 
@@ -87,19 +105,82 @@ final class RagChatController extends ChangeNotifier
     _project = project;
     _session = session;
     history = [];
+    taskState = null;
+    taskStateDiff = [];
+    taskExtractionAudit = null;
     error = null;
     _notify();
     if (session == null) return;
     try {
       final loaded = await traces.list(project, session);
+      final state = await taskStates?.load(project, session);
       if (_disposed || epoch != _epoch) return;
       history = loaded;
+      taskState = state;
       _notify();
     } on Object {
       if (_disposed || epoch != _epoch) return;
       error = 'Не удалось прочитать сохранённые RAG-трассы';
       _notify();
     }
+  }
+
+  /// An explicit edit is user input, not an extractor or document instruction.
+  /// It may race an extractor; repository CAS prevents late overwrite.
+  Future<void> editTaskFact(
+    String id,
+    RagTaskFactKind kind,
+    String quote,
+  ) async {
+    final before = taskState;
+    if (before == null || taskStates == null) {
+      throw StateError('No selected task-state scope');
+    }
+    final patch = RagTaskPatch.parse(
+      jsonEncode({
+        'updates': [
+          {'id': id, 'kind': kind.wireName, 'quote': quote},
+        ],
+      }),
+      quote,
+      before,
+    );
+    final next = patch.apply(
+      before,
+      userText: quote,
+      submissionId: 'manual-${DateTime.now().microsecondsSinceEpoch}',
+      sourceKind: 'manual_user_edit',
+    );
+    if (identical(before, next)) return;
+    await taskStates!.save(
+      next,
+      expectedRevision: before.revision,
+      cancellation: CancellationSource().token,
+    );
+    if (!_disposed &&
+        _project == before.project &&
+        _session == before.session) {
+      _showTaskUpdate(before, next);
+    }
+  }
+
+  void _showTaskUpdate(RagTaskState before, RagTaskState next) {
+    taskState = next;
+    taskStateDiff = [
+      for (final f in next.facts)
+        if (before.facts.where((old) => old.id == f.id).firstOrNull?.quote !=
+            f.quote)
+          {
+            'id': f.id,
+            'before': before.facts
+                .where((old) => old.id == f.id)
+                .firstOrNull
+                ?.quote,
+            'after': f.quote,
+            'revision': next.revision,
+          },
+    ];
+    _notify();
   }
 
   @override
@@ -117,6 +198,7 @@ final class RagChatController extends ChangeNotifier
     final selectedStrategy = strategy;
     final grounded = useRag && strictGrounding;
     final selectedFault = groundingFault;
+    final useTaskState = useRag && taskStateEnabled && taskStates != null;
     if (useRag &&
         (selectedProtocol == RagProtocol.m3 ||
             selectedProtocol == RagProtocol.m4) &&
@@ -154,6 +236,75 @@ final class RagChatController extends ChangeNotifier
     error = null;
     _notify();
     try {
+      RagTaskState? frozenState;
+      if (useTaskState) {
+        final before = await taskStates!.load(project, session);
+        checkRagCancellation(cancellation.isCancelled);
+        final factory = taskExtractorFactory;
+        if (factory == null) {
+          throw StateError('Task-state extractor unavailable');
+        }
+        progress = 'Проверка пользовательских условий…';
+        _notify();
+        var published = false;
+        final extraction = await factory(
+          snapshot.selection.model,
+          (request) async {
+            await traces.saveRequest(project, session, '$id-state', {
+              'version': 1,
+              'id': '$id-state',
+              'project': project,
+              'session': session,
+              'query': input,
+              'protocol': 'task_state_extraction',
+              'candidates': [],
+              'state_revision_at_admission': before.revision,
+              'request': {
+                'model': request['model'],
+                'generation': request['generation'],
+                'system_prompt': (request['context'] as Map)['systemPrompt'],
+                'messages': (request['context'] as Map)['messages'],
+                'tools_count': 0,
+                'continuation_count': 0,
+                'sha256': ragHash(jsonEncode(request)),
+              },
+            });
+            published = true;
+          },
+          (audit) async {
+            if (published) {
+              await traces.saveCompletion(project, session, '$id-state', {
+                ...audit,
+                'accepted_message_id': null,
+              });
+            }
+          },
+        ).extract(before, input, cancellation);
+        checkRagCancellation(cancellation.isCancelled);
+        final next = extraction.patch.apply(
+          before,
+          userText: input,
+          submissionId: id,
+        );
+        if (identical(next, before)) {
+          final current = await taskStates!.load(project, session);
+          if (current.revision != before.revision) {
+            throw const RagTaskStateConflict();
+          }
+        } else {
+          await taskStates!.save(
+            next,
+            expectedRevision: before.revision,
+            cancellation: cancellation,
+          );
+        }
+        checkRagCancellation(cancellation.isCancelled);
+        frozenState = next;
+        if (!_disposed && _project == project && _session == session) {
+          taskExtractionAudit = extraction.audit;
+          _showTaskUpdate(before, next);
+        }
+      }
       final dynamic = neutral
           ? null
           : await dynamicContext?.provide(
@@ -167,6 +318,8 @@ final class RagChatController extends ChangeNotifier
       final frozenPrompt = [
         prompt,
         if (dynamic != null) dynamic.systemPromptText,
+        if (frozenState != null) ragTaskGroundingInstruction,
+        if (frozenState != null) frozenState.context,
       ].join('\n\n');
       final baseRequest = LlmRequest(
         model: snapshot.selection.model,
@@ -199,6 +352,7 @@ final class RagChatController extends ChangeNotifier
           strategy: selectedStrategy,
           protocol: useRag ? selectedProtocol : RagProtocol.m0,
           retrieval: selectedRetrieval,
+          taskState: frozenState,
           // Escaping the context as a JSON request adds overhead; a second
           // full-request check happens immediately before transport.
           contextByteBudget: min(24000, maxBytes - baseBytes - 2048),
@@ -244,7 +398,9 @@ final class RagChatController extends ChangeNotifier
       checkRagCancellation(cancellation.isCancelled);
       progress = 'Найдено источников: ${prepared.evidence.length}';
       _notify();
-      if (grounded && prepared.evidence.isEmpty) {
+      if (grounded &&
+          prepared.evidence.isEmpty &&
+          (frozenState?.facts.isEmpty ?? true)) {
         return await _prepareHostAbstention(
           prepared,
           snapshot,
@@ -277,19 +433,30 @@ final class RagChatController extends ChangeNotifier
             effort: ReasoningEffort.modelDefault,
           ),
           preparedContext: AgentPreparedContext(
-            systemPromptOverride: prompt,
+            systemPromptOverride: [
+              prompt,
+              if (frozenState != null) ragTaskGroundingInstruction,
+            ].join('\n\n'),
             suppressDynamicContext: true,
             disableTools: true,
             maxRequestBytes: maxBytes,
             contribution: AgentDynamicContext(
               systemPromptText: [
                 if (dynamic != null) dynamic.systemPromptText,
+                if (frozenState != null) frozenState.context,
                 prepared.context,
               ].where((s) => s.isNotEmpty).join('\n\n'),
               audit: prepared,
             ),
             beforeRequest: (request, token) async {
               checkRagCancellation(token.isCancelled);
+              if (frozenState != null) {
+                final current = await taskStates!.load(project, session);
+                if (current.revision != frozenState.revision) {
+                  throw const RagTaskStateConflict();
+                }
+                checkRagCancellation(token.isCancelled);
+              }
               final attemptId = '$id-${attempt++}';
               final requestJson = request.toJson();
               // Private reasoning/continuation payloads must not enter traces.
@@ -399,7 +566,10 @@ final class RagChatController extends ChangeNotifier
           }
         },
       );
-    } on Object {
+    } on Object catch (failure) {
+      if (failure is RagTaskStateConflict) {
+        error = 'Память задачи изменена во время подготовки. Повторите вопрос.';
+      }
       busy = false;
       progress = cancellation.isCancelled ? 'Подготовка отменена' : '';
       _notify();

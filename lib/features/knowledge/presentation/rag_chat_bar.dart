@@ -7,6 +7,7 @@ import '../../../core/rag/turn.dart';
 import '../../../core/rag/retrieval.dart';
 import '../application/rag_chat_controller.dart';
 import '../application/rag_final_answer_gate.dart';
+import 'rag_task_state_page.dart';
 
 class RagChatBar extends StatelessWidget {
   const RagChatBar({
@@ -100,6 +101,17 @@ class RagChatBar extends StatelessWidget {
                   'Источники · ${controller.history.isEmpty ? 0 : _sent(controller.history.last).length}',
                 ),
               ),
+              if (controller.taskStates != null)
+                TextButton(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => RagTaskStatePage(controller: controller),
+                    ),
+                  ),
+                  child: Text(
+                    'Память задачи · r${controller.taskState?.revision ?? 0}',
+                  ),
+                ),
             ],
           ),
         ),
@@ -134,7 +146,7 @@ class RagInspectorPage extends StatelessWidget {
           SwitchListTile(
             title: const Text('Нейтральное сравнение'),
             subtitle: const Text(
-              'Без профиля и памяти. Для сравнения используйте отдельные новые чаты и одинаковую модель.',
+              'Без профиля и общей памяти. Память задачи управляется отдельно. Для сравнения используйте новые чаты и одинаковую модель.',
             ),
             value: controller.neutralEvaluation,
             onChanged: controller.busy
@@ -331,6 +343,14 @@ class _TraceCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (trace['task_state'] is Map)
+              Text(
+                'Использована память задачи · r${(trace['task_state'] as Map)['revision']} · ${trace['project']} / ${trace['session']}',
+              ),
+            if (trace['retrieval_query'] != null)
+              SelectableText(
+                'Контекстный поисковый запрос: ${trace['retrieval_query']}',
+              ),
             if (completion != null)
               ExpansionTile(
                 title: const Text('Usage провайдера'),
@@ -385,6 +405,17 @@ class _GroundedClaimCard extends StatelessWidget {
             Text('${citation['source']} · ${citation['section']}'),
             TextButton(
               onPressed: () {
+                if (citation['source_kind'] == 'user_state') {
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => RagUserStateCitationPage(
+                        trace: trace,
+                        citation: citation,
+                      ),
+                    ),
+                  );
+                  return;
+                }
                 final candidate = (trace['candidates'] as List)
                     .whereType<Map>()
                     .where(

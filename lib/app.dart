@@ -10,6 +10,8 @@ import 'core/rag/turn.dart';
 import 'features/knowledge/application/rag_chat_controller.dart';
 import 'infrastructure/rag/jsonl_rag_trace_repository.dart';
 import 'infrastructure/rag/cloud_query_rewriter.dart';
+import 'infrastructure/rag/cloud_task_extractor.dart';
+import 'infrastructure/rag/jsonl_task_state_repository.dart';
 import 'infrastructure/rag/calibrated_retrieval.dart';
 import 'core/agents/agents.dart';
 import 'core/automation/automation.dart';
@@ -886,6 +888,16 @@ final class DomovoyDependencies {
           ? null
           : RagChatController(
               strictGrounding: true,
+              taskStates: JsonlRagTaskStateRepository(
+                createRagTaskStateStorage()!,
+              ),
+              taskExtractorFactory: (model, beforeRequest, afterResult) =>
+                  CloudRagTaskExtractor(
+                    registry: stack.registry,
+                    model: model,
+                    beforeRequest: beforeRequest,
+                    afterResult: afterResult,
+                  ),
               defaultRetrieval: calibratedRagRetrieval,
               coordinator: RagTurnCoordinator(
                 repository: ragRepository!,

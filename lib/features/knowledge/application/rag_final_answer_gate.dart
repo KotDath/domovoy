@@ -86,7 +86,11 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
               model: draft.request.model,
               generation: draft.request.generation,
               context: LlmContext(
-                systemPrompt: ragGroundedAnswerInstruction,
+                systemPrompt: [
+                  ragGroundedAnswerInstruction,
+                  if (turn.request.taskState != null)
+                    ragTaskGroundingInstruction,
+                ].join('\n\n'),
                 messages: [
                   LlmMessage(
                     role: LlmMessageRole.user,
@@ -97,6 +101,10 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
                           'evidence': [
                             for (final hit in turn.evidence) hit.chunk.toJson(),
                           ],
+                          if (turn.request.taskState != null)
+                            'user_state_evidence': turn.request.taskState!.facts
+                                .map(turn.request.taskState!.evidenceJson)
+                                .toList(),
                           'rejected_draft': candidate,
                           'validation_error': failure,
                           'instruction':
