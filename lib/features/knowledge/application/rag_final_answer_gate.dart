@@ -156,8 +156,9 @@ List<Map<String, String>> _repairHints(String candidate, RagPreparedTurn turn) {
     for (final claim in root['claims'] as List) {
       if (claim is! Map || claim['evidence'] is! List) continue;
       for (final c in claim['evidence'] as List) {
-        if (c is! Map || c['quote'] is! String || c['chunk_id'] is! String)
+        if (c is! Map || c['quote'] is! String || c['chunk_id'] is! String) {
           continue;
+        }
         final quote = c['quote'] as String, id = c['chunk_id'] as String;
         if (quote.length > 1600 || quote.trim().isEmpty) continue;
         if (sources.any((s) => s.$1 == id && s.$2.contains(quote))) continue;

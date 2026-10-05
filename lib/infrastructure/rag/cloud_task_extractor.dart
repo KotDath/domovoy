@@ -233,8 +233,7 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         'usage': usage?.toJson(),
         'elapsed_ms': clock.elapsedMilliseconds,
         'response_sha256': ragHash(output.toString()),
-        if (ignoredReadOnlyUpdates != null)
-          'ignored_read_only_updates': ignoredReadOnlyUpdates,
+        'ignored_read_only_updates': ?ignoredReadOnlyUpdates,
         if (terminal != 'TaskExtractionValidated') ...{
           'rejection_reason': rejectionReason ?? terminal,
           'rejected_output_diagnostic_only': output.toString().substring(
