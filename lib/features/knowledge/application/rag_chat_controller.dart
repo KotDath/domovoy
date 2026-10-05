@@ -160,6 +160,7 @@ final class RagChatController extends ChangeNotifier
       }),
       quote,
       before,
+      automatic: false,
     );
     final next = patch.apply(
       before,

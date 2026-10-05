@@ -75,6 +75,7 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
     LlmUsage? usage;
     String terminal = 'TaskExtractionFailed';
     String? rejectionReason;
+    int? ignoredReadOnlyUpdates;
     final resolved = registry.resolve(model);
     final request = LlmRequest(
       model: model,
@@ -198,6 +199,7 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
       checkRagCancellation(cancellation.isCancelled);
       final patch = RagTaskPatch.parse(output.toString(), userInput, before);
       terminal = 'TaskExtractionValidated';
+      ignoredReadOnlyUpdates = patch.ignoredReadOnlyUpdates;
       return RagTaskExtraction(patch, {
         'request': requestJson,
         'usage': usage?.toJson(),
@@ -231,9 +233,14 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         'usage': usage?.toJson(),
         'elapsed_ms': clock.elapsedMilliseconds,
         'response_sha256': ragHash(output.toString()),
+        if (ignoredReadOnlyUpdates != null)
+          'ignored_read_only_updates': ignoredReadOnlyUpdates,
         if (terminal != 'TaskExtractionValidated') ...{
           'rejection_reason': rejectionReason ?? terminal,
-          'rejected_output_diagnostic_only': output.toString(),
+          'rejected_output_diagnostic_only': output.toString().substring(
+            0,
+            min(output.length, 16000),
+          ),
         },
         'private_reasoning': 'omitted',
       });

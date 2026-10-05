@@ -311,6 +311,12 @@ void main() {
                   ),
                 );
                 expect(
+                  accepted.single['task_state_used'],
+                  true,
+                  reason:
+                      'Official proof requires validated extraction or read-only no-op; inspect auxiliary receipt on failure',
+                );
+                expect(
                   accepted.single['task_state']['revision'],
                   after.revision,
                 );

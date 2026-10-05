@@ -197,8 +197,9 @@ final class RagTaskPatch {
   factory RagTaskPatch.parse(
     String raw,
     String userInput,
-    RagTaskState before,
-  ) {
+    RagTaskState before, {
+    bool automatic = true,
+  }) {
     if (raw.length > 16000 || userInput.length > 16000) {
       throw const FormatException('Task-state input too large');
     }
@@ -212,7 +213,7 @@ final class RagTaskPatch {
     final updates = <RagTaskUpdate>[];
     final seenUpdates = <String>{};
     var ignored = 0;
-    final readOnly = _readOnlyTaskQuestion(userInput);
+    final readOnly = automatic && _readOnlyTaskQuestion(userInput);
     for (final row in root['updates'] as List) {
       if (row is! Map ||
           !((row.length == 3 && !row.containsKey('action')) ||
@@ -244,7 +245,8 @@ final class RagTaskPatch {
       final priorGoal = before.facts
           .where((f) => f.kind == RagTaskFactKind.goal)
           .firstOrNull;
-      if (kind == RagTaskFactKind.goal &&
+      if (automatic &&
+          kind == RagTaskFactKind.goal &&
           priorGoal != null &&
           (retire || quote != priorGoal.quote) &&
           !_explicitGoalChange(userInput, retire: retire)) {
@@ -279,8 +281,10 @@ final class RagTaskPatch {
     required String submissionId,
     String sourceKind = 'automatic_user_quote',
   }) {
-    if (sourceKind == 'automatic_user_quote' && _readOnlyTaskQuestion(userText))
+    if (sourceKind == 'automatic_user_quote' &&
+        _readOnlyTaskQuestion(userText)) {
       return before;
+    }
     final active = {for (final fact in before.facts) fact.id: fact};
     final old = before.superseded.toList();
     final retired = before.retirements.toList();

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/rag/models.dart';
@@ -17,6 +19,52 @@ import '../../../support/rag_grounding_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'wrong source and collapsed whitespace get exact repair data, never acceptance',
+    () async {
+      final f = RagGroundingFixture();
+      final gate = RagFinalAnswerGate(
+        turn: f.turn,
+        persistDiagnostic: (_) async {},
+      );
+      final req = LlmRequest(
+        model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        context: LlmContext(),
+      ).snapshot();
+      final broken = jsonEncode(
+        f.json(id: 'wrong-id', quote: 'SOUL.md  допускает 4000 символов.'),
+      );
+      final result = await gate.evaluate(
+        AgentFinalAnswerDraft(
+          text: broken,
+          request: req,
+          finishReason: LlmFinishReason.stop,
+          repairAttempt: false,
+        ),
+        CancellationSource().token,
+      );
+      expect(gate.accepted, isNull);
+      final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+      final payload = jsonDecode(
+        (repair.context.messages.single.parts.single as LlmTextPart).text,
+      );
+      final hint = (payload['exact_quote_repair_hints'] as List).single;
+      expect(hint['suggested_chunk_id'], f.chunk.id);
+      expect(hint['actual_exact_quote'], RagGroundingFixture.quote);
+      final second = await gate.evaluate(
+        AgentFinalAnswerDraft(
+          text: broken,
+          request: repair.snapshot(),
+          finishReason: LlmFinishReason.stop,
+          repairAttempt: true,
+        ),
+        CancellationSource().token,
+      );
+      expect((second as AgentFinalAnswerRejected).repairRequest, isNull);
+      expect(gate.accepted, isNull);
+    },
+  );
+
   test('whitespace JSON draft has only one strict text-mode repair', () async {
     final f = RagGroundingFixture();
     final gate = RagFinalAnswerGate(

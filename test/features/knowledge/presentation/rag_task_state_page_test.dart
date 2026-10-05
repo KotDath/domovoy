@@ -97,6 +97,41 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.taskStateEnabled, false);
       expect((await states.load('p', 's')).facts.single.quote, '07:45');
+      // Exercise the real manual-controller path, including text that is
+      // read-only when supplied to the automatic extractor.
+      await controller.editTaskFact(
+        'goal.main',
+        RagTaskFactKind.goal,
+        'Plan another project',
+      );
+      await controller.editTaskFact(
+        'goal.main',
+        RagTaskFactKind.goal,
+        'What matters most',
+      );
+      var manual = await states.load('p', 's');
+      expect(
+        manual.facts.singleWhere((f) => f.kind == RagTaskFactKind.goal).quote,
+        'What matters most',
+      );
+      expect(
+        manual.facts
+            .singleWhere((f) => f.kind == RagTaskFactKind.goal)
+            .sourceKind,
+        'manual_user_edit',
+      );
+      await controller.editTaskFact(
+        'goal.main',
+        RagTaskFactKind.goal,
+        'Remove this goal manually',
+        retire: true,
+      );
+      manual = await states.load('p', 's');
+      expect(
+        manual.facts.where((f) => f.kind == RagTaskFactKind.goal),
+        isEmpty,
+      );
+      expect(manual.retirements.single.quote, 'Remove this goal manually');
     },
   );
 
