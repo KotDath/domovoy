@@ -138,7 +138,7 @@ void main() {
         const String.fromEnvironment(
           'RAG_EVAL_OUTPUT',
           defaultValue:
-              '/home/kotdath/Videos/domovoy/evidence/day-22/evaluation.jsonl',
+              '/home/kotdath/Videos/domovoy/evidence/day-23/evaluation.jsonl',
         ),
       );
       output.parent.createSync(recursive: true);
