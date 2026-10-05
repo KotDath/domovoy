@@ -28,6 +28,12 @@ Replacing an existing goal automatically requires explicit goal-change wording
 (e.g. `Our new goal is …`, `Change our goal to …`, `Новая цель: …`). Factual
 returns or recovery questions cannot overwrite it; other wording can be handled
 by manual editing. Invalid auxiliary patches retain the previous goal.
+Automatic replacement/retirement of a lexically compound constraint preserves
+the original fact unless the USER explicitly declares a whole scope/constraint
+replacement or removal. A goal change alone is insufficient. Other valid updates
+still apply; ignored IDs are audited and a visible notice explains manual/full
+replacement. Conjunction/list detection is a bounded English/Russian policy with
+false positives and incomplete semantic coverage, not an entailment guarantee.
 Clock slots reject composite time/timezone values. A change 09:00→08:30 preserves
 the separate Europe/Moscow slot. CAS and guarded atomic JSONL publication prevent
 late extraction/cancellation from replacing a newer state. Valid user-input
@@ -76,7 +82,7 @@ state memory.
 
 ## Checks and evidence
 
-Full deterministic suite: 1494 passed, four pre-existing skips. Android/Linux debug
+Full deterministic suite: 1498 passed, four pre-existing skips. Android/Linux debug
 builds and analyzer logs are retained under
 `/home/kotdath/Videos/domovoy/evidence/day-25/`.
 Real evaluation source: `integration_test/day25_live_io_test.dart`; questions are

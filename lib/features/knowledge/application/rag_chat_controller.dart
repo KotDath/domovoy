@@ -369,6 +369,10 @@ final class RagChatController extends ChangeNotifier
           frozenState = next;
           if (!_disposed && _project == project && _session == session) {
             taskExtractionAudit = extraction.audit;
+            if (extraction.patch.ignoredAmbiguousConstraintIds.isNotEmpty) {
+              taskStateNotice =
+                  'Прежние составные ограничения сохранены: ${extraction.patch.ignoredAmbiguousConstraintIds.join(', ')}. Для полной замены явно укажите замену ограничений или измените поле в памяти задачи.';
+            }
             _showTaskUpdate(before, next);
           }
         }

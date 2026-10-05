@@ -9,14 +9,18 @@ import '../../core/rag/task_state.dart';
 const ragTaskExtractionInstruction =
     '''Maintain the current dialogue's task state using ONLY the newest USER message
 and existing USER state. No documents, assistant answers, tools, profile or old
-transcript are available or admissible. Return ONLY JSON
-{"updates":[]} when no user-declared conditions change. Otherwise put the
-actual extracted rows in updates; do not copy any example value.
+transcript are available or admissible. Return ONLY a JSON object with exactly
+one key, updates, whose value is an array of actual extracted update objects.
 Every row has exactly id,kind,quote, optionally action:"retire". Maximum eight rows.
 Every quote is a VERBATIM nonempty substring of NEWEST user message, at most1000
 characters. No paraphrase, translation, invented values, copied old quotes or metadata.
 Kinds: goal,constraint,glossary,clarification,open_question. IDs start with kind+dot,
 use lowercase ASCII letters/digits/underscore/dot/hyphen, at most64 characters.
+glossary stores explicit USER-defined names, abbreviations and their local meaning.
+Record an exact new definition even if it is followed by a factual question, or
+the same abbreviation has another conventional meaning outside this conversation.
+An explicit local definition is a state update; a mere reference to an existing
+term is read-only. Never infer a definition from documents or assistant text.
 Use goal.main for the single ongoing task goal. The goal must capture the actual
 objective/topic, not only a disclaimer. For a first message "I want to plan a
 birthday party. Our goal is discussion only, no actions", store "I want to plan a
@@ -36,8 +40,15 @@ replacement of an EXISTING goal requires the NEW user message to start explicitl
 or "Change our goal to" (or the corresponding Russian explicit goal-change form);
 If a goal ALREADY exists and no such change is explicit, omit goal updates.
 Users can also edit the goal in the task-state UI. Reuse existing semantic slots
-when values change. Store independent fields separately: constraint.time is ONLY
-the chosen HH:MM; constraint.timezone is ONLY the IANA zone. Never combine time
+when values change. Store independent restrictions/fields in separate semantic
+slots. A partial reassertion of one restriction does not revoke others: preserve
+unrevoked requirements when the goal changes or a subset is restated. Do not
+replace a compound prior restriction with a shorter quote that loses an independent
+requirement unless the USER explicitly retracts/replaces that requirement.
+For clock fields, constraint.time.quote is ONLY the actual chosen HH:MM substring,
+never the surrounding sentence or words. constraint.timezone.quote is ONLY the
+actual IANA zone substring, never surrounding words. This type-specific short-value
+requirement overrides preferences for complete-sentence quotations. Never combine time
 and timezone in one quote: later time changes must preserve the timezone slot.
 Only explicit intentions, chosen conditions, defined terms and clarifications
 belong in state. A factual/documentation question or diversion is NOT an
@@ -57,8 +68,9 @@ Messages that ONLY ask recovery or return to a topic are READ-ONLY: return {"upd
 even if they name existing terms, restrictions, preferences or unresolved choices.
 Such names are NOT new values. Keep ALL prior semantic
 slots across these questions, not just the goal. Keep the ongoing goal across detours. Hypotheticals/question premises are not choices.
-MIXED messages are different: extract explicit NEW declarative choices,
-clarifications or changed preferences even if a later sentence asks recovery.
+MIXED messages are different: extract explicit NEW declarative choices, term
+definitions, clarifications or changed preferences even if a later sentence asks
+recovery or a factual question.
 For example "Clarification: my output must be JSON. Remind me of the goal"
 updates the output preference from the first sentence and leaves the goal alone.
 Do not let a trailing recovery request erase or ignore the preceding new choice.
@@ -101,6 +113,7 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
     String terminal = 'TaskExtractionFailed';
     String? rejectionReason;
     int? ignoredReadOnlyUpdates;
+    List<String>? ignoredAmbiguousConstraintIds;
     final resolved = registry.resolve(model);
     final request = LlmRequest(
       model: model,
@@ -225,12 +238,16 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
       final patch = RagTaskPatch.parse(output.toString(), userInput, before);
       terminal = 'TaskExtractionValidated';
       ignoredReadOnlyUpdates = patch.ignoredReadOnlyUpdates;
+      ignoredAmbiguousConstraintIds = patch.ignoredAmbiguousConstraintIds;
       return RagTaskExtraction(patch, {
         'request': requestJson,
         'usage': usage?.toJson(),
         'elapsed_ms': clock.elapsedMilliseconds,
         'ignored_read_only_updates': patch.ignoredReadOnlyUpdates,
-        'patch_policy': patch.ignoredReadOnlyUpdates > 0
+        'ignored_ambiguous_constraint_ids': patch.ignoredAmbiguousConstraintIds,
+        'patch_policy': patch.ignoredAmbiguousConstraintIds.isNotEmpty
+            ? 'preserve_ambiguous_compound_constraints'
+            : patch.ignoredReadOnlyUpdates > 0
             ? 'no_op_read_only_question'
             : 'validated_updates',
         'validation':
@@ -259,6 +276,7 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         'elapsed_ms': clock.elapsedMilliseconds,
         'response_sha256': ragHash(output.toString()),
         'ignored_read_only_updates': ?ignoredReadOnlyUpdates,
+        'ignored_ambiguous_constraint_ids': ?ignoredAmbiguousConstraintIds,
         if (terminal != 'TaskExtractionValidated') ...{
           'rejection_reason': rejectionReason ?? terminal,
           'rejected_output_diagnostic_only': output.toString().substring(

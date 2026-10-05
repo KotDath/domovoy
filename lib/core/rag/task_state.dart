@@ -190,9 +190,14 @@ final class RagTaskPatch {
   RagTaskPatch(
     Iterable<RagTaskUpdate> updates, {
     this.ignoredReadOnlyUpdates = 0,
-  }) : updates = List.unmodifiable(updates);
+    Iterable<String> ignoredAmbiguousConstraintIds = const [],
+  }) : updates = List.unmodifiable(updates),
+       ignoredAmbiguousConstraintIds = List.unmodifiable(
+         ignoredAmbiguousConstraintIds,
+       );
   final List<RagTaskUpdate> updates;
   final int ignoredReadOnlyUpdates;
+  final List<String> ignoredAmbiguousConstraintIds;
 
   factory RagTaskPatch.parse(
     String raw,
@@ -212,6 +217,7 @@ final class RagTaskPatch {
     }
     final updates = <RagTaskUpdate>[];
     final seenUpdates = <String>{};
+    final ignoredConstraints = <String>[];
     var ignored = 0;
     final readOnly = automatic && _readOnlyTaskQuestion(userInput);
     for (final row in root['updates'] as List) {
@@ -258,6 +264,12 @@ final class RagTaskPatch {
       if (retire && !before.facts.any((f) => f.id == id && f.kind == kind)) {
         throw const FormatException('Retirement requires an existing slot');
       }
+      final previous = before.facts.where((f) => f.id == id).firstOrNull;
+      if (automatic &&
+          _ambiguousCompoundChange(previous, quote, retire, userInput)) {
+        ignoredConstraints.add(id);
+        continue;
+      }
       updates.add(RagTaskUpdate(id, kind, quote, retire: retire));
     }
     final ids = {...before.facts.map((f) => f.id)};
@@ -272,7 +284,11 @@ final class RagTaskPatch {
     if (ids.where((id) => id.startsWith('goal.')).length > 1) {
       throw const FormatException('Only one active task goal is supported');
     }
-    return RagTaskPatch(updates, ignoredReadOnlyUpdates: ignored);
+    return RagTaskPatch(
+      updates,
+      ignoredReadOnlyUpdates: ignored,
+      ignoredAmbiguousConstraintIds: ignoredConstraints,
+    );
   }
 
   RagTaskState apply(
@@ -292,6 +308,17 @@ final class RagTaskPatch {
     for (final update in updates) {
       if (!update.retire && active[update.id]?.quote == update.quote) continue;
       final previous = active[update.id];
+      if (sourceKind == 'automatic_user_quote' &&
+          _ambiguousCompoundChange(
+            previous,
+            update.quote,
+            update.retire,
+            userText,
+          )) {
+        throw const FormatException(
+          'Replacing a compound constraint requires explicit full replacement',
+        );
+      }
       if (sourceKind == 'automatic_user_quote' &&
           previous?.kind == RagTaskFactKind.goal &&
           !_explicitGoalChange(userText, retire: update.retire)) {
@@ -374,3 +401,32 @@ bool _readOnlyTaskQuestion(String input) => RegExp(
   r'^\s*(?:return\b|after\s+(?:restart(?:ing)?|reopening)\b|recover\b|remind\b|what\b|how\b|why\b|when\b|where\b|which\b|(?:(?:brief|another)\s+)?diversion\b|unrelated(?:\s+documentation)?\s+question\b|new(?:\s+(?:source|paper))?\s+question\b|(?:вернись|вспомни|восстанови|напомни|как|почему|когда|где|какие|что)(?:\s|[:?]|$)|после\s+перезапуска)',
   caseSensitive: false,
 ).hasMatch(input);
+
+/// A bounded lexical policy, not semantic entailment. A goal change or partial
+/// reassertion must not silently replace a conjunction/list of restrictions.
+/// Explicit whole-scope/constraint changes and manual editing are available.
+bool _ambiguousCompoundChange(
+  RagTaskFact? previous,
+  String quote,
+  bool retire,
+  String userInput,
+) {
+  if (previous == null ||
+      previous.kind != RagTaskFactKind.constraint ||
+      (!retire && previous.quote == quote) ||
+      !RegExp(
+        r'(?:^|[\s,])(?:and|or|but|и|или|но)(?:[\s,]|$)|[;,\n]',
+        caseSensitive: false,
+      ).hasMatch(previous.quote)) {
+    return false;
+  }
+  final verbs = retire ? 'remove|retire|forget' : 'replace|change|set|update';
+  final russianVerbs = retire
+      ? 'удали|сними|забудь'
+      : 'замени|измени|поменяй|обнови|задай';
+  final id = RegExp.escape(previous.id);
+  return !RegExp(
+    '^\\s*(?:(?:$verbs)\\s+(?:(?:our|my|the)\\s+)?(?:(?:whole|entire|full|all)\\s+)?(?:scope|constraints?|restrictions?|conditions?|$id)(?:\\s|[:—-]|\$)|(?:$russianVerbs)\\s+(?:(?:наши|мои|все|весь|полностью)\\s+)?(?:условия|ограничения|рамки|$id)(?:\\s|[:—-]|\$))',
+    caseSensitive: false,
+  ).hasMatch(userInput);
+}

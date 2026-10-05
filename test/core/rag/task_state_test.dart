@@ -10,6 +10,241 @@ import '../../support/rag_task_state_fixture.dart';
 
 void main() {
   test(
+    'partial compound reassertion retains original constraint and valid new goal',
+    () {
+      final empty = RagTaskState(project: 'garden', session: 'fresh');
+      const original =
+          'Our goal is a garden. No purchases or physical changes.';
+      final before = RagTaskPatch.parse(
+        jsonEncode({
+          'updates': [
+            {'id': 'goal.main', 'kind': 'goal', 'quote': 'a garden'},
+            {
+              'id': 'constraint.scope',
+              'kind': 'constraint',
+              'quote': 'No purchases or physical changes',
+            },
+          ],
+        }),
+        original,
+        empty,
+      ).apply(empty, userText: original, submissionId: 'first');
+      const input =
+          'Change our goal to balcony herbs, still without purchases.';
+      final patch = RagTaskPatch.parse(
+        jsonEncode({
+          'updates': [
+            {'id': 'goal.main', 'kind': 'goal', 'quote': 'balcony herbs'},
+            {
+              'id': 'constraint.scope',
+              'kind': 'constraint',
+              'quote': 'still without purchases',
+            },
+          ],
+        }),
+        input,
+        before,
+      );
+      expect(patch.ignoredAmbiguousConstraintIds, ['constraint.scope']);
+      final next = patch.apply(before, userText: input, submissionId: 'second');
+      expect(
+        next.facts.singleWhere((f) => f.kind == RagTaskFactKind.goal).quote,
+        'balcony herbs',
+      );
+      expect(
+        next.facts.singleWhere((f) => f.kind == RagTaskFactKind.constraint),
+        same(before.facts.last),
+      );
+      expect(next.superseded.single.kind, RagTaskFactKind.goal);
+      expect(
+        () => RagTaskPatch([
+          const RagTaskUpdate(
+            'constraint.scope',
+            RagTaskFactKind.constraint,
+            'still without purchases',
+          ),
+        ]).apply(before, userText: input, submissionId: 'unsafe'),
+        throwsFormatException,
+      );
+    },
+  );
+
+  test(
+    'partial resolution cannot retire a compound restriction in either language',
+    () {
+      for (final quote in ['No recording or export', 'без записи и выгрузки']) {
+        final empty = RagTaskState(project: 'meeting', session: 'fresh');
+        final before = RagTaskPatch.parse(
+          jsonEncode({
+            'updates': [
+              {
+                'id': 'constraint.privacy',
+                'kind': 'constraint',
+                'quote': quote,
+              },
+            ],
+          }),
+          quote,
+          empty,
+        ).apply(empty, userText: quote, submissionId: 'first');
+        const input = 'Recording is now allowed.';
+        final patch = RagTaskPatch.parse(
+          jsonEncode({
+            'updates': [
+              {
+                'id': 'constraint.privacy',
+                'kind': 'constraint',
+                'quote': input,
+                'action': 'retire',
+              },
+            ],
+          }),
+          input,
+          before,
+        );
+        expect(patch.ignoredAmbiguousConstraintIds, ['constraint.privacy']);
+        expect(
+          patch.apply(before, userText: input, submissionId: 'second'),
+          same(before),
+        );
+      }
+    },
+  );
+
+  test(
+    'explicit full replacement or retirement and manual editing remain available',
+    () {
+      final empty = RagTaskState(project: 'meeting', session: 'fresh');
+      const original = 'No recording or export';
+      final before = RagTaskPatch.parse(
+        jsonEncode({
+          'updates': [
+            {
+              'id': 'constraint.privacy',
+              'kind': 'constraint',
+              'quote': original,
+            },
+          ],
+        }),
+        original,
+        empty,
+      ).apply(empty, userText: original, submissionId: 'first');
+      for (final input in [
+        'Replace constraint.privacy with recording permitted.',
+        'Change our full scope to recording permitted.',
+        'Замени наши ограничения: recording permitted.',
+      ]) {
+        final patch = RagTaskPatch.parse(
+          jsonEncode({
+            'updates': [
+              {
+                'id': 'constraint.privacy',
+                'kind': 'constraint',
+                'quote': 'recording permitted',
+              },
+            ],
+          }),
+          input,
+          before,
+        );
+        expect(patch.ignoredAmbiguousConstraintIds, isEmpty);
+        expect(
+          patch
+              .apply(before, userText: input, submissionId: 'explicit')
+              .facts
+              .single
+              .quote,
+          'recording permitted',
+        );
+      }
+      const removal = 'Remove constraint.privacy';
+      final retired = RagTaskPatch.parse(
+        jsonEncode({
+          'updates': [
+            {
+              'id': 'constraint.privacy',
+              'kind': 'constraint',
+              'quote': removal,
+              'action': 'retire',
+            },
+          ],
+        }),
+        removal,
+        before,
+      ).apply(before, userText: removal, submissionId: 'retire');
+      expect(retired.facts, isEmpty);
+      expect(retired.retirements.single.quote, removal);
+      const manual = 'recording permitted';
+      final next =
+          RagTaskPatch.parse(
+            jsonEncode({
+              'updates': [
+                {
+                  'id': 'constraint.privacy',
+                  'kind': 'constraint',
+                  'quote': manual,
+                },
+              ],
+            }),
+            manual,
+            before,
+            automatic: false,
+          ).apply(
+            before,
+            userText: manual,
+            submissionId: 'manual',
+            sourceKind: 'manual_user_edit',
+          );
+      expect(next.facts.single.quote, manual);
+      expect(next.superseded.single.quote, original);
+    },
+  );
+
+  test(
+    'ordinary scalar restriction updates retain flexible semantic slots',
+    () {
+      final empty = RagTaskState(project: 'meeting', session: 'fresh');
+      const original = 'brief notes';
+      final before = RagTaskPatch.parse(
+        jsonEncode({
+          'updates': [
+            {
+              'id': 'constraint.output',
+              'kind': 'constraint',
+              'quote': original,
+            },
+          ],
+        }),
+        original,
+        empty,
+      ).apply(empty, userText: original, submissionId: 'first');
+      const input = 'I prefer detailed notes';
+      final patch = RagTaskPatch.parse(
+        jsonEncode({
+          'updates': [
+            {
+              'id': 'constraint.output',
+              'kind': 'constraint',
+              'quote': 'detailed notes',
+            },
+          ],
+        }),
+        input,
+        before,
+      );
+      expect(patch.ignoredAmbiguousConstraintIds, isEmpty);
+      expect(
+        patch
+            .apply(before, userText: input, submissionId: 'second')
+            .facts
+            .single
+            .quote,
+        'detailed notes',
+      );
+    },
+  );
+
+  test(
     'user provenance survives replay; replacement and scopes remain distinct',
     () async {
       final storage = FakeMemoryJsonlStorage();
