@@ -1,0 +1,26 @@
+[
+  {
+    "arxiv_id": "2310.08560v2",
+    "title": "MemGPT: Towards LLMs as Operating Systems",
+    "url": "https://arxiv.org/pdf/2310.08560v2",
+    "bytes": 663708,
+    "sha256": "9f674bcff69c86f11c813dcfad613d8841f5f8ed17979e3c4df06a91df7762e0",
+    "pages": 13
+  },
+  {
+    "arxiv_id": "2305.10250v3",
+    "url": "https://arxiv.org/pdf/2305.10250v3",
+    "bytes": 516536,
+    "sha256": "6c60f7f95a872de85179b770edaba584da7a30da37490522394a3e4888aa0059",
+    "title": "MemoryBank: Enhancing Large Language Models with Long-Term Memory",
+    "pages": 11
+  },
+  {
+    "arxiv_id": "2304.03442v2",
+    "url": "https://arxiv.org/pdf/2304.03442v2",
+    "bytes": 11947867,
+    "sha256": "1b31e77fb24d25d7598f2c49e955d12a28b95a6dabad34acdac40f44bfb7a139",
+    "title": "Generative Agents: Interactive Simulacra of Human Behavior",
+    "pages": 22
+  }
+]

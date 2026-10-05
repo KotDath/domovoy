@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/rag/models.dart';
@@ -17,6 +19,290 @@ import '../../../support/rag_grounding_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'wrong source and collapsed whitespace get exact repair data, never acceptance',
+    () async {
+      final f = RagGroundingFixture();
+      final gate = RagFinalAnswerGate(
+        turn: f.turn,
+        persistDiagnostic: (_) async {},
+      );
+      final req = LlmRequest(
+        model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+        context: LlmContext(),
+      ).snapshot();
+      final broken = jsonEncode(
+        f.json(id: 'wrong-id', quote: 'SOUL.md  допускает 4000 символов.'),
+      );
+      final result = await gate.evaluate(
+        AgentFinalAnswerDraft(
+          text: broken,
+          request: req,
+          finishReason: LlmFinishReason.stop,
+          repairAttempt: false,
+        ),
+        CancellationSource().token,
+      );
+      expect(gate.accepted, isNull);
+      final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+      final payload = jsonDecode(
+        (repair.context.messages.single.parts.single as LlmTextPart).text,
+      );
+      final hint = (payload['exact_quote_repair_hints'] as List).single;
+      expect(hint['suggested_chunk_id'], f.chunk.id);
+      expect(hint['actual_exact_quote'], RagGroundingFixture.quote);
+      expect(payload.containsKey('rejected_draft'), false);
+      final suggestion = payload['draft_suggestion_not_approved'];
+      expect(
+        suggestion['claims'].single['evidence'].single['quote'],
+        RagGroundingFixture.quote,
+      );
+      expect(gate.diagnostics.single['rejected_draft_diagnostic_only'], broken);
+      final second = await gate.evaluate(
+        AgentFinalAnswerDraft(
+          text: broken,
+          request: repair.snapshot(),
+          finishReason: LlmFinishReason.stop,
+          repairAttempt: true,
+        ),
+        CancellationSource().token,
+      );
+      expect((second as AgentFinalAnswerRejected).repairRequest, isNull);
+      expect(gate.accepted, isNull);
+    },
+  );
+
+  test(
+    'unavailable history quote is explicitly removed, never broadened to old sources',
+    () async {
+      final f = RagGroundingFixture();
+      final gate = RagFinalAnswerGate(
+        turn: f.turn,
+        persistDiagnostic: (_) async {},
+      );
+      final req = LlmRequest(
+        model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
+        context: LlmContext(),
+      ).snapshot();
+      final result = await gate.evaluate(
+        AgentFinalAnswerDraft(
+          text: jsonEncode(
+            f.json(quote: 'A quotation from a different historical document.'),
+          ),
+          request: req,
+          finishReason: LlmFinishReason.stop,
+          repairAttempt: false,
+        ),
+        CancellationSource().token,
+      );
+      final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+      final payload = jsonDecode(
+        (repair.context.messages.single.parts.single as LlmTextPart).text,
+      );
+      final hint = (payload['exact_quote_repair_hints'] as List).single;
+      expect(hint['action'], 'remove_unmatched_citation');
+      expect(hint.containsKey('actual_exact_quote'), false);
+      expect(payload['draft_suggestion_not_approved']['status'], 'abstained');
+      expect(payload['draft_suggestion_not_approved']['claims'], isEmpty);
+      expect(gate.accepted, isNull);
+    },
+  );
+
+  test('repair hints preserve exact Markdown and line breaks', () async {
+    const original =
+        '**Spring forward.** If time does not exist,\n  the run is **skipped**.';
+    final doc = RagDocument(source: 'dst.md', title: 'DST', text: original);
+    final chunk = RagChunk(
+      documentId: doc.id,
+      documentRevision: doc.revision,
+      source: doc.source,
+      title: doc.title,
+      section: 'DST',
+      start: 0,
+      end: original.length,
+      text: original,
+      strategy: ChunkStrategy.fixed,
+      tokens: 30,
+      ordinal: 0,
+    );
+    final f = RagGroundingFixture();
+    final turn = RagPreparedTurn(
+      request: f.turn.request,
+      generation: 'g',
+      fingerprint: 'fp',
+      candidates: [RagHit(chunk, .9)],
+      evidence: [RagHit(chunk, .9)],
+      context: ragEvidenceContext([RagHit(chunk, .9)]),
+      timings: {},
+      exclusions: {},
+    );
+    final gate = RagFinalAnswerGate(
+      turn: turn,
+      persistDiagnostic: (_) async {},
+    );
+    final req = LlmRequest(
+      model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
+      context: LlmContext(),
+    ).snapshot();
+    final raw = jsonEncode({
+      'status': 'answered',
+      'claims': [
+        {
+          'text': 'The run is skipped.',
+          'evidence': [
+            {
+              'chunk_id': chunk.id,
+              'quote':
+                  'Spring forward. If time does not exist, the run is skipped.',
+            },
+          ],
+        },
+      ],
+    });
+    final result = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: raw,
+        request: req,
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: false,
+      ),
+      CancellationSource().token,
+    );
+    expect(gate.accepted, isNull);
+    final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+    final payload = jsonDecode(
+      (repair.context.messages.single.parts.single as LlmTextPart).text,
+    );
+    expect(
+      (payload['exact_quote_repair_hints'] as List)
+          .single['actual_exact_quote'],
+      original,
+    );
+  });
+
+  test('PDF repair hints restore original soft-hyphen/control markers', () async {
+    const original =
+        'The main con\u0002text is divided into three con\u00adtiguous sections.';
+    final doc = RagDocument(source: 'dst.md', title: 'DST', text: original);
+    final chunk = RagChunk(
+      documentId: doc.id,
+      documentRevision: doc.revision,
+      source: doc.source,
+      title: doc.title,
+      section: 'DST',
+      start: 0,
+      end: original.length,
+      text: original,
+      strategy: ChunkStrategy.fixed,
+      tokens: 30,
+      ordinal: 0,
+    );
+    final f = RagGroundingFixture();
+    final turn = RagPreparedTurn(
+      request: f.turn.request,
+      generation: 'g',
+      fingerprint: 'fp',
+      candidates: [RagHit(chunk, .9)],
+      evidence: [RagHit(chunk, .9)],
+      context: ragEvidenceContext([RagHit(chunk, .9)]),
+      timings: {},
+      exclusions: {},
+    );
+    final gate = RagFinalAnswerGate(
+      turn: turn,
+      persistDiagnostic: (_) async {},
+    );
+    final req = LlmRequest(
+      model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
+      context: LlmContext(),
+    ).snapshot();
+    final raw = jsonEncode({
+      'status': 'answered',
+      'claims': [
+        {
+          'text': 'The run is skipped.',
+          'evidence': [
+            {
+              'chunk_id': chunk.id,
+              'quote':
+                  'The main context is divided into three contiguous sections.',
+            },
+          ],
+        },
+      ],
+    });
+    final result = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: raw,
+        request: req,
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: false,
+      ),
+      CancellationSource().token,
+    );
+    expect(gate.accepted, isNull);
+    final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+    final payload = jsonDecode(
+      (repair.context.messages.single.parts.single as LlmTextPart).text,
+    );
+    expect(
+      (payload['exact_quote_repair_hints'] as List)
+          .single['actual_exact_quote'],
+      original,
+    );
+  });
+
+  test('whitespace JSON draft has only one strict text-mode repair', () async {
+    final f = RagGroundingFixture();
+    final gate = RagFinalAnswerGate(
+      turn: f.turn,
+      persistDiagnostic: (_) async {},
+    );
+    final req = LlmRequest(
+      model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+      context: LlmContext(),
+      generation: LlmGenerationConfig(
+        responseFormat: LlmResponseFormat.jsonObject,
+        reasoningMode: ReasoningMode.disabled,
+        temperature: 0,
+        maxOutputTokens: 2048,
+      ),
+    ).snapshot();
+    final first = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: '   ',
+        request: req,
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: false,
+      ),
+      CancellationSource().token,
+    );
+    final repair = (first as AgentFinalAnswerRejected).repairRequest!;
+    expect(repair.generation.responseFormat, LlmResponseFormat.text);
+    expect(repair.generation.maxOutputTokens, 2048);
+    expect(repair.generation.temperature, 0);
+    final invalid = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: 'Still invalid',
+        request: repair.snapshot(),
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: true,
+      ),
+      CancellationSource().token,
+    );
+    expect((invalid as AgentFinalAnswerRejected).repairRequest, isNull);
+    expect(gate.accepted, isNull);
+    final accepted = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: f.answer(),
+        request: repair.snapshot(),
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: true,
+      ),
+      CancellationSource().token,
+    );
+    expect(accepted, isA<AgentFinalAnswerAccepted>());
+  });
   for (final mode in ['valid', 'wrong ID', 'wrong quote', 'empty']) {
     test(
       'production preparation persists $mode outcome separately from drafts',

@@ -1,4 +1,5 @@
 import '../llm/cancellation.dart';
+import '../llm/generation.dart';
 import '../llm/request.dart';
 import 'dynamic_context.dart';
 
@@ -11,6 +12,8 @@ final class AgentPreparedContext {
     this.systemPromptOverride,
     this.suppressDynamicContext = false,
     this.disableTools = false,
+    this.isolateCurrentUser = false,
+    this.responseFormat,
     this.maxRequestBytes,
     this.beforeRequest,
   });
@@ -19,6 +22,13 @@ final class AgentPreparedContext {
   final String? systemPromptOverride;
   final bool suppressDynamicContext;
   final bool disableTools;
+
+  /// Send only the latest real user message to the provider. Retained history
+  /// and compaction input are unchanged. Requires tools disabled.
+  final bool isolateCurrentUser;
+
+  /// Ephemeral output syntax for this run, including isolated repair attempts.
+  final LlmResponseFormat? responseFormat;
 
   /// Conservative UTF-8 request envelope after reserving output and framing.
   /// This is a byte bound, not a claim to have the provider's exact tokenizer.

@@ -3,6 +3,7 @@ import 'package:domovoy/core/rag/contracts.dart';
 import 'package:domovoy/core/rag/models.dart';
 
 final class FakeRagModels implements RagModelProvider {
+  final queryInputs = <String>[];
   @override
   Future<RagModelInfo> health(CancellationToken token) async =>
       const RagModelInfo('fake-v1', 2, 'TEST');
@@ -26,9 +27,12 @@ final class FakeRagModels implements RagModelProvider {
     RagModelInfo model,
     CancellationToken token, {
     bool query = false,
-  }) async => [
-    for (final _ in texts) [1, 0],
-  ];
+  }) async {
+    if (query) queryInputs.addAll(texts);
+    return [
+      for (final _ in texts) [1, 0],
+    ];
+  }
 }
 
 final class FakeRagImporter implements RagDocumentImporter {

@@ -3,6 +3,36 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('request snapshots, usage, and events', () {
+    test('JSON output syntax round trips and defaults old records to text', () {
+      final old = LlmGenerationConfig(temperature: 0).toJson();
+      expect(old.containsKey('responseFormat'), false);
+      expect(
+        LlmGenerationConfig.fromJson(old).responseFormat,
+        LlmResponseFormat.text,
+      );
+      final json = LlmGenerationConfig(
+        responseFormat: LlmResponseFormat.jsonObject,
+        reasoningMode: ReasoningMode.disabled,
+        maxOutputTokens: 512,
+      );
+      expect(LlmGenerationConfig.fromJson(json.toJson()), json);
+      expect(
+        json,
+        isNot(
+          LlmGenerationConfig(
+            reasoningMode: ReasoningMode.disabled,
+            maxOutputTokens: 512,
+          ),
+        ),
+      );
+      expect(
+        () => LlmGenerationConfig.fromJson({
+          ...old,
+          'responseFormat': 'markdown',
+        }),
+        throwsA(isA<LlmException>()),
+      );
+    });
     test('request snapshot serializes mixed context without secrets', () {
       final snapshot = LlmRequest(
         model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
@@ -52,6 +82,27 @@ void main() {
       expect(json.containsKey('Authorization'), isFalse);
       expect(LlmRequestSnapshot.fromJson(json), snapshot);
       expect(snapshot.context.messages, hasLength(3));
+    });
+
+    test('JSON output unsupported transport fails before dispatch', () {
+      final original = BuiltInLlmCatalog.deepSeekV4FlashModel;
+      final model = LlmModel.fromJson({
+        ...original.toJson(),
+        'wireFamily': LlmWireFamily.anthropicMessages.toJson(),
+      });
+      expect(
+        () => validateRequestAgainstModel(
+          LlmRequest(
+            model: model.ref,
+            context: LlmContext(systemPrompt: 'Return JSON'),
+            generation: LlmGenerationConfig(
+              responseFormat: LlmResponseFormat.jsonObject,
+            ),
+          ),
+          model,
+        ),
+        throwsA(isA<LlmException>()),
+      );
     });
 
     test('partial usage and unknown finish reasons round-trip', () {

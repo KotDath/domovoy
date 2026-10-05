@@ -176,6 +176,14 @@ void validateRequestAgainstModel(LlmRequest request, LlmModel model) {
       'Model ${model.id.value} does not support tools.',
     );
   }
+  if (request.generation.responseFormat == LlmResponseFormat.jsonObject &&
+      model.wireFamily != LlmWireFamily.openaiChatCompletions &&
+      model.wireFamily != LlmWireFamily.openaiResponses) {
+    throwLlm(
+      LlmErrorKind.configuration,
+      'JSON output is not implemented for ${model.wireFamily.wireName}.',
+    );
+  }
   validateReasoningAgainstModel(request.generation, model);
   validateContinuationEntries(
     messages: request.context.messages,

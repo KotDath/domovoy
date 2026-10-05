@@ -4,3 +4,5 @@ import 'rag_storage_stub.dart'
     as platform;
 
 JsonlStreamStorage? createRagStorage() => platform.createRagStorage();
+JsonlStreamStorage? createRagTaskStateStorage() =>
+    platform.createRagTaskStateStorage();

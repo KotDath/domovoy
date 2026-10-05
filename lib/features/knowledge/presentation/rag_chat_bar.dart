@@ -3,21 +3,26 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../../../core/rag/models.dart';
+import '../../../core/agents/agents.dart';
+import '../../../core/llm/cancellation.dart';
 import '../../../core/rag/turn.dart';
 import '../../../core/rag/retrieval.dart';
 import '../application/rag_chat_controller.dart';
 import '../application/rag_final_answer_gate.dart';
+import 'rag_task_state_page.dart';
 
 class RagChatBar extends StatelessWidget {
   const RagChatBar({
     required this.controller,
     required this.child,
     required this.enabled,
+    this.snapshot,
     super.key,
   });
   final RagChatController controller;
   final Widget child;
   final bool enabled;
+  final AgentSessionSnapshot? snapshot;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -100,6 +105,31 @@ class RagChatBar extends StatelessWidget {
                   'Источники · ${controller.history.isEmpty ? 0 : _sent(controller.history.last).length}',
                 ),
               ),
+              if (snapshot != null && controller.taskStates != null)
+                TextButton(
+                  onPressed: enabled && !controller.busy
+                      ? () => Navigator.of(context).push<void>(
+                          MaterialPageRoute(
+                            builder: (_) => RagTailReplayPage(
+                              controller: controller,
+                              snapshot: snapshot!,
+                            ),
+                          ),
+                        )
+                      : null,
+                  child: const Text('Повтор: память выкл./вкл.'),
+                ),
+              if (controller.taskStates != null)
+                TextButton(
+                  onPressed: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => RagTaskStatePage(controller: controller),
+                    ),
+                  ),
+                  child: Text(
+                    'Память задачи · r${controller.taskState?.revision ?? 0}',
+                  ),
+                ),
             ],
           ),
         ),
@@ -107,6 +137,11 @@ class RagChatBar extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Text(controller.error ?? controller.progress),
+          ),
+        if (controller.taskStateNotice != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text(controller.taskStateNotice!),
           ),
         child,
       ],
@@ -134,7 +169,7 @@ class RagInspectorPage extends StatelessWidget {
           SwitchListTile(
             title: const Text('Нейтральное сравнение'),
             subtitle: const Text(
-              'Без профиля и памяти. Для сравнения используйте отдельные новые чаты и одинаковую модель.',
+              'Без профиля и общей памяти. Память задачи управляется отдельно. Для сравнения используйте новые чаты и одинаковую модель.',
             ),
             value: controller.neutralEvaluation,
             onChanged: controller.busy
@@ -331,6 +366,14 @@ class _TraceCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (trace['task_state'] is Map)
+              Text(
+                'Использована память задачи · r${(trace['task_state'] as Map)['revision']} · ${trace['project']} / ${trace['session']}',
+              ),
+            if (trace['retrieval_query'] != null)
+              SelectableText(
+                'Контекстный поисковый запрос: ${trace['retrieval_query']}',
+              ),
             if (completion != null)
               ExpansionTile(
                 title: const Text('Usage провайдера'),
@@ -385,6 +428,17 @@ class _GroundedClaimCard extends StatelessWidget {
             Text('${citation['source']} · ${citation['section']}'),
             TextButton(
               onPressed: () {
+                if (citation['source_kind'] == 'user_state') {
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => RagUserStateCitationPage(
+                        trace: trace,
+                        citation: citation,
+                      ),
+                    ),
+                  );
+                  return;
+                }
                 final candidate = (trace['candidates'] as List)
                     .whereType<Map>()
                     .where(
@@ -512,4 +566,142 @@ class _SourceCard extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Explicitly labelled diagnostic, showing real provider answers and evidence.
+class RagTailReplayPage extends StatefulWidget {
+  const RagTailReplayPage({
+    required this.controller,
+    required this.snapshot,
+    super.key,
+  });
+  final RagChatController controller;
+  final AgentSessionSnapshot snapshot;
+  @override
+  State<RagTailReplayPage> createState() => _RagTailReplayPageState();
+}
+
+class _RagTailReplayPageState extends State<RagTailReplayPage> {
+  CancellationSource? _cancellation;
+  List<Map<String, Object?>>? _results;
+  String? _error;
+  @override
+  void dispose() {
+    _cancellation?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _run() async {
+    final cancellation = CancellationSource();
+    setState(() {
+      _cancellation = cancellation;
+      _error = null;
+      _results = null;
+    });
+    try {
+      final rows = await widget.controller.replayLastQuestion(
+        widget.snapshot,
+        cancellation.token,
+      );
+      if (mounted) {
+        setState(() => _results = rows);
+      }
+    } on Object catch (error) {
+      if (mounted) {
+        setState(
+          () => _error = cancellation.token.isCancelled
+              ? 'Повтор отменён'
+              : 'Повтор не завершён: $error',
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _cancellation = null);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Диагностика: память выкл./вкл.')),
+    body: ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          'Повтор последнего принятого вопроса с двумя настоящими сообщениями перед ним. Без ранней истории, резюме, профиля и общей памяти. Один и тот же M1, модель и настройки. История исходного чата и память задачи не изменяются; извлекатель не запускается.',
+        ),
+        Text(
+          'Проект: ${widget.snapshot.projectId?.value ?? 'default'}\nЧат: ${widget.snapshot.id.value}',
+        ),
+        FilledButton(
+          onPressed: _cancellation == null ? _run : null,
+          child: const Text('Повторить последний вопрос'),
+        ),
+        if (_cancellation != null) ...[
+          const Text('Два настоящих запроса к модели; ожидайте завершения.'),
+          OutlinedButton(
+            onPressed: () => _cancellation?.cancel(),
+            child: const Text('Отменить повтор'),
+          ),
+        ],
+        if (_error != null) Text(_error!),
+        for (final result in _results ?? <Map<String, Object?>>[]) ...[
+          const Divider(),
+          Text(
+            'Память ${result['state_enabled'] == true ? 'включена' : 'выключена'} · ${result['accepted'] == true ? 'ответ принят в повторе' : 'ответ не принят'}',
+          ),
+          Text(
+            'M1 · ${result['corpus']} · ${result['strategy']} · память r${result['state_revision'] ?? '—'}',
+          ),
+          SelectableText('Вопрос: ${result['question']}'),
+          ExpansionTile(
+            title: const Text('Одинаковые два сообщения'),
+            children: [
+              SelectableText(
+                const JsonEncoder.withIndent('  ').convert(result['tail']),
+              ),
+            ],
+          ),
+          SelectableText(
+            result['answer'] as String? ??
+                'Ответ не принят: ${result['terminal']}',
+          ),
+          for (final trace in (result['traces'] as List).whereType<Map>())
+            if ((trace['completion'] as Map?)?['replay_message_id'] != null)
+              for (final claim
+                  in ((trace['completion']['grounding'] as Map?)?['claims']
+                          as List? ??
+                      []))
+                for (final citation in claim['evidence'] as List)
+                  TextButton(
+                    onPressed: () => Navigator.of(context).push<void>(
+                      MaterialPageRoute(
+                        builder: (_) => citation['source_kind'] == 'user_state'
+                            ? RagUserStateCitationPage(
+                                trace: trace,
+                                citation: citation,
+                              )
+                            : _CitationPage(
+                                chunk:
+                                    (trace['candidates'] as List)
+                                            .whereType<Map>()
+                                            .singleWhere(
+                                              (c) =>
+                                                  c['sent'] == true &&
+                                                  (c['chunk'] as Map)['id'] ==
+                                                      citation['chunk_id'],
+                                            )['chunk']
+                                        as Map,
+                                citation: citation,
+                              ),
+                      ),
+                    ),
+                    child: Text(
+                      'Источник: ${citation['source']} · ${citation['section']}',
+                    ),
+                  ),
+        ],
+      ],
+    ),
+  );
 }

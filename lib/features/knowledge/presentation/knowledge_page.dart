@@ -16,7 +16,7 @@ class KnowledgePage extends StatefulWidget {
 }
 
 class _KnowledgePageState extends State<KnowledgePage> {
-  final _arxiv = TextEditingController(text: '2310.08560');
+  final _arxiv = TextEditingController();
   final _query = TextEditingController(
     text: 'Какие слои памяти есть в Domovoy?',
   );

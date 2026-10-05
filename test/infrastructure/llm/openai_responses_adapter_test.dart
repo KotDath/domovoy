@@ -10,6 +10,23 @@ import '../../support/recording_http_client.dart';
 
 void main() {
   group('OpenAI Responses adapter', () {
+    test('maps JSON syntax to Responses text format', () {
+      final model = BuiltInLlmCatalog.gpt4oMiniModel;
+      final body = _openAi(RecordingClient((_) => sseResponse(''))).requestBody(
+        LlmRequest(
+          model: model.ref,
+          context: LlmContext(systemPrompt: 'Return JSON'),
+          generation: LlmGenerationConfig(
+            reasoningMode: ReasoningMode.disabled,
+            responseFormat: LlmResponseFormat.jsonObject,
+          ),
+        ),
+      );
+      expect(body['text'], {
+        'format': {'type': 'json_object'},
+      });
+      expect(body.containsKey('response_format'), false);
+    });
     test('streams text and reasoning for each curated OpenAI model', () async {
       for (final model in <LlmModel>[
         BuiltInLlmCatalog.gpt4oMiniModel,

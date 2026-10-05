@@ -7,6 +7,7 @@ import '../../../core/llm/capabilities.dart';
 import '../../../core/llm/credentials.dart';
 import '../../../core/llm/errors.dart';
 import '../../../core/llm/events.dart';
+import '../../../core/llm/generation.dart';
 import '../../../core/llm/identifiers.dart';
 import '../../../core/llm/json.dart';
 import '../../../core/llm/messages.dart';
@@ -292,6 +293,9 @@ Map<String, Object?> buildChatCompletionsBody({
     body['tools'] = request.context.tools
         .map(encodeChatCompletionsTool)
         .toList();
+  }
+  if (request.generation.responseFormat == LlmResponseFormat.jsonObject) {
+    body['response_format'] = const {'type': 'json_object'};
   }
   dialect.applyReasoning(body, request.generation, model.capabilities);
   if (request.generation.temperature != null) {

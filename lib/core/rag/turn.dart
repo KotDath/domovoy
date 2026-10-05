@@ -4,6 +4,7 @@ import '../llm/cancellation.dart';
 import 'contracts.dart';
 import 'models.dart';
 import 'retrieval.dart';
+import 'task_state.dart';
 
 enum RagProtocol { m0, m1, m2, m3, m4 }
 
@@ -20,12 +21,14 @@ final class RagTurnRequest {
     required this.protocol,
     required this.contextByteBudget,
     this.retrieval = const RagRetrievalConfig(),
+    this.taskState,
   });
   final String id, project, session, query, corpus;
   final ChunkStrategy strategy;
   final RagProtocol protocol;
   final int contextByteBudget;
   final RagRetrievalConfig retrieval;
+  final RagTaskState? taskState;
 }
 
 final class RagPreparedTurn {
@@ -82,6 +85,17 @@ final class RagPreparedTurn {
       'project': request.project,
       'session': request.session,
       'query': request.query,
+      if (request.taskState != null) ...{
+        'task_state': request.taskState!.toJson(),
+        'task_state_evidence': request.taskState!.facts
+            .map(request.taskState!.evidenceJson)
+            .toList(),
+        'retrieval_query': request.protocol.index < RagProtocol.m3.index
+            ? request.query
+            : request.taskState!.retrievalQuery(request.query),
+        'task_state_enabled': true,
+        'reranker_query': request.query,
+      },
       'rewritten_query': rewrittenQuery,
       'rewrite_audit': rewriteAudit,
       'retrieval_config': {
@@ -161,6 +175,30 @@ final class RagTurnCoordinator {
         'History and reserved output exhaust the context budget',
       );
     }
+    final state = request.taskState;
+    if (state != null &&
+        (state.project != request.project ||
+            state.session != request.session)) {
+      throw const FormatException(
+        'Task-state owner differs from admitted turn',
+      );
+    }
+    final retrievalQuery = request.protocol.index < RagProtocol.m3.index
+        ? request.query
+        : state?.retrievalQuery(request.query) ?? request.query;
+    if (state != null &&
+        state.facts.isNotEmpty &&
+        (request.protocol == RagProtocol.m3 ||
+            request.protocol == RagProtocol.m4) &&
+        !{
+          'uncalibrated',
+          'manual-experiment',
+        }.contains(request.retrieval.calibrationId)) {
+      throw StateError(
+        'Профиль M3/M4 рассчитан без памяти задачи. '
+        'Выключите память задачи, выберите M1/M2 или явно задайте экспериментальные пороги.',
+      );
+    }
     if (request.protocol == RagProtocol.m0) {
       return RagPreparedTurn(
         request: request,
@@ -206,7 +244,7 @@ final class RagTurnCoordinator {
     if (request.protocol == RagProtocol.m3 ||
         request.protocol == RagProtocol.m4) {
       if (rewriter == null) throw StateError('Переформулирование недоступно');
-      rewrite = await rewriter.rewrite(request.query, cancellation);
+      rewrite = await rewriter.rewrite(retrievalQuery, cancellation);
       check();
     }
     rewriteClock.stop();
@@ -217,7 +255,7 @@ final class RagTurnCoordinator {
       throw const FormatException('Модель изменилась: перестройте индекс');
     }
     final vectors = await models.embed(
-      [rewrite?.query ?? request.query],
+      [rewrite?.query ?? retrievalQuery],
       info,
       cancellation,
       query: true,

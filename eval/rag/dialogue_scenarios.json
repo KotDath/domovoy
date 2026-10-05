@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "authority": "docs/rag/implementation-plan.md",
+  "protocol": "M1 fixed top-5; no recalibration of day23 state-free cutoffs",
+  "generator": "deepseek/deepseek-v4-pro",
+  "generation": {
+    "temperature": 0,
+    "reasoning": "disabled",
+    "max_output_tokens": 2048
+  },
+  "scenarios": [
+    {
+      "id": "A",
+      "questions": [
+        {
+          "id": "A01",
+          "question": "I want to plan a morning digest on Android in Domovoy. Our goal is discussion of a configuration only, not creating or running any task. What documented scheduling limits should we consider?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A02",
+          "question": "I choose 09:00 Europe/Moscow for the morning digest. The application may be closed. Does the documented Android scheduler guarantee that time?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A03",
+          "question": "Constraint: no external server or external scheduler. We must not create or execute tasks during this discussion. What documented option remains when the application is closed?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A04",
+          "question": "Brief diversion: how does the documented cron timezone handle daylight-saving time? Please keep our existing goal unchanged.",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A05",
+          "question": "Delivery channel and digest model remain undecided. What does the documentation say we still need to choose?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A06",
+          "question": "Another diversion: what are the limits of SOUL.md and USER.md, and the required USER.md sections?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A07",
+          "question": "For this discussion, MD means morning digest. Which documented parts would support MD, subject to our constraints?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A08",
+          "question": "Change my chosen digest time from 09:00 to 08:30; keep the timezone and all other constraints. Using the documented cron fields, propose its five-field cron expression, clearly labelled as a proposal, without executing it.",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A09",
+          "question": "After restarting, recover our goal, latest time, timezone and restrictions. Distinguish my chosen conditions from the documented Android limitations.",
+          "corpus": "domovoy",
+          "restart_before": true
+        },
+        {
+          "id": "A10",
+          "question": "New source question: in MemGPT, how are main context and external context managed? Cite the actual paper; do not change our task goal.",
+          "corpus": "arxiv",
+          "restart_before": false
+        },
+        {
+          "id": "A11",
+          "question": "Unrelated documentation question: which USER.md sections are mandatory and what are the SOUL.md and USER.md size limits? Answer only that question.",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "A12",
+          "question": "Return to our original task. Recover the goal, latest chosen time and timezone, fixed restrictions and still-undecided choices. State what Android guarantees and does not guarantee, with separate user and document sources. Do not invent a selected model or delivery channel.",
+          "corpus": "domovoy",
+          "restart_before": false
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "questions": [
+        {
+          "id": "B01",
+          "question": "Our goal is to understand project-specific context versus global user memory in Domovoy, only discussing settings without changing them. What does the documentation distinguish?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B02",
+          "question": "My constraint is that changes to existing active working or long-term memory require my explicit confirmation. This is separate from automatically tracked dialogue conditions. What does the documented memory workflow require?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B03",
+          "question": "In this discussion, CP means project context. Use that term consistently. How is CP connected to the selected project in the documentation?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B04",
+          "question": "Diversion: what are the documented personalization limits and which USER.md sections are mandatory?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B05",
+          "question": "I want brief answers with exact sources. Also, disabling a memory switch must not be treated as deleting stored records. What do the documented toggles control?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B06",
+          "question": "Return to CP: how should we distinguish selected-project context from global working and long-term memory?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B07",
+          "question": "Memory limits and extraction model remain undecided. Which documented settings should I choose later?",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B08",
+          "question": "Clarification: my preferred format is a short explanation followed by sources, and no changes or actions should be performed. Recover our discussion goal and constraints.",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B09",
+          "question": "After restart, what is our goal, what does CP mean, and what confirmation and output-format requirements did I choose? Cite user choices separately from documentation.",
+          "corpus": "domovoy",
+          "restart_before": true
+        },
+        {
+          "id": "B10",
+          "question": "New paper question: what is the forgetting mechanism described by MemoryBank? Cite the actual paper and do not change our discussion goal.",
+          "corpus": "arxiv",
+          "restart_before": false
+        },
+        {
+          "id": "B11",
+          "question": "Unrelated documentation question: which USER.md sections are mandatory and what are the SOUL.md and USER.md size limits? Answer only that question.",
+          "corpus": "domovoy",
+          "restart_before": false
+        },
+        {
+          "id": "B12",
+          "question": "Return to our original task. Recover the goal, CP definition, confirmation requirement, requested output format and undecided settings. Separate my user choices from project/global memory facts in the documentation.",
+          "corpus": "domovoy",
+          "restart_before": false
+        }
+      ]
+    }
+  ],
+  "diagnostic": {
+    "replay": "identical last two actual messages and identical final question; separate runtime retaining original state scope; no earlier transcript, profile, summary or shared memory",
+    "checks": "source validity, goal, latest time and timezone, unchanged restrictions, glossary, unknown choices; expert review of all answers"
+  }
+}

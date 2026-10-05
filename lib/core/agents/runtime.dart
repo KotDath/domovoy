@@ -3293,8 +3293,29 @@ final class _LiveRun implements AgentRun {
 
   /// Provider requests append the resolved dynamic context. Compaction and
   /// planning keep using [_currentRequest] so memory never enters their input.
-  LlmRequest _providerRequest() =>
-      _requestWithSystemPrompt(_composedSystemPrompt());
+  LlmRequest _providerRequest() {
+    final request = _requestWithSystemPrompt(_composedSystemPrompt());
+    if (options.preparedContext?.isolateCurrentUser != true) return request;
+    if (options.preparedContext?.disableTools != true) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Isolated user context requires tools disabled.',
+      );
+    }
+    return LlmRequest(
+      model: request.model,
+      generation: request.generation,
+      sessionId: request.sessionId,
+      context: LlmContext(
+        systemPrompt: request.context.systemPrompt,
+        messages: [
+          session.transcript.messages.lastWhere(
+            (m) => m.role == LlmMessageRole.user,
+          ),
+        ],
+      ),
+    );
+  }
 
   /// Freezes the tool view for this run and reports what cannot be offered.
   ///
@@ -4485,6 +4506,8 @@ final class _LiveRun implements AgentRun {
       session.runtime.registry,
     );
     return LlmGenerationConfig(
+      responseFormat:
+          options.preparedContext?.responseFormat ?? definition.responseFormat,
       reasoningMode: mode,
       reasoningEffort: effort,
       temperature: definition.temperature,

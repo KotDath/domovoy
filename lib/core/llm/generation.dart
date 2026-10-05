@@ -56,9 +56,22 @@ enum ModelReasoningCapability {
   }
 }
 
+/// Transport output syntax. JSON mode does not validate an application schema.
+enum LlmResponseFormat {
+  text,
+  jsonObject;
+
+  static LlmResponseFormat fromName(String value) => switch (value) {
+    'text' => text,
+    'jsonObject' => jsonObject,
+    _ => throwLlm(LlmErrorKind.protocol, 'Unknown response format "$value".'),
+  };
+}
+
 final class LlmGenerationConfig {
   LlmGenerationConfig({
     this.reasoningMode = ReasoningMode.enabled,
+    this.responseFormat = LlmResponseFormat.text,
     this.reasoningEffort = ReasoningEffort.modelDefault,
     double? temperature,
     int? maxOutputTokens,
@@ -76,6 +89,11 @@ final class LlmGenerationConfig {
   factory LlmGenerationConfig.fromJson(Object? json) {
     final map = decodeTypedJson(json, type: jsonType);
     return LlmGenerationConfig(
+      responseFormat: map['responseFormat'] == null
+          ? LlmResponseFormat.text
+          : LlmResponseFormat.fromName(
+              requireNonBlankString(map, 'responseFormat'),
+            ),
       reasoningMode: ReasoningMode.fromName(
         requireNonBlankString(map, 'reasoningMode'),
       ),
@@ -95,6 +113,7 @@ final class LlmGenerationConfig {
 
   static final defaults = LlmGenerationConfig();
 
+  final LlmResponseFormat responseFormat;
   final ReasoningMode reasoningMode;
   final ReasoningEffort reasoningEffort;
   final double? temperature;
@@ -105,6 +124,9 @@ final class LlmGenerationConfig {
       'reasoningMode': reasoningMode.name,
       'reasoningEffort': reasoningEffort.name,
     };
+    if (responseFormat != LlmResponseFormat.text) {
+      fields['responseFormat'] = responseFormat.name;
+    }
     if (temperature != null) {
       fields['temperature'] = temperature;
     }
@@ -118,14 +140,20 @@ final class LlmGenerationConfig {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is LlmGenerationConfig &&
+          other.responseFormat == responseFormat &&
           other.reasoningMode == reasoningMode &&
           other.reasoningEffort == reasoningEffort &&
           other.temperature == temperature &&
           other.maxOutputTokens == maxOutputTokens;
 
   @override
-  int get hashCode =>
-      Object.hash(reasoningMode, reasoningEffort, temperature, maxOutputTokens);
+  int get hashCode => Object.hash(
+    responseFormat,
+    reasoningMode,
+    reasoningEffort,
+    temperature,
+    maxOutputTokens,
+  );
 }
 
 double? _validateTemperature(double? temperature) {

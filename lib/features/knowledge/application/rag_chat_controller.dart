@@ -9,14 +9,23 @@ import '../../../core/rag/models.dart';
 import '../../../core/rag/turn.dart';
 import '../../../core/rag/retrieval.dart';
 import '../../../core/rag/grounding.dart';
+import '../../../core/rag/task_state.dart';
 import '../../chat/application/chat_run_preparer.dart';
 import 'rag_final_answer_gate.dart';
+import 'rag_replay_comparison.dart';
 
 typedef RagQueryRewriterFactory =
     RagQueryRewriter Function(
       ModelRef model,
       Future<void> Function(Map<String, Object?>) beforeRequest,
       Future<void> Function(RagRewriteResult) afterResult,
+    );
+
+typedef RagTaskExtractorFactory =
+    RagTaskExtractor Function(
+      ModelRef model,
+      Future<void> Function(Map<String, Object?>) beforeRequest,
+      Future<void> Function(Map<String, Object?>) afterResult,
     );
 
 final class RagChatController extends ChangeNotifier
@@ -29,6 +38,12 @@ final class RagChatController extends ChangeNotifier
     this.queryRewriterFactory,
     this.defaultRetrieval = const RagRetrievalConfig(),
     this.strictGrounding = false,
+    this.taskStates,
+    this.taskExtractorFactory,
+    this.diagnosticReplay = false,
+    this.diagnosticFrozenState,
+    this.diagnosticTailMessageIds = const [],
+    this.diagnosticSourceMessageId,
   }) : retrieval = defaultRetrieval,
        strategy = defaultRetrieval.strategy ?? ChunkStrategy.structure;
   final RagTurnCoordinator coordinator;
@@ -36,6 +51,17 @@ final class RagChatController extends ChangeNotifier
   final LlmProviderRegistry registry;
   final AgentDynamicContextProvider? dynamicContext;
   final RagQueryRewriterFactory? queryRewriterFactory;
+  final RagTaskStateRepository? taskStates;
+  final RagTaskExtractorFactory? taskExtractorFactory;
+  final bool diagnosticReplay;
+  final RagTaskState? diagnosticFrozenState;
+  final List<String?> diagnosticTailMessageIds;
+  final String? diagnosticSourceMessageId;
+  bool taskStateEnabled = true;
+  RagTaskState? taskState;
+  Map<String, Object?>? taskExtractionAudit;
+  String? taskStateNotice;
+  List<Map<String, Object?>> taskStateDiff = [];
   bool enabled = false;
   bool neutralEvaluation = false;
   bool strictGrounding;
@@ -66,6 +92,7 @@ final class RagChatController extends ChangeNotifier
     RagRetrievalConfig? retrieval,
     bool? strictGrounding,
     RagGroundingFault? groundingFault,
+    bool? taskStateEnabled,
   }) {
     if (busy) return;
     this.enabled = enabled ?? this.enabled;
@@ -76,6 +103,7 @@ final class RagChatController extends ChangeNotifier
     this.retrieval = retrieval ?? this.retrieval;
     this.strictGrounding = strictGrounding ?? this.strictGrounding;
     this.groundingFault = groundingFault ?? this.groundingFault;
+    this.taskStateEnabled = taskStateEnabled ?? this.taskStateEnabled;
     _notify();
   }
 
@@ -87,19 +115,98 @@ final class RagChatController extends ChangeNotifier
     _project = project;
     _session = session;
     history = [];
+    taskState = null;
+    taskStateDiff = [];
+    taskExtractionAudit = null;
+    taskStateNotice = null;
     error = null;
     _notify();
     if (session == null) return;
     try {
       final loaded = await traces.list(project, session);
+      final state = await taskStates?.load(project, session);
       if (_disposed || epoch != _epoch) return;
       history = loaded;
+      taskState = state;
       _notify();
     } on Object {
       if (_disposed || epoch != _epoch) return;
       error = 'Не удалось прочитать сохранённые RAG-трассы';
       _notify();
     }
+  }
+
+  /// An explicit edit is user input, not an extractor or document instruction.
+  /// It may race an extractor; repository CAS prevents late overwrite.
+  Future<void> editTaskFact(
+    String id,
+    RagTaskFactKind kind,
+    String quote, {
+    bool retire = false,
+  }) async {
+    final before = taskState;
+    if (before == null || taskStates == null) {
+      throw StateError('No selected task-state scope');
+    }
+    final patch = RagTaskPatch.parse(
+      jsonEncode({
+        'updates': [
+          {
+            'id': id,
+            'kind': kind.wireName,
+            'quote': quote,
+            if (retire) 'action': 'retire',
+          },
+        ],
+      }),
+      quote,
+      before,
+      automatic: false,
+    );
+    final next = patch.apply(
+      before,
+      userText: quote,
+      submissionId: 'manual-${DateTime.now().microsecondsSinceEpoch}',
+      sourceKind: 'manual_user_edit',
+    );
+    if (identical(before, next)) return;
+    await taskStates!.save(
+      next,
+      expectedRevision: before.revision,
+      cancellation: CancellationSource().token,
+    );
+    if (!_disposed &&
+        _project == before.project &&
+        _session == before.session) {
+      _showTaskUpdate(before, next);
+    }
+  }
+
+  void _showTaskUpdate(RagTaskState before, RagTaskState next) {
+    taskState = next;
+    taskStateDiff = [
+      for (final f in next.facts)
+        if (before.facts.where((old) => old.id == f.id).firstOrNull?.quote !=
+            f.quote)
+          {
+            'id': f.id,
+            'before': before.facts
+                .where((old) => old.id == f.id)
+                .firstOrNull
+                ?.quote,
+            'after': f.quote,
+            'revision': next.revision,
+          },
+      for (final f in before.facts)
+        if (!next.facts.any((active) => active.id == f.id))
+          {
+            'id': f.id,
+            'before': f.quote,
+            'after': 'снято',
+            'revision': next.revision,
+          },
+    ];
+    _notify();
   }
 
   @override
@@ -117,6 +224,7 @@ final class RagChatController extends ChangeNotifier
     final selectedStrategy = strategy;
     final grounded = useRag && strictGrounding;
     final selectedFault = groundingFault;
+    final useTaskState = useRag && taskStateEnabled && taskStates != null;
     if (useRag &&
         (selectedProtocol == RagProtocol.m3 ||
             selectedProtocol == RagProtocol.m4) &&
@@ -152,8 +260,123 @@ final class RagChatController extends ChangeNotifier
     busy = true;
     progress = 'Подготовка контекста…';
     error = null;
+    taskStateNotice = null;
+    String? extractionNotice;
     _notify();
     try {
+      RagTaskState? frozenState;
+      if (useTaskState && diagnosticReplay) {
+        frozenState = diagnosticFrozenState;
+        if (frozenState == null ||
+            frozenState.project != project ||
+            frozenState.session != session) {
+          throw const FormatException('Diagnostic task-state scope mismatch');
+        }
+      } else if (useTaskState) {
+        final before = await taskStates!.load(project, session);
+        checkRagCancellation(cancellation.isCancelled);
+        final factory = taskExtractorFactory;
+        progress = 'Проверка пользовательских условий…';
+        _notify();
+        var published = false;
+        var auditFailed = false;
+        Future<void> auditSafely(Future<void> Function() action) async {
+          try {
+            await action();
+          } on Object {
+            auditFailed = true;
+            rethrow;
+          }
+        }
+
+        RagTaskExtraction? extraction;
+        try {
+          if (factory == null) {
+            throw StateError('Task-state extractor unavailable');
+          }
+          extraction = await factory(
+            snapshot.selection.model,
+            (request) async {
+              await auditSafely(
+                () => traces.saveRequest(project, session, '$id-state', {
+                  'version': 1,
+                  'id': '$id-state',
+                  'project': project,
+                  'session': session,
+                  'query': input,
+                  'protocol': 'task_state_extraction',
+                  'candidates': [],
+                  'state_revision_at_admission': before.revision,
+                  'request': {
+                    'model': request['model'],
+                    'generation': request['generation'],
+                    'system_prompt':
+                        (request['context'] as Map)['systemPrompt'],
+                    'messages': (request['context'] as Map)['messages'],
+                    'tools_count': 0,
+                    'continuation_count': 0,
+                    'sha256': ragHash(jsonEncode(request)),
+                  },
+                }),
+              );
+              published = true;
+            },
+            (audit) async {
+              if (published) {
+                await auditSafely(
+                  () => traces.saveCompletion(project, session, '$id-state', {
+                    ...audit,
+                    'accepted_message_id': null,
+                  }),
+                );
+              }
+            },
+          ).extract(before, input, cancellation);
+        } on Object catch (failure) {
+          if (auditFailed ||
+              failure is RagCancelled ||
+              failure is RagTaskStateConflict ||
+              cancellation.isCancelled) {
+            rethrow;
+          }
+          extractionNotice =
+              'Память задачи не обновлена: извлекатель недоступен или ответ не прошёл проверку. В этом ответе сохранённые условия не используются; повторите уточнение позже.';
+          if (!_disposed && _project == project && _session == session) {
+            taskStateNotice = extractionNotice;
+            _notify();
+          }
+        }
+        checkRagCancellation(cancellation.isCancelled);
+        if (extraction != null) {
+          final next = extraction.patch.apply(
+            before,
+            userText: input,
+            submissionId: id,
+          );
+          if (identical(next, before)) {
+            final current = await taskStates!.load(project, session);
+            if (current.revision != before.revision) {
+              throw const RagTaskStateConflict();
+            }
+          } else {
+            await taskStates!.save(
+              next,
+              expectedRevision: before.revision,
+              cancellation: cancellation,
+            );
+          }
+          checkRagCancellation(cancellation.isCancelled);
+          frozenState = next;
+          if (!_disposed && _project == project && _session == session) {
+            taskExtractionAudit = extraction.audit;
+            if (extraction.patch.ignoredAmbiguousConstraintIds.isNotEmpty) {
+              taskStateNotice =
+                  'Прежние составные ограничения сохранены: ${extraction.patch.ignoredAmbiguousConstraintIds.join(', ')}. Для полной замены явно укажите замену ограничений или измените поле в памяти задачи.';
+            }
+            _showTaskUpdate(before, next);
+          }
+        }
+      }
       final dynamic = neutral
           ? null
           : await dynamicContext?.provide(
@@ -164,20 +387,44 @@ final class RagChatController extends ChangeNotifier
               ),
             );
       checkRagCancellation(cancellation.isCancelled);
+      final isolateCurrentUser =
+          grounded && frozenState != null && !diagnosticReplay;
+      // Preserve the full admitted conversation as quoted data rather than
+      // assistant-role formatting examples. It is not citable evidence and
+      // cannot write user task conditions. Private reasoning is excluded.
+      final priorDialogue = isolateCurrentUser
+          ? 'UNTRUSTED_PRIOR_DIALOGUE_JSON\n${jsonEncode([
+              for (var i = 0; i < snapshot.transcript.messages.length; i++) {'message_id': snapshot.transcript.messageIds[i]?.value, 'role': snapshot.transcript.messages[i].role.name, 'text': snapshot.transcript.messages[i].parts.whereType<LlmTextPart>().map((p) => p.text).join('\n')},
+            ])}\nEND_UNTRUSTED_PRIOR_DIALOGUE_JSON'
+          : '';
       final frozenPrompt = [
         prompt,
         if (dynamic != null) dynamic.systemPromptText,
+        if (frozenState != null || diagnosticReplay)
+          ragTaskGroundingInstruction,
+        if (frozenState != null) frozenState.context,
+        if (priorDialogue.isNotEmpty) priorDialogue,
       ].join('\n\n');
+      // Provider JSON syntax prevents copying rendered historical Markdown;
+      // the host still validates schema, scope and exact citation substrings.
+      final responseFormat =
+          grounded &&
+              (frozenState != null || diagnosticReplay) &&
+              (model.wireFamily == LlmWireFamily.openaiChatCompletions ||
+                  model.wireFamily == LlmWireFamily.openaiResponses)
+          ? LlmResponseFormat.jsonObject
+          : LlmResponseFormat.text;
       final baseRequest = LlmRequest(
         model: snapshot.selection.model,
         context: LlmContext(
           systemPrompt: frozenPrompt,
           messages: [
-            ...snapshot.transcript.messages,
+            if (!isolateCurrentUser) ...snapshot.transcript.messages,
             LlmMessage(role: LlmMessageRole.user, parts: [LlmTextPart(input)]),
           ],
         ),
         generation: LlmGenerationConfig(
+          responseFormat: responseFormat,
           reasoningMode: mode,
           temperature: snapshot.definition.generation.temperature,
           maxOutputTokens: output,
@@ -199,6 +446,7 @@ final class RagChatController extends ChangeNotifier
           strategy: selectedStrategy,
           protocol: useRag ? selectedProtocol : RagProtocol.m0,
           retrieval: selectedRetrieval,
+          taskState: frozenState,
           // Escaping the context as a JSON request adds overhead; a second
           // full-request check happens immediately before transport.
           contextByteBudget: min(24000, maxBytes - baseBytes - 2048),
@@ -244,7 +492,9 @@ final class RagChatController extends ChangeNotifier
       checkRagCancellation(cancellation.isCancelled);
       progress = 'Найдено источников: ${prepared.evidence.length}';
       _notify();
-      if (grounded && prepared.evidence.isEmpty) {
+      if (grounded &&
+          prepared.evidence.isEmpty &&
+          (frozenState?.facts.isEmpty ?? true)) {
         return await _prepareHostAbstention(
           prepared,
           snapshot,
@@ -256,6 +506,7 @@ final class RagChatController extends ChangeNotifier
       final gate = grounded
           ? RagFinalAnswerGate(
               turn: prepared,
+              includeTaskInstruction: diagnosticReplay,
               fault: selectedFault,
               persistDiagnostic: (diagnostic) => traces.saveDiagnostic(
                 project,
@@ -277,19 +528,37 @@ final class RagChatController extends ChangeNotifier
             effort: ReasoningEffort.modelDefault,
           ),
           preparedContext: AgentPreparedContext(
-            systemPromptOverride: prompt,
+            responseFormat: responseFormat,
+            isolateCurrentUser: isolateCurrentUser,
+            systemPromptOverride: [
+              prompt,
+              if (frozenState != null || diagnosticReplay)
+                ragTaskGroundingInstruction,
+            ].join('\n\n'),
             suppressDynamicContext: true,
             disableTools: true,
             maxRequestBytes: maxBytes,
             contribution: AgentDynamicContext(
               systemPromptText: [
                 if (dynamic != null) dynamic.systemPromptText,
+                if (frozenState != null) frozenState.context,
+                if (priorDialogue.isNotEmpty) priorDialogue,
                 prepared.context,
               ].where((s) => s.isNotEmpty).join('\n\n'),
               audit: prepared,
             ),
             beforeRequest: (request, token) async {
               checkRagCancellation(token.isCancelled);
+              if (frozenState != null) {
+                final current = await taskStates!.load(project, session);
+                if (current.revision != frozenState.revision) {
+                  error =
+                      'Память задачи изменена перед запросом. Повторите вопрос.';
+                  _notify();
+                  throw const RagTaskStateConflict();
+                }
+                checkRagCancellation(token.isCancelled);
+              }
               final attemptId = '$id-${attempt++}';
               final requestJson = request.toJson();
               // Private reasoning/continuation payloads must not enter traces.
@@ -305,8 +574,20 @@ final class RagChatController extends ChangeNotifier
               ];
               await traces.saveRequest(project, session, attemptId, {
                 ...prepared.toJson(),
+                'diagnostic_replay': diagnosticReplay,
+                if (diagnosticReplay) ...{
+                  'read_only_state': true,
+                  'source_question_message_id': diagnosticSourceMessageId,
+                  'tail_message_ids': diagnosticTailMessageIds,
+                },
+                'task_state_enabled': useTaskState,
+                'task_state_used': frozenState != null,
+                'task_state_update_notice': extractionNotice,
                 'id': attemptId,
                 'session_revision_at_admission': snapshot.revision,
+                'history_policy': isolateCurrentUser
+                    ? 'quoted_prior_dialogue_with_current_user'
+                    : 'retained_transcript',
                 'neutral_evaluation': neutral,
                 'strict_grounding': grounded,
                 'fault_injection': selectedFault.name,
@@ -353,7 +634,17 @@ final class RagChatController extends ChangeNotifier
               await traces.saveCompletion(project, session, attemptId, {
                 'terminal': terminal.runtimeType.toString(),
                 'invocation_outcome': last?.outcome.name,
-                'accepted_message_id': accepted
+                'diagnostic_replay': diagnosticReplay,
+                if (diagnosticReplay) ...{
+                  'read_only_state': true,
+                  'source_question_message_id': diagnosticSourceMessageId,
+                  'tail_message_ids': diagnosticTailMessageIds,
+                },
+                if (diagnosticReplay)
+                  'replay_message_id': accepted
+                      ? last?.responseMessageId?.value
+                      : null,
+                'accepted_message_id': accepted && !diagnosticReplay
                     ? last?.responseMessageId?.value
                     : null,
                 'provider_attempt_id': last?.attemptId.value,
@@ -399,7 +690,10 @@ final class RagChatController extends ChangeNotifier
           }
         },
       );
-    } on Object {
+    } on Object catch (failure) {
+      if (failure is RagTaskStateConflict) {
+        error = 'Память задачи изменена во время подготовки. Повторите вопрос.';
+      }
       busy = false;
       progress = cancellation.isCancelled ? 'Подготовка отменена' : '';
       _notify();
@@ -424,6 +718,13 @@ final class RagChatController extends ChangeNotifier
       'neutral_evaluation': neutral,
       'strict_grounding': true,
       'reason': 'insufficient_evidence',
+      'diagnostic_replay': diagnosticReplay,
+      if (diagnosticReplay) ...{
+        'read_only_state': true,
+        'source_question_message_id': diagnosticSourceMessageId,
+        'tail_message_ids': diagnosticTailMessageIds,
+      },
+      'task_state_enabled': taskStateEnabled,
       'physical_answer_requests': 0,
       'request': {
         'kind': 'host_response_without_answer_model',
@@ -457,7 +758,17 @@ final class RagChatController extends ChangeNotifier
             'reason': 'insufficient_evidence',
             'physical_answer_requests': 0,
             'usage': null,
-            'accepted_message_id': accepted
+            'diagnostic_replay': diagnosticReplay,
+            if (diagnosticReplay) ...{
+              'read_only_state': true,
+              'source_question_message_id': diagnosticSourceMessageId,
+              'tail_message_ids': diagnosticTailMessageIds,
+            },
+            if (diagnosticReplay)
+              'replay_message_id': accepted
+                  ? settled.transcript.messageIds.last?.value
+                  : null,
+            'accepted_message_id': accepted && !diagnosticReplay
                 ? settled.transcript.messageIds.last?.value
                 : null,
             'elapsed_ms': total.elapsedMilliseconds,
@@ -483,6 +794,148 @@ final class RagChatController extends ChangeNotifier
         }
       },
     );
+  }
+
+  /// Neutral diagnostic only: repeat the last accepted question with the two
+  /// actual messages preceding it. Original transcript and task state are read-only.
+  Future<List<Map<String, Object?>>> replayLastQuestion(
+    AgentSessionSnapshot snapshot,
+    CancellationToken cancellation,
+  ) async {
+    if (busy || taskStates == null) throw StateError('Replay is unavailable');
+    final messages = snapshot.transcript.messages;
+    if (messages.length < 4 ||
+        messages.last.role != LlmMessageRole.assistant ||
+        messages[messages.length - 2].role != LlmMessageRole.user) {
+      throw StateError('Нужны два завершённых обмена вопрос–ответ');
+    }
+    final tail = messages.sublist(messages.length - 4, messages.length - 2);
+    if (tail.first.role != LlmMessageRole.user ||
+        tail.last.role != LlmMessageRole.assistant) {
+      throw StateError(
+        'Повтор требует последних двух сообщений user/assistant',
+      );
+    }
+    final question = messages[messages.length - 2].parts
+        .whereType<LlmTextPart>()
+        .map((p) => p.text)
+        .join('');
+    final project = snapshot.projectId?.value ?? 'default';
+    final session = snapshot.id.value;
+    final corpusAtAdmission = corpus, strategyAtAdmission = strategy;
+    busy = true;
+    progress = 'Диагностический повтор: память выкл./вкл.…';
+    _notify();
+    final rows = <Map<String, Object?>>[];
+    try {
+      final frozen = await taskStates!.load(project, session);
+      for (final on in [false, true]) {
+        checkRagCancellation(cancellation.isCancelled);
+        // An independent runtime permits the original owner ID without touching
+        // its live/persisted session. There is no profile, summary or memory hook.
+        final runtime = InMemoryAgentRuntime(registry: registry);
+        final definition = AgentDefinition(
+          id: AgentId('rag-diagnostic-replay'),
+          name: 'Diagnostic tail replay',
+          systemPrompt: '',
+          initialMessages: tail,
+          model: snapshot.selection.model,
+          generation: snapshot.definition.generation,
+        );
+        final child =
+            RagChatController(
+              coordinator: coordinator,
+              traces: traces,
+              registry: registry,
+              strictGrounding: true,
+              taskStates: taskStates,
+              diagnosticReplay: true,
+              diagnosticFrozenState: on ? frozen : null,
+              diagnosticTailMessageIds: snapshot.transcript.messageIds
+                  .sublist(messages.length - 4, messages.length - 2)
+                  .map((id) => id?.value)
+                  .toList(growable: false),
+              diagnosticSourceMessageId:
+                  snapshot.transcript.messageIds[messages.length - 2]?.value,
+            )..configure(
+              enabled: true,
+              neutral: true,
+              protocol: RagProtocol.m1,
+              corpus: corpusAtAdmission,
+              strategy: strategyAtAdmission,
+              taskStateEnabled: on,
+            );
+        try {
+          final shadow = await runtime
+              .agent(definition)
+              .createSession(id: snapshot.id, projectId: snapshot.projectId);
+          await child.attach(shadow.snapshot);
+          final previous = (await traces.list(
+            project,
+            session,
+          )).map((t) => t['id']).toSet();
+          final prepared = await child.prepare(
+            shadow.snapshot,
+            question,
+            cancellation,
+          );
+          checkRagCancellation(cancellation.isCancelled);
+          final run = shadow.run(question, options: prepared!.options);
+          final registration = cancellation.register(() => run.cancel());
+          AgentRunEvent terminal;
+          try {
+            terminal = await run.events.last;
+          } finally {
+            registration.dispose();
+          }
+          await prepared.onSettled?.call(shadow.snapshot, terminal);
+          checkRagCancellation(cancellation.isCancelled);
+          final added = (await traces.list(project, session))
+              .where(
+                (t) =>
+                    !previous.contains(t['id']) &&
+                    t['diagnostic_replay'] == true,
+              )
+              .toList();
+          final accepted = added
+              .where(
+                (t) => (t['completion'] as Map?)?['replay_message_id'] != null,
+              )
+              .toList();
+          rows.add({
+            'state_enabled': on,
+            'state_revision': on ? frozen.revision : null,
+            'project': project,
+            'session': session,
+            'question': question,
+            'tail': tail.map((m) => m.toJson()).toList(),
+            'tail_message_ids': child.diagnosticTailMessageIds,
+            'source_question_message_id': child.diagnosticSourceMessageId,
+            'corpus': corpusAtAdmission,
+            'strategy': strategyAtAdmission.name,
+            'profile': 'neutral',
+            'protocol': 'm1',
+            'original_transcript_changed': false,
+            'state_extraction': 'not invoked; read-only frozen replay',
+            'terminal': terminal.runtimeType.toString(),
+            'accepted': accepted.isNotEmpty,
+            'traces': added,
+            'answer': accepted.isEmpty
+                ? null
+                : accepted.last['completion']['answer'],
+          });
+        } finally {
+          child.dispose();
+          await runtime.close();
+        }
+      }
+      validateRagReplayComparison(rows.first, rows.last, frozen);
+      return List.unmodifiable(rows);
+    } finally {
+      busy = false;
+      progress = '';
+      _notify();
+    }
   }
 
   @override

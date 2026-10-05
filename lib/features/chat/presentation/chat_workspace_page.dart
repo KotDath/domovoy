@@ -383,7 +383,12 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
     final rag = widget.ragChat;
     return rag == null
         ? composer
-        : RagChatBar(controller: rag, enabled: !_state.isBusy, child: composer);
+        : RagChatBar(
+            controller: rag,
+            enabled: !_state.isBusy,
+            snapshot: snapshot,
+            child: composer,
+          );
   }
 
   String? _announcement() {
