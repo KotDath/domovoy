@@ -231,7 +231,11 @@ void main() {
           'DAY23_DEV ${question['id']} pools=${raw.candidates.length}/${rewrite.candidates.length}',
         );
       }
-      final dense = calibrateRagThreshold(denseSamples),
+      final dense = calibrateRagThreshold(
+            denseSamples,
+            minThreshold: -1,
+            maxThreshold: 1,
+          ),
           rank = calibrateRagThreshold(rankSamples);
       final config = {
         'version': 1,

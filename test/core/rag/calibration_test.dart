@@ -43,6 +43,28 @@ void main() {
     expect(profile['known_hit'], 1);
     expect(profile['unknown_empty'], 1);
     expect(profile['sample_count'], 2);
+    final boundarySamples = [
+      RagCalibrationSample(
+        answerable: true,
+        candidates: [relevant],
+        relevantIds: {relevant.chunk.id},
+        scores: {relevant.chunk.id: -1},
+      ),
+      RagCalibrationSample(
+        answerable: false,
+        candidates: [noise],
+        relevantIds: {},
+        scores: {noise.chunk.id: -1},
+      ),
+    ];
+    expect(
+      calibrateRagThreshold(
+        boundarySamples,
+        minThreshold: -1,
+        maxThreshold: 1,
+      )['threshold'],
+      -1,
+    );
     expect(() => calibrateRagThreshold([samples.first]), throwsArgumentError);
     expect(
       () => calibrateRagThreshold([

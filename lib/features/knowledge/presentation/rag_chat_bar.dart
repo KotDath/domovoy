@@ -314,7 +314,8 @@ class _SourceCard extends StatelessWidget {
         '${candidate['rerank'] == null ? '' : ' · ${(candidate['rerank'] as num).toStringAsFixed(3)} BGE raw logit'}',
       ),
       subtitle: Text(
-        'dense #${candidate['dense_rank']} → rerank #${candidate['rerank_rank']}\n'
+        'dense #${candidate['dense_rank']}'
+        '${candidate['rerank_rank'] == null ? '' : ' → rerank #${candidate['rerank_rank']}'}\n'
         '${chunk['section']}\n${candidate['excluded_reason'] ?? 'retrieval provenance'}',
       ),
       children: [

@@ -18,7 +18,18 @@ final class RagCalibrationSample {
 
 /// Dev only: maximize question-level F1, then sent-passage precision; choose
 /// the higher cutoff for a remaining tie. Golden questions never participate.
-Map<String, Object?> calibrateRagThreshold(List<RagCalibrationSample> samples) {
+Map<String, Object?> calibrateRagThreshold(
+  List<RagCalibrationSample> samples, {
+  double? minThreshold,
+  double? maxThreshold,
+}) {
+  if ((minThreshold != null && !minThreshold.isFinite) ||
+      (maxThreshold != null && !maxThreshold.isFinite) ||
+      (minThreshold != null &&
+          maxThreshold != null &&
+          minThreshold > maxThreshold)) {
+    throw ArgumentError('Invalid calibration threshold bounds');
+  }
   if (samples.isEmpty ||
       !samples.any((s) => s.answerable) ||
       !samples.any((s) => !s.answerable)) {
@@ -39,11 +50,22 @@ Map<String, Object?> calibrateRagThreshold(List<RagCalibrationSample> samples) {
       throw ArgumentError('Calibration labels/scores must match candidate IDs');
     }
   }
-  final cutoffs = [
-    values.first - 0.000001,
-    for (var i = 1; i < values.length; i++) (values[i - 1] + values[i]) / 2,
-    values.last + 0.000001,
-  ];
+  final cutoffs =
+      [
+            values.first - 0.000001,
+            for (var i = 1; i < values.length; i++)
+              (values[i - 1] + values[i]) / 2,
+            values.last + 0.000001,
+          ]
+          .map(
+            (v) => max(
+              minThreshold ?? double.negativeInfinity,
+              min(maxThreshold ?? double.infinity, v),
+            ),
+          )
+          .toSet()
+          .toList()
+        ..sort();
   var bestF1 = -1.0, bestPrecision = -1.0, bestThreshold = cutoffs.first;
   Map<String, Object?>? best;
   for (final cutoff in cutoffs) {
