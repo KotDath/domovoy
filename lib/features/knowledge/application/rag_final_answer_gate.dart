@@ -187,23 +187,41 @@ List<Map<String, String>> _repairHints(String candidate, RagPreparedTurn turn) {
 }
 
 String? _whitespaceSpan(String source, String quote) {
+  // Providers commonly omit Markdown emphasis/code delimiters as well as
+  // wrapping whitespace. This matching is ONLY a repair suggestion; return
+  // the original characters and coordinates, never a normalized quote.
   final normalized = StringBuffer();
   final offsets = <int>[];
-  for (final word in RegExp(r'\S+').allMatches(source)) {
-    if (offsets.isNotEmpty) {
+  int? gap;
+  final whitespace = RegExp(r'\s');
+  bool marker(String c) => c == '*' || c == '`';
+  for (var i = 0; i < source.length; i++) {
+    final c = source[i];
+    if (marker(c)) continue;
+    if (whitespace.hasMatch(c)) {
+      gap ??= i;
+      continue;
+    }
+    if (gap != null && offsets.isNotEmpty) {
       normalized.write(' ');
-      offsets.add(word.start - 1);
+      offsets.add(gap);
     }
-    normalized.write(word.group(0));
-    for (var i = word.start; i < word.end; i++) {
-      offsets.add(i);
-    }
+    gap = null;
+    normalized.write(c);
+    offsets.add(i);
   }
-  final needle = quote.trim().replaceAll(RegExp(r'\s+'), ' ');
+  final needle = quote
+      .replaceAll(RegExp(r'[*`]'), '')
+      .trim()
+      .replaceAll(RegExp(r'\s+'), ' ');
   final start = normalized.toString().indexOf(needle);
   if (start < 0 || needle.isEmpty) return null;
-  return source.substring(
-    offsets[start],
-    offsets[start + needle.length - 1] + 1,
-  );
+  var a = offsets[start], b = offsets[start + needle.length - 1] + 1;
+  while (a > 0 && marker(source[a - 1])) {
+    a--;
+  }
+  while (b < source.length && marker(source[b])) {
+    b++;
+  }
+  return source.substring(a, b);
 }

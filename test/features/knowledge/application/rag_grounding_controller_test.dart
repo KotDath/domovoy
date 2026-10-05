@@ -65,6 +65,78 @@ void main() {
     },
   );
 
+  test('repair hints preserve exact Markdown and line breaks', () async {
+    const original =
+        '**Spring forward.** If time does not exist,\n  the run is **skipped**.';
+    final doc = RagDocument(source: 'dst.md', title: 'DST', text: original);
+    final chunk = RagChunk(
+      documentId: doc.id,
+      documentRevision: doc.revision,
+      source: doc.source,
+      title: doc.title,
+      section: 'DST',
+      start: 0,
+      end: original.length,
+      text: original,
+      strategy: ChunkStrategy.fixed,
+      tokens: 30,
+      ordinal: 0,
+    );
+    final f = RagGroundingFixture();
+    final turn = RagPreparedTurn(
+      request: f.turn.request,
+      generation: 'g',
+      fingerprint: 'fp',
+      candidates: [RagHit(chunk, .9)],
+      evidence: [RagHit(chunk, .9)],
+      context: ragEvidenceContext([RagHit(chunk, .9)]),
+      timings: {},
+      exclusions: {},
+    );
+    final gate = RagFinalAnswerGate(
+      turn: turn,
+      persistDiagnostic: (_) async {},
+    );
+    final req = LlmRequest(
+      model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
+      context: LlmContext(),
+    ).snapshot();
+    final raw = jsonEncode({
+      'status': 'answered',
+      'claims': [
+        {
+          'text': 'The run is skipped.',
+          'evidence': [
+            {
+              'chunk_id': chunk.id,
+              'quote':
+                  'Spring forward. If time does not exist, the run is skipped.',
+            },
+          ],
+        },
+      ],
+    });
+    final result = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: raw,
+        request: req,
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: false,
+      ),
+      CancellationSource().token,
+    );
+    expect(gate.accepted, isNull);
+    final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+    final payload = jsonDecode(
+      (repair.context.messages.single.parts.single as LlmTextPart).text,
+    );
+    expect(
+      (payload['exact_quote_repair_hints'] as List)
+          .single['actual_exact_quote'],
+      original,
+    );
+  });
+
   test('whitespace JSON draft has only one strict text-mode repair', () async {
     final f = RagGroundingFixture();
     final gate = RagFinalAnswerGate(
