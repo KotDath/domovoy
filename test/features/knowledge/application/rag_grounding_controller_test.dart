@@ -51,6 +51,13 @@ void main() {
       final hint = (payload['exact_quote_repair_hints'] as List).single;
       expect(hint['suggested_chunk_id'], f.chunk.id);
       expect(hint['actual_exact_quote'], RagGroundingFixture.quote);
+      expect(payload.containsKey('rejected_draft'), false);
+      final suggestion = payload['draft_suggestion_not_approved'];
+      expect(
+        suggestion['claims'].single['evidence'].single['quote'],
+        RagGroundingFixture.quote,
+      );
+      expect(gate.diagnostics.single['rejected_draft_diagnostic_only'], broken);
       final second = await gate.evaluate(
         AgentFinalAnswerDraft(
           text: broken,
@@ -95,6 +102,8 @@ void main() {
       final hint = (payload['exact_quote_repair_hints'] as List).single;
       expect(hint['action'], 'remove_unmatched_citation');
       expect(hint.containsKey('actual_exact_quote'), false);
+      expect(payload['draft_suggestion_not_approved']['status'], 'abstained');
+      expect(payload['draft_suggestion_not_approved']['claims'], isEmpty);
       expect(gate.accepted, isNull);
     },
   );
@@ -145,6 +154,78 @@ void main() {
               'chunk_id': chunk.id,
               'quote':
                   'Spring forward. If time does not exist, the run is skipped.',
+            },
+          ],
+        },
+      ],
+    });
+    final result = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: raw,
+        request: req,
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: false,
+      ),
+      CancellationSource().token,
+    );
+    expect(gate.accepted, isNull);
+    final repair = (result as AgentFinalAnswerRejected).repairRequest!;
+    final payload = jsonDecode(
+      (repair.context.messages.single.parts.single as LlmTextPart).text,
+    );
+    expect(
+      (payload['exact_quote_repair_hints'] as List)
+          .single['actual_exact_quote'],
+      original,
+    );
+  });
+
+  test('PDF repair hints restore original soft-hyphen/control markers', () async {
+    const original =
+        'The main con\u0002text is divided into three con\u00adtiguous sections.';
+    final doc = RagDocument(source: 'dst.md', title: 'DST', text: original);
+    final chunk = RagChunk(
+      documentId: doc.id,
+      documentRevision: doc.revision,
+      source: doc.source,
+      title: doc.title,
+      section: 'DST',
+      start: 0,
+      end: original.length,
+      text: original,
+      strategy: ChunkStrategy.fixed,
+      tokens: 30,
+      ordinal: 0,
+    );
+    final f = RagGroundingFixture();
+    final turn = RagPreparedTurn(
+      request: f.turn.request,
+      generation: 'g',
+      fingerprint: 'fp',
+      candidates: [RagHit(chunk, .9)],
+      evidence: [RagHit(chunk, .9)],
+      context: ragEvidenceContext([RagHit(chunk, .9)]),
+      timings: {},
+      exclusions: {},
+    );
+    final gate = RagFinalAnswerGate(
+      turn: turn,
+      persistDiagnostic: (_) async {},
+    );
+    final req = LlmRequest(
+      model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
+      context: LlmContext(),
+    ).snapshot();
+    final raw = jsonEncode({
+      'status': 'answered',
+      'claims': [
+        {
+          'text': 'The run is skipped.',
+          'evidence': [
+            {
+              'chunk_id': chunk.id,
+              'quote':
+                  'The main context is divided into three contiguous sections.',
             },
           ],
         },

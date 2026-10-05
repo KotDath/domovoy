@@ -85,6 +85,12 @@ void main() {
           'runs': [],
           'provider_cache': 'not controlled',
           'server_model_revision': 'not exposed',
+          'explicit_user_resubmissions_max': const int.fromEnvironment(
+            'RAG_EVAL_EXPLICIT_RESUBMISSIONS',
+            defaultValue: 0,
+          ),
+          'retry_protocol':
+              'Frozen question unchanged; each explicit new USER send retained and measured. First submissions graded separately. No extra repair per turn.',
           'tools': 0,
           'profile': 'neutral',
           'shared_memory': 'disabled',
@@ -250,91 +256,119 @@ void main() {
                       'Published same validated immutable paper index; not a repeated build';
                 }
                 env.rag.configure(corpus: question['corpus'] as String);
-                final beforeTraces = (await traces.list(
-                  project,
-                  sessionId.value,
-                )).map((t) => t['id']).toSet();
-                final beforeMessages =
-                    env.chat.state.selectedSession!.transcript.messages.length;
-                final watch = Stopwatch()..start();
-                final result = await env.chat.send(
-                  question['question'] as String,
+                const maxResubmissions = int.fromEnvironment(
+                  'RAG_EVAL_EXPLICIT_RESUBMISSIONS',
+                  defaultValue: 0,
                 );
-                final added = (await traces.list(
-                  project,
-                  sessionId.value,
-                )).where((t) => !beforeTraces.contains(t['id'])).toList();
-                final answers = added
-                    .where((t) => t['protocol'] == 'm1')
-                    .toList();
-                final accepted = answers
-                    .where(
-                      (t) =>
-                          (t['completion'] as Map?)?['accepted_message_id'] !=
-                          null,
-                    )
-                    .toList();
-                final after = await states.load(project, sessionId.value);
-                final row = <String, Object?>{
-                  'scenario': scenario['id'],
-                  'question_id': question['id'],
-                  'question': question['question'],
-                  'corpus': question['corpus'],
-                  'accepted': accepted.isNotEmpty,
-                  'command_success': result.isSuccess,
-                  'workspace_error': env.chat.state.error?.message,
-                  'elapsed_ms': watch.elapsedMilliseconds,
-                  'state_after': after.toJson(),
-                  'messages_before': beforeMessages,
-                  'transcript': env.chat.state.selectedSession!.transcript
-                      .toJson(),
-                  'traces': added,
-                  'error': env.rag.error,
-                };
-                write(row);
-                expect(
-                  accepted,
-                  hasLength(1),
-                  reason: '${question['id']}: ${env.rag.error}',
-                );
-                expect(
-                  env.chat.state.selectedSession!.transcript.messages.length,
-                  beforeMessages + 2,
-                );
-                expect(accepted.single['request']['tools_count'], 0);
-                expect(
-                  answers.first['request']['messages'],
-                  hasLength(
-                    answers.first['task_state_used'] == true
-                        ? 1
-                        : beforeMessages + 1,
-                  ),
-                );
-                expect(
-                  accepted.single['task_state_used'],
-                  true,
-                  reason:
-                      'Official proof requires validated extraction or read-only no-op; inspect auxiliary receipt on failure',
-                );
-                expect(
-                  accepted.single['task_state']['revision'],
-                  after.revision,
-                );
-                expect(
-                  added.where((t) => t['protocol'] == 'task_state_extraction'),
-                  hasLength(1),
-                );
-                expect(
-                  (await states.load(
-                    'other-project-$stamp',
+                expect(maxResubmissions, inInclusiveRange(0, 2));
+                for (var retry = 0; retry <= maxResubmissions; retry++) {
+                  final beforeTraces = (await traces.list(
+                    project,
                     sessionId.value,
-                  )).facts,
-                  isEmpty,
-                );
-                expect(
-                  (await states.load(project, 'other-chat-$stamp')).facts,
-                  isEmpty,
-                );
+                  )).map((t) => t['id']).toSet();
+                  final beforeMessages = env
+                      .chat
+                      .state
+                      .selectedSession!
+                      .transcript
+                      .messages
+                      .length;
+                  final watch = Stopwatch()..start();
+                  final result = await env.chat.send(
+                    question['question'] as String,
+                  );
+                  final added = (await traces.list(
+                    project,
+                    sessionId.value,
+                  )).where((t) => !beforeTraces.contains(t['id'])).toList();
+                  final answers = added
+                      .where((t) => t['protocol'] == 'm1')
+                      .toList();
+                  final accepted = answers
+                      .where(
+                        (t) =>
+                            (t['completion'] as Map?)?['accepted_message_id'] !=
+                            null,
+                      )
+                      .toList();
+                  final after = await states.load(project, sessionId.value);
+                  final row = <String, Object?>{
+                    'scenario': scenario['id'],
+                    'question_id': retry == 0
+                        ? question['id']
+                        : '${question['id']}-retry-$retry',
+                    'logical_question_id': question['id'],
+                    'user_attempt_ordinal': retry,
+                    'explicit_user_resubmission': retry > 0,
+                    'question': question['question'],
+                    'corpus': question['corpus'],
+                    'accepted': accepted.isNotEmpty,
+                    'command_success': result.isSuccess,
+                    'workspace_error': env.chat.state.error?.message,
+                    'elapsed_ms': watch.elapsedMilliseconds,
+                    'state_after': after.toJson(),
+                    'messages_before': beforeMessages,
+                    'transcript': env.chat.state.selectedSession!.transcript
+                        .toJson(),
+                    'traces': added,
+                    'error': env.rag.error,
+                  };
+                  write(row);
+                  if ((accepted.isEmpty ||
+                          accepted.single['task_state_used'] != true) &&
+                      retry < maxResubmissions) {
+                    debugPrint(
+                      'DAY25 explicit USER resubmission: ${question['id']} attempt ${retry + 1}; failed/insufficient prior attempt retained',
+                    );
+                    continue;
+                  }
+                  expect(
+                    accepted,
+                    hasLength(1),
+                    reason: '${question['id']}: ${env.rag.error}',
+                  );
+                  expect(
+                    env.chat.state.selectedSession!.transcript.messages.length,
+                    beforeMessages + 2,
+                  );
+                  expect(accepted.single['request']['tools_count'], 0);
+                  expect(
+                    answers.first['request']['messages'],
+                    hasLength(
+                      answers.first['task_state_used'] == true
+                          ? 1
+                          : beforeMessages + 1,
+                    ),
+                  );
+                  expect(
+                    accepted.single['task_state_used'],
+                    true,
+                    reason:
+                        'Official proof requires validated extraction or read-only no-op; inspect auxiliary receipt on failure',
+                  );
+                  expect(
+                    accepted.single['task_state']['revision'],
+                    after.revision,
+                  );
+                  expect(
+                    added.where(
+                      (t) => t['protocol'] == 'task_state_extraction',
+                    ),
+                    hasLength(1),
+                  );
+                  expect(
+                    (await states.load(
+                      'other-project-$stamp',
+                      sessionId.value,
+                    )).facts,
+                    isEmpty,
+                  );
+                  expect(
+                    (await states.load(project, 'other-chat-$stamp')).facts,
+                    isEmpty,
+                  );
+                  break;
+                }
               }
               final originalTranscript = env
                   .chat

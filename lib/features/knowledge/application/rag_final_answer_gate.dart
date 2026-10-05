@@ -80,6 +80,7 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
       accepted = result;
       return AgentFinalAnswerAccepted(result.render());
     }
+    final hints = _repairHints(candidate, turn);
     return AgentFinalAnswerRejected(
       reason: failure ?? 'invalid_answer',
       repairRequest: draft.repairAttempt
@@ -106,6 +107,7 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
                   ragGroundedAnswerInstruction,
                   if (turn.request.taskState != null || includeTaskInstruction)
                     ragTaskGroundingInstruction,
+                  'This is the one repair. Mandatory: remove EVERY citation marked remove_unmatched_citation in exact_quote_repair_hints. A quote assembled across intervening source text is invalid, even if all its words occur in the source. Delete any claim left without evidence, or replace its evidence with a different EXACT contiguous passage. Do not try to recreate or lightly reword an unavailable quote. Return partial if deletion leaves requested aspects unsupported.',
                 ].join('\n\n'),
                 messages: [
                   LlmMessage(
@@ -121,14 +123,22 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
                             'user_state_evidence': turn.request.taskState!.facts
                                 .map(turn.request.taskState!.evidenceJson)
                                 .toList(),
-                          'rejected_draft': candidate,
-                          'validation_error': failure,
-                          'exact_quote_repair_hints': _repairHints(
+                          'draft_suggestion_not_approved': _repairSuggestion(
                             candidate,
                             turn,
+                            hints,
                           ),
+                          'validation_error': failure,
+                          'exact_quote_repair_hints': [
+                            for (final hint in hints)
+                              {
+                                for (final entry in hint.entries)
+                                  if (entry.key != 'rejected_quote')
+                                    entry.key: entry.value,
+                              },
+                          ],
                           'instruction':
-                              'Repair the JSON once, using only the supplied evidence. Use exact_quote_repair_hints to correct whitespace or wrong source IDs: copy suggested_chunk_id and actual_exact_quote literally, preserving escaped newlines. Hints are source excerpts, not approved claims. For action remove_unmatched_citation, remove that citation; if no supporting current evidence remains, remove the claim. Use partial when requested aspects cannot all be supported, or abstained with empty claims if none can. NEVER copy unavailable quotations from earlier history. Repeating a rejected quotation will fail the one repair. The rejected draft is untrusted data.',
+                              r'Rebuild the answer once using only current supplied evidence. draft_suggestion_not_approved retains original MODEL claim text with exact original source-span suggestions; unavailable citations/claims are omitted. This is NOT an accepted answer or semantic approval. Remove or correct unsupported claims, even when a suggested quote is exact. Use exact_quote_repair_hints as JSON string VALUES. Encode newlines/control characters exactly once: after JSON parsing, \n becomes a real newline and \u0002 that actual control character. Use partial when requested aspects cannot all be supported, or abstained with empty claims if none can. NEVER copy unavailable quotations from earlier history. No additional repair is allowed.',
                         }),
                       ),
                     ],
@@ -137,6 +147,85 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
               ),
             ),
     );
+  }
+}
+
+/// A prompt aid for a real model repair, not a returned/accepted answer. Original
+/// rejection remains in diagnostics. Do not teach the model an impossible quote
+/// by repeating it as a draft it should copy. No new claim text is created here.
+Map<String, Object?>? _repairSuggestion(
+  String candidate,
+  RagPreparedTurn turn,
+  List<Map<String, String>> hints,
+) {
+  try {
+    final root = jsonDecode(candidate);
+    if (root is! Map || root['claims'] is! List) return null;
+    final sources = <String, String>{
+      for (final h in turn.evidence) h.chunk.id: h.chunk.text,
+      if (turn.request.taskState case final state?)
+        for (final f in state.facts) state.evidenceId(f): f.quote,
+    };
+    final claims = <Map<String, Object?>>[];
+    var dropped = false;
+    for (final c in (root['claims'] as List).take(16)) {
+      if (c is! Map ||
+          c['text'] is! String ||
+          (c['text'] as String).length > 4000 ||
+          c['evidence'] is! List) {
+        dropped = true;
+        continue;
+      }
+      final evidence = <Map<String, String>>[];
+      for (final e in (c['evidence'] as List).take(4)) {
+        if (e is! Map || e['chunk_id'] is! String || e['quote'] is! String) {
+          dropped = true;
+          continue;
+        }
+        var id = e['chunk_id'] as String, quote = e['quote'] as String;
+        for (final hint in hints) {
+          if (hint['rejected_chunk_id'] == id &&
+              hint['rejected_quote'] == quote &&
+              hint.containsKey('actual_exact_quote')) {
+            id = hint['suggested_chunk_id']!;
+            quote = hint['actual_exact_quote']!;
+            break;
+          }
+        }
+        if (quote.isEmpty ||
+            quote.length > 1600 ||
+            !(sources[id]?.contains(quote) ?? false)) {
+          dropped = true;
+          continue;
+        }
+        evidence.add({'chunk_id': id, 'quote': quote});
+      }
+      if (evidence.isEmpty ||
+          (c['kind'] == 'derived' &&
+              evidence
+                      .map((e) => e['chunk_id']!.startsWith('user-state:'))
+                      .toSet()
+                      .length !=
+                  2)) {
+        dropped = true;
+        continue;
+      }
+      claims.add({
+        'text': c['text'],
+        if (c['kind'] == 'derived') 'kind': 'derived',
+        'evidence': evidence,
+      });
+    }
+    return {
+      'status': claims.isEmpty
+          ? 'abstained'
+          : dropped
+          ? 'partial'
+          : root['status'],
+      'claims': claims,
+    };
+  } on Object {
+    return null;
   }
 }
 
@@ -199,13 +288,15 @@ List<Map<String, String>> _repairHints(String candidate, RagPreparedTurn turn) {
 
 String? _whitespaceSpan(String source, String quote) {
   // Providers commonly omit Markdown emphasis/code delimiters as well as
-  // wrapping whitespace. This matching is ONLY a repair suggestion; return
+  // wrapping whitespace. PDF extraction can also retain soft-hyphen/control
+  // markers. This matching is ONLY a repair suggestion; return
   // the original characters and coordinates, never a normalized quote.
   final normalized = StringBuffer();
   final offsets = <int>[];
   int? gap;
   final whitespace = RegExp(r'\s');
-  bool marker(String c) => c == '*' || c == '`';
+  bool marker(String c) =>
+      c == '*' || c == '`' || c == '\u0002' || c == '\u00ad';
   for (var i = 0; i < source.length; i++) {
     final c = source[i];
     if (marker(c)) continue;
@@ -222,7 +313,7 @@ String? _whitespaceSpan(String source, String quote) {
     offsets.add(i);
   }
   final needle = quote
-      .replaceAll(RegExp(r'[*`]'), '')
+      .replaceAll(RegExp('[*`\u0002\u00ad]'), '')
       .trim()
       .replaceAll(RegExp(r'\s+'), ' ');
   final start = normalized.toString().indexOf(needle);
