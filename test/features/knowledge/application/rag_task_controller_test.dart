@@ -187,7 +187,8 @@ void main() {
             '09:00',
           );
           final original = chat.state.selectedSession!.transcript.toJson();
-          final stateBefore = (await states.load('default', scope)).toJson();
+          final stateSnapshotBefore = await states.load('default', scope);
+          final stateBefore = stateSnapshotBefore.toJson();
           final replay = await rag.replayLastQuestion(
             chat.state.selectedSession!,
             CancellationSource().token,
@@ -212,13 +213,7 @@ void main() {
           expect(off.model, on.model);
           expect(off.generation.toJson(), on.generation.toJson());
           String removeState(String p) => p
-              .replaceAll(
-                RegExp(
-                  r'USER_TASK_STATE_EVIDENCE_JSON\n.*?\nEND_USER_TASK_STATE_EVIDENCE',
-                  dotAll: true,
-                ),
-                '',
-              )
+              .replaceAll(stateSnapshotBefore.context, '')
               .split('\n')
               .map((s) => s.trim())
               .where((s) => s.isNotEmpty)

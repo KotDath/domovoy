@@ -378,13 +378,7 @@ void main() {
               expect(a['messages'], b['messages']);
               expect(replays[0]['tail'], replays[1]['tail']);
               String withoutState(String prompt) => prompt
-                  .replaceAll(
-                    RegExp(
-                      r'USER_TASK_STATE_EVIDENCE_JSON\n.*?\nEND_USER_TASK_STATE_EVIDENCE',
-                      dotAll: true,
-                    ),
-                    '',
-                  )
+                  .replaceAll(stateBeforeReplay.context, '')
                   .split('\n')
                   .map((s) => s.trim())
                   .where((s) => s.isNotEmpty)
