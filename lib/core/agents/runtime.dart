@@ -3598,6 +3598,9 @@ final class _LiveRun implements AgentRun {
             );
           }
           final repaired = await _repairFinalAnswer(repairRequest);
+          // Repair returns only after a normal stop; the accepted completion
+          // describes that invocation, not the rejected draft's finish reason.
+          finish = LlmFinishReason.stop;
           decision = await gate.evaluate(
             AgentFinalAnswerDraft(
               text: repaired,

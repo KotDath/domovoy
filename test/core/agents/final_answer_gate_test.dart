@@ -47,10 +47,11 @@ void main() {
         id: BuiltInLlmCatalog.deepSeek,
         wireFamily: LlmWireFamily.openaiChatCompletions,
         turns: [
-          textTurn(
-            'FORGED_DRAFT',
-            usage: LlmUsage(inputTokens: 10, outputTokens: 4),
-          ),
+          [
+            const LlmTextDelta('FORGED_DRAFT'),
+            LlmUsageUpdate(LlmUsage(inputTokens: 10, outputTokens: 4)),
+            const LlmCompleted(finishReason: LlmFinishReason.length),
+          ],
           textTurn(
             'VALID_JSON',
             usage: LlmUsage(inputTokens: 20, outputTokens: 6),
@@ -72,12 +73,14 @@ void main() {
               finalAnswerGate: _Gate((draft) async {
                 if (!draft.repairAttempt) {
                   expect(draft.text, 'FORGED_DRAFT');
+                  expect(draft.finishReason, LlmFinishReason.length);
                   return AgentFinalAnswerRejected(
                     reason: 'false ID',
                     repairRequest: _repair(draft),
                   );
                 }
                 expect(draft.text, 'VALID_JSON');
+                expect(draft.finishReason, LlmFinishReason.stop);
                 return AgentFinalAnswerAccepted('Verified rendered answer');
               }),
               preparedContext: AgentPreparedContext(
@@ -91,6 +94,10 @@ void main() {
           .events
           .toList();
       expect(events.last, isA<AgentRunCompleted>());
+      expect(
+        (events.last as AgentRunCompleted).finishReason,
+        LlmFinishReason.stop,
+      );
       expect(events.whereType<AgentAnswerDelta>().map((e) => e.text), [
         'Verified rendered answer',
       ]);
