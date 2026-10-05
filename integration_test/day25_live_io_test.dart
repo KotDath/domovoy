@@ -278,6 +278,7 @@ void main() {
                   'corpus': question['corpus'],
                   'accepted': accepted.isNotEmpty,
                   'command_success': result.isSuccess,
+                  'workspace_error': env.chat.state.error?.message,
                   'elapsed_ms': watch.elapsedMilliseconds,
                   'state_after': after.toJson(),
                   'messages_before': beforeMessages,
