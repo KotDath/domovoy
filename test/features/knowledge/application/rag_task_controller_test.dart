@@ -224,8 +224,8 @@ void main() {
               .where((s) => s.isNotEmpty)
               .join('\n');
           expect(
-            removeState(off.context.systemPrompt),
-            removeState(on.context.systemPrompt),
+            removeState(off.context.systemPrompt ?? ''),
+            removeState(on.context.systemPrompt ?? ''),
           );
           final rows = await traces.list('default', scope);
           final diagnostic = rows
