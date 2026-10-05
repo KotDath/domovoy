@@ -7,7 +7,15 @@ import '../../../core/agents/agents.dart';
 import '../../../core/llm/llm.dart';
 import '../../../core/rag/models.dart';
 import '../../../core/rag/turn.dart';
+import '../../../core/rag/retrieval.dart';
 import '../../chat/application/chat_run_preparer.dart';
+
+typedef RagQueryRewriterFactory =
+    RagQueryRewriter Function(
+      ModelRef model,
+      Future<void> Function(Map<String, Object?>) beforeRequest,
+      Future<void> Function(RagRewriteResult) afterResult,
+    );
 
 final class RagChatController extends ChangeNotifier
     implements ChatRunPreparer {
@@ -16,15 +24,22 @@ final class RagChatController extends ChangeNotifier
     required this.traces,
     required this.registry,
     this.dynamicContext,
-  });
+    this.queryRewriterFactory,
+    this.defaultRetrieval = const RagRetrievalConfig(),
+  }) : retrieval = defaultRetrieval,
+       strategy = defaultRetrieval.strategy ?? ChunkStrategy.structure;
   final RagTurnCoordinator coordinator;
   final RagTraceRepository traces;
   final LlmProviderRegistry registry;
   final AgentDynamicContextProvider? dynamicContext;
+  final RagQueryRewriterFactory? queryRewriterFactory;
   bool enabled = false;
   bool neutralEvaluation = false;
+  RagProtocol protocol = RagProtocol.m1;
+  final RagRetrievalConfig defaultRetrieval;
+  RagRetrievalConfig retrieval;
   String corpus = 'domovoy';
-  ChunkStrategy strategy = ChunkStrategy.structure;
+  ChunkStrategy strategy;
   bool busy = false;
   String progress = '';
   String? error;
@@ -42,12 +57,16 @@ final class RagChatController extends ChangeNotifier
     bool? neutral,
     String? corpus,
     ChunkStrategy? strategy,
+    RagProtocol? protocol,
+    RagRetrievalConfig? retrieval,
   }) {
     if (busy) return;
     this.enabled = enabled ?? this.enabled;
     neutralEvaluation = neutral ?? neutralEvaluation;
     this.corpus = corpus ?? this.corpus;
     this.strategy = strategy ?? this.strategy;
+    this.protocol = protocol ?? this.protocol;
+    this.retrieval = retrieval ?? this.retrieval;
     _notify();
   }
 
@@ -82,9 +101,22 @@ final class RagChatController extends ChangeNotifier
   ) async {
     if (!enabled && !neutralEvaluation) return null;
     final useRag = enabled;
+    final selectedProtocol = protocol;
+    final selectedRetrieval = retrieval;
     final neutral = neutralEvaluation;
     final selectedCorpus = corpus;
     final selectedStrategy = strategy;
+    if (useRag &&
+        (selectedProtocol == RagProtocol.m3 ||
+            selectedProtocol == RagProtocol.m4) &&
+        selectedRetrieval.rewriteModel != null &&
+        selectedRetrieval.rewriteModel !=
+            '${snapshot.selection.model.providerId.value}/${snapshot.selection.model.modelId.value}') {
+      throw StateError(
+        'Для этого профиля калибровки выберите исходную модель rewrite '
+        '${selectedRetrieval.rewriteModel}, либо явно задайте экспериментальные пороги.',
+      );
+    }
     final project = snapshot.projectId?.value ?? 'default';
     final session = snapshot.id.value;
     final model = registry.resolve(snapshot.selection.model).model;
@@ -151,12 +183,49 @@ final class RagChatController extends ChangeNotifier
           query: input,
           corpus: selectedCorpus,
           strategy: selectedStrategy,
-          protocol: useRag ? RagProtocol.m1 : RagProtocol.m0,
+          protocol: useRag ? selectedProtocol : RagProtocol.m0,
+          retrieval: selectedRetrieval,
           // Escaping the context as a JSON request adds overhead; a second
           // full-request check happens immediately before transport.
           contextByteBudget: min(24000, maxBytes - baseBytes - 2048),
         ),
         cancellation,
+        rewriter: queryRewriterFactory?.call(
+          snapshot.selection.model,
+          (request) async {
+            await traces.saveRequest(project, session, '$id-rewrite', {
+              'version': 1,
+              'id': '$id-rewrite',
+              'project': project,
+              'session': session,
+              'query': input,
+              'corpus': selectedCorpus,
+              'strategy': selectedStrategy.name,
+              'protocol': 'query_rewrite',
+              'candidates': [],
+              'request': {
+                'model': request['model'],
+                'generation': request['generation'],
+                'system_prompt': (request['context'] as Map)['systemPrompt'],
+                'tools_count': 0,
+                'sha256': ragHash(jsonEncode(request)),
+                'messages': (request['context'] as Map)['messages'],
+              },
+            });
+          },
+          (result) async {
+            // A provider failure before request publication has no receipt.
+            final rows = await traces.list(project, session);
+            if (!rows.any((r) => r['id'] == '$id-rewrite')) return;
+            await traces.saveCompletion(project, session, '$id-rewrite', {
+              'terminal': result.fallbackReason ?? 'RewriteCompleted',
+              'accepted_message_id': null,
+              'usage': result.audit['usage'],
+              'elapsed_ms': result.audit['elapsed_ms'],
+              'rewritten_query': result.query,
+            });
+          },
+        ),
       );
       checkRagCancellation(cancellation.isCancelled);
       progress = 'Найдено источников: ${prepared.evidence.length}';

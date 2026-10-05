@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../../../core/rag/models.dart';
+import '../../../core/rag/turn.dart';
+import '../../../core/rag/retrieval.dart';
 import '../application/rag_chat_controller.dart';
 
 class RagChatBar extends StatelessWidget {
@@ -40,6 +42,22 @@ class RagChatBar extends StatelessWidget {
                     : null,
               ),
               if (controller.enabled) ...[
+                DropdownButton<RagProtocol>(
+                  key: const ValueKey('rag.protocol'),
+                  value: controller.protocol,
+                  items: [
+                    for (final mode in RagProtocol.values.where(
+                      (m) => m != RagProtocol.m0,
+                    ))
+                      DropdownMenuItem(
+                        value: mode,
+                        child: Text(mode.name.toUpperCase()),
+                      ),
+                  ],
+                  onChanged: enabled && !controller.busy
+                      ? (value) => controller.configure(protocol: value)
+                      : null,
+                ),
                 DropdownButton<String>(
                   key: const ValueKey('rag.corpus'),
                   value: controller.corpus,
@@ -115,13 +133,72 @@ class RagInspectorPage extends StatelessWidget {
           SwitchListTile(
             title: const Text('Нейтральное сравнение'),
             subtitle: const Text(
-              'Без профиля и памяти. Для M0/M1 используйте отдельные новые чаты и одинаковую модель.',
+              'Без профиля и памяти. Для сравнения используйте отдельные новые чаты и одинаковую модель.',
             ),
             value: controller.neutralEvaluation,
             onChanged: controller.busy
                 ? null
                 : (value) => controller.configure(neutral: value),
           ),
+          if (controller.enabled) ...[
+            Text('Настройки отбора · ${controller.retrieval.calibrationId}'),
+            if (controller.retrieval.calibrationId == 'manual-experiment')
+              const Text(
+                'Экспериментальные пороги. Для текущего корпуса и моделей '
+                'они не проверены; качество отбора может измениться.',
+              ),
+            TextButton(
+              onPressed: controller.busy
+                  ? null
+                  : () => controller.configure(
+                      retrieval: controller.defaultRetrieval,
+                      strategy: controller.defaultRetrieval.strategy,
+                    ),
+              child: const Text('Восстановить калибровку'),
+            ),
+            Text(
+              'Cosine порог: ${controller.retrieval.denseThreshold.toStringAsFixed(3)} (M2/M3)',
+            ),
+            Slider(
+              key: const ValueKey('rag.denseThreshold'),
+              min: -1,
+              max: 1,
+              divisions: 200,
+              value: controller.retrieval.denseThreshold,
+              onChanged: controller.busy
+                  ? null
+                  : (v) => controller.configure(
+                      retrieval: RagRetrievalConfig(
+                        denseThreshold: v,
+                        rerankThreshold: controller.retrieval.rerankThreshold,
+                        calibrationId: 'manual-experiment',
+                      ),
+                    ),
+            ),
+            Text(
+              'BGE raw logit порог: ${controller.retrieval.rerankThreshold.toStringAsFixed(2)} (M4)',
+            ),
+            Slider(
+              key: const ValueKey('rag.rerankThreshold'),
+              min: controller.retrieval.rerankThreshold < -15
+                  ? controller.retrieval.rerankThreshold.floorToDouble() - 1
+                  : -15,
+              max: controller.retrieval.rerankThreshold > 15
+                  ? controller.retrieval.rerankThreshold.ceilToDouble() + 1
+                  : 15,
+              divisions: 300,
+              value: controller.retrieval.rerankThreshold,
+              onChanged: controller.busy
+                  ? null
+                  : (v) => controller.configure(
+                      retrieval: RagRetrievalConfig(
+                        denseThreshold: controller.retrieval.denseThreshold,
+                        rerankThreshold: v,
+                        calibrationId: 'manual-experiment',
+                      ),
+                    ),
+            ),
+          ],
           const Text(
             'Ссылки показывают извлечённые источники. Цитаты и смысл ответа на этом этапе не проверены.',
           ),
@@ -153,15 +230,39 @@ class _TraceCard extends StatelessWidget {
               '${trace['protocol']} · ${trace['query']}',
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            SelectableText(
-              'request ${trace['id']}\n'
-              '${trace['corpus']} · ${trace['strategy']} · generation ${trace['generation']}\n'
-              'fingerprint ${trace['fingerprint']}\n'
-              'модель ${jsonEncode(request['model'])}\n'
-              'инструментов ${request['tools_count']} · ${request['utf8_bytes']} байт полного запроса\n'
-              'подготовка ${jsonEncode(trace['timings_ms'])} мс\n'
-              'результат ${completion?['terminal'] ?? 'запрос сохранён; результат ещё не получен'}\n'
-              'message ${completion?['accepted_message_id']} · всего ${completion?['elapsed_ms']} мс',
+            Text(
+              'Кандидаты: ${(trace['candidates'] as List? ?? []).length} → '
+              'источники: ${(trace['candidates'] as List? ?? []).where((c) => c['sent'] == true).length}',
+            ),
+            if (trace['rewritten_query'] != null)
+              SelectableText('Поисковый запрос: ${trace['rewritten_query']}'),
+            if ((trace['rewrite_audit'] as Map?)?['fallback_reason'] != null)
+              Text(
+                'Исходный запрос сохранён: ${(trace['rewrite_audit'] as Map)['fallback_reason']}',
+              ),
+            Text('Время этапов: ${jsonEncode(trace['timings_ms'])} мс'),
+            if (trace['reranker_scale'] != null)
+              Text('Реранкер: BGE v2-m3 · ${trace['reranker_scale']}'),
+            ExpansionTile(
+              title: const Text('Трасса запроса и конфигурация'),
+              children: [
+                SelectableText(
+                  'request ${trace['id']}\n'
+                  '${trace['corpus']} · ${trace['strategy']} · generation ${trace['generation']}\n'
+                  'fingerprint ${trace['fingerprint']}\n'
+                  'rewrite ${trace['rewritten_query']}\n'
+                  'rewrite fallback ${(trace['rewrite_audit'] as Map?)?['fallback_reason']} · '
+                  '${(trace['rewrite_audit'] as Map?)?['elapsed_ms']} мс\n'
+                  'отбор ${jsonEncode(trace['retrieval_config'])}\n'
+                  'reranker ${trace['reranker_fingerprint']} · ${trace['reranker_scale']}\n'
+                  'reranker usage ${jsonEncode(trace['reranker_usage'])}\n'
+                  'модель ${jsonEncode(request['model'])}\n'
+                  'инструментов ${request['tools_count']} · ${request['utf8_bytes']} байт полного запроса\n'
+                  'подготовка ${jsonEncode(trace['timings_ms'])} мс\n'
+                  'результат ${completion?['terminal'] ?? 'запрос сохранён; результат ещё не получен'}\n'
+                  'message ${completion?['accepted_message_id']} · всего ${completion?['elapsed_ms']} мс',
+                ),
+              ],
             ),
             if (completion != null)
               ExpansionTile(
@@ -209,9 +310,12 @@ class _SourceCard extends StatelessWidget {
     return ExpansionTile(
       title: Text(
         '${candidate['sent'] == true ? 'Отправлен' : 'Исключён'} · '
-        '${(candidate['cosine'] as num).toStringAsFixed(4)} cosine · ${chunk['source']}',
+        '${(candidate['cosine'] as num).toStringAsFixed(4)} cosine · ${chunk['source']}'
+        '${candidate['rerank'] == null ? '' : ' · ${(candidate['rerank'] as num).toStringAsFixed(3)} BGE raw logit'}',
       ),
       subtitle: Text(
+        'dense #${candidate['dense_rank']}'
+        '${candidate['rerank_rank'] == null ? '' : ' → rerank #${candidate['rerank_rank']}'}\n'
         '${chunk['section']}\n${candidate['excluded_reason'] ?? 'retrieval provenance'}',
       ),
       children: [
