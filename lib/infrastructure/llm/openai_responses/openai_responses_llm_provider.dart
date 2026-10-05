@@ -109,6 +109,11 @@ Map<String, Object?> buildResponsesBody({
   if (request.context.tools.isNotEmpty) {
     body['tools'] = request.context.tools.map(encodeResponsesTool).toList();
   }
+  if (request.generation.responseFormat == LlmResponseFormat.jsonObject) {
+    body['text'] = const {
+      'format': {'type': 'json_object'},
+    };
+  }
   applyResponsesReasoning(body, model: model, generation: request.generation);
   if (request.generation.temperature != null) {
     body['temperature'] = request.generation.temperature;

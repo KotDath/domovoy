@@ -212,6 +212,11 @@ void main() {
           expect(off.context.messages, hasLength(3));
           expect(off.model, on.model);
           expect(off.generation.toJson(), on.generation.toJson());
+          expect(off.generation.responseFormat, LlmResponseFormat.jsonObject);
+          expect(
+            provider.requests.first.generation.responseFormat,
+            LlmResponseFormat.jsonObject,
+          );
           String removeState(String p) => p
               .replaceAll(stateSnapshotBefore.context, '')
               .split('\n')

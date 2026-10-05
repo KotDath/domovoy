@@ -10,6 +10,43 @@ import '../../support/recording_http_client.dart';
 
 void main() {
   group('OpenAI-compatible Chat Completions adapter', () {
+    test(
+      'dispatches explicit JSON syntax without altering ordinary requests',
+      () async {
+        final client = RecordingClient(
+          (_) => sseResponse(
+            'data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n',
+          ),
+        );
+        final provider = _deepSeek(client);
+        final ordinary = _prompt();
+        await provider
+            .stream(ordinary, cancellation: CancellationSource().token)
+            .drain<void>();
+        expect(
+          client.requests.last.jsonBody.containsKey('response_format'),
+          false,
+        );
+        await provider
+            .stream(
+              LlmRequest(
+                model: ordinary.model,
+                context: ordinary.context,
+                generation: LlmGenerationConfig(
+                  responseFormat: LlmResponseFormat.jsonObject,
+                  reasoningMode: ReasoningMode.disabled,
+                ),
+              ),
+              cancellation: CancellationSource().token,
+            )
+            .drain<void>();
+        expect(client.requests.last.jsonBody['response_format'], {
+          'type': 'json_object',
+        });
+        expect(client.requests.last.jsonBody['thinking'], {'type': 'disabled'});
+      },
+    );
     test('reassembles arbitrarily fragmented DeepSeek SSE chunks', () async {
       final client = RecordingClient(
         (_) => fragmentedSseResponse(

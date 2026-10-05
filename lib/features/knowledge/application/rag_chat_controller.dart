@@ -388,6 +388,15 @@ final class RagChatController extends ChangeNotifier
           ragTaskGroundingInstruction,
         if (frozenState != null) frozenState.context,
       ].join('\n\n');
+      // Provider JSON syntax prevents copying rendered historical Markdown;
+      // the host still validates schema, scope and exact citation substrings.
+      final responseFormat =
+          grounded &&
+              (frozenState != null || diagnosticReplay) &&
+              (model.wireFamily == LlmWireFamily.openaiChatCompletions ||
+                  model.wireFamily == LlmWireFamily.openaiResponses)
+          ? LlmResponseFormat.jsonObject
+          : LlmResponseFormat.text;
       final baseRequest = LlmRequest(
         model: snapshot.selection.model,
         context: LlmContext(
@@ -398,6 +407,7 @@ final class RagChatController extends ChangeNotifier
           ],
         ),
         generation: LlmGenerationConfig(
+          responseFormat: responseFormat,
           reasoningMode: mode,
           temperature: snapshot.definition.generation.temperature,
           maxOutputTokens: output,
@@ -501,6 +511,7 @@ final class RagChatController extends ChangeNotifier
             effort: ReasoningEffort.modelDefault,
           ),
           preparedContext: AgentPreparedContext(
+            responseFormat: responseFormat,
             systemPromptOverride: [
               prompt,
               if (frozenState != null || diagnosticReplay)

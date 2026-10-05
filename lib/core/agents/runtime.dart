@@ -4485,6 +4485,8 @@ final class _LiveRun implements AgentRun {
       session.runtime.registry,
     );
     return LlmGenerationConfig(
+      responseFormat:
+          options.preparedContext?.responseFormat ?? definition.responseFormat,
       reasoningMode: mode,
       reasoningEffort: effort,
       temperature: definition.temperature,

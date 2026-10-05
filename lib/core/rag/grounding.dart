@@ -21,7 +21,14 @@ question); verbatim quotations retain their original source language.
 Earlier assistant messages in the transcript are HOST-RENDERED prose and citations
 for humans, not the model output format. Do not imitate that Markdown. Use ONLY
 the current supplied evidence IDs, never previous answers' stale IDs.
-Your response MUST remain the strict status/claims/evidence JSON object.''';
+Your response MUST remain the strict status/claims/evidence JSON object.
+For a derived claim the exact shape is:
+{"status":"answered","claims":[{"text":"proposed calculation","kind":"derived",
+"evidence":[{"chunk_id":"actual user-state ID","quote":"exact user quote"},
+{"chunk_id":"actual document ID","quote":"exact document passage"}]}]}.
+The root has ONLY status and claims. kind belongs INSIDE an individual claim,
+never at the root; ordinary claims have ONLY text and evidence. Do not copy
+these placeholder IDs or quote strings. Each claim has at most FOUR citations.''';
 
 const ragGroundedAnswerInstruction = '''Return ONLY JSON with exactly two keys:
 {"status":"answered|partial|abstained","claims":[{"text":"one factual claim",

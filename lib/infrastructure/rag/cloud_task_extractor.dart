@@ -90,6 +90,11 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         continuationEntries: [],
       ),
       generation: LlmGenerationConfig(
+        responseFormat:
+            resolved.model.wireFamily == LlmWireFamily.openaiChatCompletions ||
+                resolved.model.wireFamily == LlmWireFamily.openaiResponses
+            ? LlmResponseFormat.jsonObject
+            : LlmResponseFormat.text,
         temperature: 0,
         maxOutputTokens: min(2048, resolved.model.outputBound),
         reasoningMode:
