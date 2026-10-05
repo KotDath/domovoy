@@ -62,6 +62,10 @@ void main() {
       ragRewritePreservesQuery('Домовой не работает?', 'Алиса не работает?'),
       false,
     );
+    expect(
+      ragRewritePreservesQuery('не удалять и не менять', 'не удалять и менять'),
+      false,
+    );
   });
   test(
     'isolated request audited before transport, invalid/ambiguous fallbacks',

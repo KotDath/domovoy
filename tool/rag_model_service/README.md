@@ -64,6 +64,11 @@ tokenizer pair lengths. `GET /v1/reranker/health` declares its fingerprint and
 raw classifier scores plus backend usage, with `truncated: false`. Scores are
 not cosine or probabilities; a missing backend fails explicitly. llama.cpp's
 missing-embedding sentinel, malformed scores and model drift are rejected.
+Before each inference, every query/passage token ID is compared with llama.cpp's
+`/tokenize` output, the special-token pair is checked, and the returned usage must
+equal all validated pair lengths. A disagreement fails explicitly rather than
+advertising unverified `truncated: false`. Backend identity is checked before and
+after each call; measured timings include this validation overhead.
 
 Run `integration_test/day23_calibration_io_test.dart` on Linux with the actual
 DeepSeek environment credential to collect the separate eight-question dev set.

@@ -14,6 +14,23 @@ void main() {
         File('eval/rag/calibration.json').readAsStringSync(),
       );
       expect(ragCalibrationProfile, profile);
+      final manifest =
+          jsonDecode(File('assets/rag_demo/manifest.json').readAsStringSync())
+              as List;
+      final documents = [
+        for (final row in manifest)
+          RagDocument(
+            source: row['source'] as String,
+            title: row['source'] as String,
+            text: File(row['asset'] as String).readAsStringSync(),
+          ),
+      ]..sort((a, b) => a.source.compareTo(b.source));
+      expect(
+        ragHash(
+          jsonEncode([for (final d in documents) '${d.id}:${d.revision}']),
+        ),
+        profile['corpus_hash'],
+      );
       expect(calibratedRagRetrieval.strategy, ChunkStrategy.fixed);
       expect(calibratedRagRetrieval.calibrationId, profile['id']);
       expect(
@@ -32,6 +49,13 @@ void main() {
         () => RagRetrievalConfig.fromProfile({
           ...ragCalibrationProfile,
           'score_scale': 'cosine',
+        }),
+        throwsFormatException,
+      );
+      expect(
+        () => RagRetrievalConfig.fromProfile({
+          ...ragCalibrationProfile,
+          'dense': {'threshold': 'invalid'},
         }),
         throwsFormatException,
       );

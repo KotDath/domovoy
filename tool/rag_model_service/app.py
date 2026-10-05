@@ -207,12 +207,31 @@ def rerank(body: RerankInput):
     tok = tokenizer("reranker")
     if len(tok(body.query, add_special_tokens=False)["input_ids"]) > 1024:
         raise HTTPException(422, "reranker_query_too_long")
+    pair_ids = []
     for candidate in body.candidates:
         pair = tok(body.query, candidate.text, add_special_tokens=True, truncation=False)
         if len(pair["input_ids"]) > 8192:
             raise HTTPException(422, "reranker_pair_too_long")
+        pair_ids.append(pair["input_ids"])
     try:
         with inference_lock, httpx.Client(timeout=180, trust_env=False) as client:
+            def backend_tokens(text):
+                ids = client.post("http://127.0.0.1:8766/tokenize", json={
+                    "content": text, "add_special": False, "parse_special": False,
+                }).raise_for_status().json().get("tokens")
+                if not isinstance(ids, list) or any(type(i) is not int for i in ids):
+                    raise HTTPException(502, "invalid_backend_tokens")
+                if ids != tok(text, add_special_tokens=False, truncation=False)["input_ids"]:
+                    raise HTTPException(409, "reranker_tokenizer_mismatch")
+                return ids
+
+            query_ids = backend_tokens(body.query)
+            for candidate, expected in zip(body.candidates, pair_ids):
+                # The pinned llama.cpp build constructs exactly this XLM-R pair.
+                actual = [tok.bos_token_id, *query_ids, tok.eos_token_id,
+                          tok.sep_token_id, *backend_tokens(candidate.text), tok.eos_token_id]
+                if actual != expected:
+                    raise HTTPException(409, "reranker_pair_tokenizer_mismatch")
             response = client.post("http://127.0.0.1:8766/reranking", json={
                 "model": alias, "query": body.query, "top_n": len(body.candidates),
                 "documents": [c.text for c in body.candidates],
@@ -220,6 +239,12 @@ def rerank(body: RerankInput):
     except httpx.HTTPError as error:
         raise HTTPException(503, "reranker_inference_failed") from error
     results = response.get("results", [])
+    usage = response.get("usage", {})
+    expected_tokens = sum(len(ids) for ids in pair_ids)
+    if (type(usage.get("prompt_tokens")) is not int or
+            usage["prompt_tokens"] != expected_tokens or
+            usage.get("total_tokens") != expected_tokens):
+        raise HTTPException(502, "reranker_token_usage_mismatch")
     indexes = [r.get("index") for r in results]
     if (len(results) != len(body.candidates) or
             set(indexes) != set(range(len(body.candidates))) or

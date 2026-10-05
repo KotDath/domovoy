@@ -24,20 +24,33 @@ final class RagRetrievalConfig {
         json['rewrite_version'] != 'query-rewrite-v1') {
       throw const FormatException('Incompatible calibration profile');
     }
-    final model = json['rewrite_model'] as Map;
-    final result = RagRetrievalConfig(
-      denseThreshold: ((json['dense'] as Map)['threshold'] as num).toDouble(),
-      rerankThreshold: ((json['rerank'] as Map)['threshold'] as num).toDouble(),
-      calibrationId: json['id'] as String,
-      expectedRerankerFingerprint: json['reranker_fingerprint'] as String,
-      corpusHash: json['corpus_hash'] as String,
-      embeddingFingerprint: json['embedding_fingerprint'] as String,
-      strategy: ChunkStrategy.values.byName(json['strategy'] as String),
-      rewriteModel:
-          '${model['providerId']['value']}/${model['modelId']['value']}',
-    );
-    result.validate();
-    return result;
+    try {
+      final model = json['rewrite_model'] as Map;
+      final provider = (model['providerId'] as Map)['value'] as String;
+      final modelId = (model['modelId'] as Map)['value'] as String;
+      if (provider.isEmpty || modelId.isEmpty) {
+        throw const FormatException('Empty rewrite model');
+      }
+      final result = RagRetrievalConfig(
+        denseThreshold: ((json['dense'] as Map)['threshold'] as num).toDouble(),
+        rerankThreshold: ((json['rerank'] as Map)['threshold'] as num)
+            .toDouble(),
+        calibrationId: json['id'] as String,
+        expectedRerankerFingerprint: json['reranker_fingerprint'] as String,
+        corpusHash: json['corpus_hash'] as String,
+        embeddingFingerprint: json['embedding_fingerprint'] as String,
+        strategy: ChunkStrategy.values.byName(json['strategy'] as String),
+        rewriteModel: '$provider/$modelId',
+      );
+      result.validate();
+      return result;
+    } on FormatException {
+      rethrow;
+    } on TypeError {
+      throw const FormatException('Malformed calibration profile');
+    } on ArgumentError {
+      throw const FormatException('Invalid calibration profile values');
+    }
   }
   Map<String, Object?> toJson() => {
     'dense_threshold': denseThreshold,

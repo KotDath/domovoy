@@ -257,6 +257,14 @@ void main() {
         'relevance_label': 'agent-selected canonical spans; >=50% span overlap',
         'created_at_utc': DateTime.now().toUtc().toIso8601String(),
       };
+      expect(
+        knowledge.activeIndex!.documents
+            .map((d) => '${d.id}:${d.revision}')
+            .toList(),
+        knowledge.documents.map((d) => '${d.id}:${d.revision}').toList(),
+        reason:
+            'Published index preserves the frozen ordered document snapshot',
+      );
       File('${output.path}.profile.json').writeAsStringSync(
         const JsonEncoder.withIndent(
           '  ',

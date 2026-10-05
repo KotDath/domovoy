@@ -99,24 +99,29 @@ bool ragRewritePreservesQuery(String original, String rewritten) {
   }
   final before = numbers(original), after = numbers(rewritten);
   if (before.length != after.length || !before.containsAll(after)) return false;
-  Set<String> negations(String s) => RegExp(r'[A-Za-zА-Яа-яЁё]+')
-      .allMatches(s.toLowerCase())
-      .map((m) => m.group(0)!)
-      .where(
-        {
-          'не',
-          'нет',
-          'нельзя',
-          'без',
-          'not',
-          'no',
-          'never',
-          'without',
-        }.contains,
-      )
-      .toSet();
+  Map<String, int> negations(String s) {
+    const terms = {
+      'не',
+      'нет',
+      'нельзя',
+      'без',
+      'not',
+      'no',
+      'never',
+      'without',
+    };
+    final result = <String, int>{};
+    for (final m in RegExp(r'[A-Za-zА-Яа-яЁё]+').allMatches(s.toLowerCase())) {
+      final word = m.group(0)!;
+      if (terms.contains(word)) {
+        result.update(word, (v) => v + 1, ifAbsent: () => 1);
+      }
+    }
+    return result;
+  }
+
   final a = negations(original), b = negations(rewritten);
-  return a.length == b.length && a.containsAll(b);
+  return a.length == b.length && a.keys.every((term) => a[term] == b[term]);
 }
 
 final class CloudRagQueryRewriter implements RagQueryRewriter {
