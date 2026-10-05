@@ -457,7 +457,7 @@ class _CitationPage extends StatelessWidget {
                 children: [
                   SelectableText.rich(
                     TextSpan(
-                      style: DefaultTextStyle.of(context).style,
+                      style: Theme.of(context).textTheme.bodyMedium,
                       children: [
                         TextSpan(text: text.substring(0, start)),
                         TextSpan(

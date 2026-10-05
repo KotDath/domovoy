@@ -100,6 +100,10 @@ void main() {
               .widgetList<SelectableText>(find.byType(SelectableText))
               .singleWhere((w) => w.textSpan != null);
           final span = rich.textSpan!.children![1] as TextSpan;
+          expect(
+            rich.textSpan!.style,
+            Theme.of(tester.element(expand)).textTheme.bodyMedium,
+          );
           expect(span.text, RagGroundingFixture.quote);
           expect(span.style!.backgroundColor, isNotNull);
           expect(
