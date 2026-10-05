@@ -17,7 +17,37 @@ the question requires missing dialogue context; never guess what a pronoun means
 
 /// Conservative lexical guard. It cannot prove semantic equivalence, so an
 /// ambiguous result falls back; both original and rewrite remain inspectable.
+Iterable<String> _queryWords(String text) => RegExp(
+  r'[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_.-]*',
+).allMatches(text).map((m) => m.group(0)!.replaceFirst(RegExp(r'\.+$'), ''));
+
 List<String> ragProtectedQueryTerms(String original) {
+  const knownNames = {
+    'android',
+    'ios',
+    'linux',
+    'windows',
+    'macos',
+    'aurora',
+    'domovoy',
+    'deepseek',
+    'openrouter',
+    'ollama',
+    'arxiv',
+    'memgpt',
+    'memorybank',
+    'андроид',
+    'линукс',
+    'виндовс',
+    'макос',
+    'айос',
+    'аврора',
+    'домовой',
+    'stdio',
+    'p95',
+    'thousand',
+    'million',
+  };
   const common = {
     'what',
     'which',
@@ -64,14 +94,12 @@ List<String> ragProtectedQueryTerms(String original) {
     'never',
     'without',
   };
-  final words = RegExp(
-    r'[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_.-]*',
-  ).allMatches(original).map((m) => m.group(0)!);
+  final words = _queryWords(original);
   return {
     for (final word in words)
       if (!common.contains(word.toLowerCase()) &&
           (RegExp(r'[A-ZА-ЯЁ0-9_.]').hasMatch(word) ||
-              {'stdio', 'p95', 'thousand', 'million'}.contains(word)))
+              knownNames.contains(word.toLowerCase())))
         word,
     for (final m in RegExp(r'\d+(?:[.,:]\d+)*').allMatches(original))
       m.group(0)!,
@@ -79,22 +107,23 @@ List<String> ragProtectedQueryTerms(String original) {
 }
 
 bool ragRewritePreservesQuery(String original, String rewritten) {
-  final lower = rewritten.toLowerCase();
+  final originalWords = _queryWords(
+    original,
+  ).map((s) => s.toLowerCase()).toSet();
+  final rewrittenWords = _queryWords(
+    rewritten,
+  ).map((s) => s.toLowerCase()).toSet();
+  bool numeric(String s) => RegExp(r'^\d+(?:[.,:]\d+)*$').hasMatch(s);
   if (ragProtectedQueryTerms(
     original,
-  ).any((s) => !lower.contains(s.toLowerCase()))) {
+  ).any((s) => !numeric(s) && !rewrittenWords.contains(s.toLowerCase()))) {
     return false;
   }
   Set<String> numbers(String s) =>
       RegExp(r'\d+(?:[.,:]\d+)*').allMatches(s).map((m) => m.group(0)!).toSet();
-  final originalWords = RegExp(
-    r'[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9_.-]*',
-  ).allMatches(original).map((m) => m.group(0)!.toLowerCase()).toSet();
-  if (ragProtectedQueryTerms(rewritten).any(
-    (s) =>
-        !originalWords.contains(s.toLowerCase()) &&
-        !RegExp(r'^\d+(?:[.,:]\d+)*$').hasMatch(s),
-  )) {
+  if (ragProtectedQueryTerms(
+    rewritten,
+  ).any((s) => !originalWords.contains(s.toLowerCase()) && !numeric(s))) {
     return false;
   }
   final before = numbers(original), after = numbers(rewritten);

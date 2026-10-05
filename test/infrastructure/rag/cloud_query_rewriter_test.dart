@@ -66,6 +66,26 @@ void main() {
       ragRewritePreservesQuery('не удалять и не менять', 'не удалять и менять'),
       false,
     );
+    const lowercase = 'android не поддерживает stdio?';
+    for (final rewrite in [
+      'ios не поддерживает stdio?',
+      'androidx не поддерживает stdio?',
+      'android openrouter не поддерживает stdio?',
+    ]) {
+      expect(
+        ragRewritePreservesQuery(lowercase, rewrite),
+        false,
+        reason: rewrite,
+      );
+    }
+    expect(
+      ragRewritePreservesQuery(
+        lowercase,
+        'stdio не поддерживается на android.',
+      ),
+      true,
+    );
+    expect(ragRewritePreservesQuery('Android stdio', 'androidx stdio'), false);
   });
   test(
     'isolated request audited before transport, invalid/ambiguous fallbacks',
