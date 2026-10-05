@@ -139,6 +139,19 @@ questions without retuning. Show ablations M1–M4 and improvements AND regressi
 Demo candidate pool/filter exclusions, original/rewrite, reranker reordering,
 empty results at raised threshold and restoring calibration.
 
+Stage-23 comparison uses the fixed index (day-22 score tied at 19/20, with better
+canonical-span recall than the structural index). M2/M3 share one dense cutoff
+calibrated jointly on raw and rewritten dev queries; M4 calibrates its own raw
+BGE logit cutoff. The reranker scores the original user question against all
+twenty rewritten-query candidates, preserving the original intent if the rewrite
+loses nuance. Calibration uses this same pairing. Record this choice when
+interpreting M3→M4 deltas; it is not an additional query-pairing ablation.
+Choose dev cutoffs by question F1, then sent-passage precision, then the higher
+cutoff; labels use agent-selected canonical spans with at least 50% overlap.
+The ten-question evaluation retains the stricter full-span coverage metric.
+Manual threshold controls explicitly label an uncalibrated experiment and permit
+other corpora; restoring calibration restores its bound strategy and model checks.
+
 ## Day 24 — citations and abstention before persistence
 
 Model returns strict status answered/partial/abstained plus claims with chunk IDs

@@ -9,6 +9,8 @@ import 'package:http/http.dart' as http;
 import 'core/rag/turn.dart';
 import 'features/knowledge/application/rag_chat_controller.dart';
 import 'infrastructure/rag/jsonl_rag_trace_repository.dart';
+import 'infrastructure/rag/cloud_query_rewriter.dart';
+import 'infrastructure/rag/calibrated_retrieval.dart';
 import 'core/agents/agents.dart';
 import 'core/automation/automation.dart';
 import 'core/environment/platform_environment_reader.dart';
@@ -883,10 +885,19 @@ final class DomovoyDependencies {
       ragChat: ragStorage == null
           ? null
           : RagChatController(
+              defaultRetrieval: calibratedRagRetrieval,
               coordinator: RagTurnCoordinator(
                 repository: ragRepository!,
                 models: ragModels,
+                reranker: ragModels,
               ),
+              queryRewriterFactory: (model, beforeRequest, afterResult) =>
+                  CloudRagQueryRewriter(
+                    registry: stack.registry,
+                    model: model,
+                    beforeRequest: beforeRequest,
+                    afterResult: afterResult,
+                  ),
               traces: JsonlRagTraceRepository(ragStorage),
               registry: stack.registry,
               dynamicContext: dynamicContext,

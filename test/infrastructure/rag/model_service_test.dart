@@ -2,12 +2,63 @@ import 'dart:convert';
 
 import 'package:domovoy/core/llm/cancellation.dart';
 import 'package:domovoy/core/rag/contracts.dart';
+import 'package:domovoy/core/rag/models.dart';
+import 'package:domovoy/core/rag/retrieval.dart';
 import 'package:domovoy/infrastructure/rag/model_service_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  test(
+    'reranker preserves negative logit scale, verifies response IDs and drift',
+    () async {
+      var invalid = false;
+      final chunk = RagChunk(
+        documentId: 'd',
+        documentRevision: 'r',
+        source: 's',
+        title: 't',
+        section: 's',
+        start: 0,
+        end: 1,
+        text: 'x',
+        strategy: ChunkStrategy.fixed,
+        tokens: 1,
+        ordinal: 0,
+      );
+      final client = RagModelServiceClient(
+        MockClient(
+          (request) async => http.Response(
+            jsonEncode({
+              'fingerprint': 'rank-v1',
+              'score_scale': 'bge_raw_logit',
+              'truncated': false,
+              'outputs': [
+                {'id': invalid ? 'unknown' : chunk.id, 'score': -4.5},
+              ],
+            }),
+            200,
+          ),
+        ),
+        Uri.parse('http://localhost:8765'),
+      );
+      const model = RagRerankerInfo(
+        fingerprint: 'rank-v1',
+        scale: 'bge_raw_logit',
+      );
+      final token = CancellationSource().token;
+      expect(
+        (await client.rerank('q', [RagHit(chunk, 0.8)], model, token)).scores,
+        {chunk.id: -4.5},
+      );
+      invalid = true;
+      await expectLater(
+        client.rerank('q', [RagHit(chunk, 0.8)], model, token),
+        throwsFormatException,
+      );
+    },
+  );
   test(
     'codepoint tokenizer positions map to UTF-16 without splitting emoji',
     () async {

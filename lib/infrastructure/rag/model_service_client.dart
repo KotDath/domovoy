@@ -7,8 +7,9 @@ import 'package:http/http.dart' as http;
 import '../../core/llm/cancellation.dart';
 import '../../core/rag/contracts.dart';
 import '../../core/rag/models.dart';
+import '../../core/rag/retrieval.dart';
 
-final class RagModelServiceClient implements RagModelProvider {
+final class RagModelServiceClient implements RagModelProvider, RagReranker {
   RagModelServiceClient(this.client, this.baseUrl) {
     final local = {'127.0.0.1', 'localhost', '10.0.2.2'}.contains(baseUrl.host);
     if (baseUrl.userInfo.isNotEmpty ||
@@ -22,6 +23,63 @@ final class RagModelServiceClient implements RagModelProvider {
   final http.Client client;
   final Uri baseUrl;
   Map<String, dynamic>? _tokenizerFingerprints;
+
+  @override
+  Future<RagRerankerInfo> rerankerInfo(CancellationToken token) async {
+    final json = await _request('/v1/reranker/health', token);
+    if (json['ready'] != true ||
+        json['score_scale'] != 'bge_raw_logit' ||
+        json['pair_limit'] != 8192 ||
+        json['query_limit'] != 1024 ||
+        json['fingerprint'] is! String ||
+        (json['fingerprint'] as String).isEmpty) {
+      throw const FormatException('Incompatible reranker service');
+    }
+    return RagRerankerInfo(
+      fingerprint: json['fingerprint'] as String,
+      scale: json['score_scale'] as String,
+    );
+  }
+
+  @override
+  Future<RagRerankResult> rerank(
+    String query,
+    List<RagHit> candidates,
+    RagRerankerInfo model,
+    CancellationToken token,
+  ) async {
+    if (candidates.isEmpty) return RagRerankResult({});
+    final json = await _request('/v1/rerank', token, {
+      'query': query,
+      'expected_model_fingerprint': model.fingerprint,
+      'candidates': [
+        for (final hit in candidates)
+          {'id': hit.chunk.id, 'text': hit.chunk.text},
+      ],
+    });
+    if (json['fingerprint'] != model.fingerprint ||
+        json['score_scale'] != model.scale ||
+        json['truncated'] != false) {
+      throw const FormatException('Reranker drift or truncation');
+    }
+    final scores = <String, double>{};
+    for (final row in json['outputs'] as List) {
+      final id = row['id'] as String;
+      final value = (row['score'] as num).toDouble();
+      if (!value.isFinite || scores.containsKey(id)) {
+        throw const FormatException('Invalid reranker score');
+      }
+      scores[id] = value;
+    }
+    if (scores.length != candidates.length ||
+        candidates.any((h) => !scores.containsKey(h.chunk.id))) {
+      throw const FormatException('Missing or unknown reranker IDs');
+    }
+    return RagRerankResult(
+      scores,
+      usage: (json['usage'] as Map?)?.cast<String, Object?>(),
+    );
+  }
 
   Future<Map<String, dynamic>> _request(
     String path,
