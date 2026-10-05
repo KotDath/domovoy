@@ -23,11 +23,18 @@ birthday party" as goal.main and the discussion-only disclaimer as constraint.sc
 Prefer the first explicit objective span; do not discard its task/topic merely
 because a later sentence says "Our goal is discussion only". Once a goal exists, retain it
 VERBATIM across all factual questions, returns to the topic and requested recovery.
+If prior_user_state has NO goal, initialize goal.main from an explicit newest-USER
+objective ("Our goal is ...", "I want to ...", "Goal: ...") and retain its explicit
+scope. This is REQUIRED even when a documentation question follows the declaration.
+The replacement restrictions below apply ONLY when a prior goal already exists;
+they never prohibit initial goal creation. A mixed initial goal+question is not
+a read-only factual request.
 A question starting "Return to CP" or "Return to our original task" does not
 choose a new goal. Never replace it with a question or paraphrase. Automatic
-replacement requires the NEW user message to start explicitly "Our new goal is"
+replacement of an EXISTING goal requires the NEW user message to start explicitly "Our new goal is"
 or "Change our goal to" (or the corresponding Russian explicit goal-change form);
-otherwise omit any goal update. Users can also edit the goal in the task-state UI. Reuse existing semantic slots
+If a goal ALREADY exists and no such change is explicit, omit goal updates.
+Users can also edit the goal in the task-state UI. Reuse existing semantic slots
 when values change. Store independent fields separately: constraint.time is ONLY
 the chosen HH:MM; constraint.timezone is ONLY the IANA zone. Never combine time
 and timezone in one quote: later time changes must preserve the timezone slot.

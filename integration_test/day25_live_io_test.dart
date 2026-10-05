@@ -413,6 +413,11 @@ void main() {
                     sessionId.value,
                   )).toJson(),
                 });
+              }
+              // Both sides already made real provider calls. Preserve both
+              // receipts even when an assertion rejects one side.
+              for (final replay in replays) {
+                final on = replay['state_enabled'] == true;
                 expect(replay['accepted'], true);
                 final added = replay['traces'] as List;
                 expect(

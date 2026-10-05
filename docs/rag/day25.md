@@ -21,6 +21,9 @@ A valid extractor patch attempting that becomes an audited no-op (actual ignored
 row count retained); existing conditions remain available to the answer. Exact
 schema and newest-user quote checks still apply. This conservative grammar covers
 English/Russian read/recover forms; it is not universal semantic classification.
+An explicit first USER objective initializes an empty goal even when a factual
+question follows. New declarative preferences/clarifications preceding a recovery
+request are extracted; the recovery itself cannot replace existing slots.
 Replacing an existing goal automatically requires explicit goal-change wording
 (e.g. `Our new goal is …`, `Change our goal to …`, `Новая цель: …`). Factual
 returns or recovery questions cannot overwrite it; other wording can be handled
@@ -53,7 +56,12 @@ For supported Chat Completions/Responses transports, these requests and the
 extractor explicitly use JSON output syntax. Host schema/source validation remains
 mandatory. If JSON mode returns only whitespace, the ONE isolated repair uses text
 transport while still requiring strict JSON and valid sources; there is no second
-repair or Markdown acceptance. Other invalid drafts retain JSON transport.
+repair or Markdown acceptance. Other invalid drafts retain JSON transport. The one real model repair receives a
+diagnostic draft suggestion: only original model claim text, exact original spans
+from CURRENT sent sources, with unavailable citations/empty claims removed. It is
+not an accepted answer or semantic approval. The original rejected draft remains
+in diagnostics; the final model response still passes the unchanged strict gate.
+Suggestions preserve PDF control/soft-hyphen markers as original source characters.
 
 The real UI diagnostic repeats the last accepted question twice with identical
 actual preceding two messages, M1, corpus/index, model and generation settings,
@@ -61,11 +69,14 @@ without earlier history, summaries, profile or shared memory. Only frozen task
 state differs. It uses production providers in isolated shadow sessions, does not
 invoke a fake extractor or modify original history/state, and records replay IDs
 separately from original accepted-message IDs. Initial requests are compared;
-isolated repair requests are audited separately.
+isolated repair requests are audited separately. The product compares actual initial
+generation/fingerprint/candidates/evidence/context, model/settings/history and
+nonstate prompt; a mismatched pair is explicitly invalid rather than attributed to
+state memory.
 
 ## Checks and evidence
 
-Full deterministic suite: 1484 passed, four pre-existing skips. Android/Linux debug
+Full deterministic suite: 1494 passed, four pre-existing skips. Android/Linux debug
 builds and analyzer logs are retained under
 `/home/kotdath/Videos/domovoy/evidence/day-25/`.
 Real evaluation source: `integration_test/day25_live_io_test.dart`; questions are
@@ -80,8 +91,15 @@ as publication rather than a second index build.
 Earlier incomplete evaluations are retained, not renamed as successes: transport
 failure, verbose/language drift, composite clock extraction, Markdown drift,
 invalid root `kind`, a whitespace-only JSON draft, and semantic slot drift during B recovery. These exposed the fixes
-above. Full final real evaluation, expert grading, review receipts and recording
-sign-off are pending at this draft stage.
+above. Further preserved runs exposed an initial goal omitted before a factual question,
+and a new format clarification ignored before a recovery request. Post-request
+scenario checks now require the retained user conditions, not just accepted JSON.
+The frozen questions remain unchanged. Optional bounded explicit USER
+resubmissions retain all failed/insufficient initial turns and measure every extra
+send; first submissions and successful retries are graded separately. The one
+model repair per user turn is unchanged. Both actual replay rows are persisted
+before either acceptance assertion. Full final real evaluation, expert grading,
+review receipts and recording sign-off are pending at this draft stage.
 
 ## Review policy and limitations
 
