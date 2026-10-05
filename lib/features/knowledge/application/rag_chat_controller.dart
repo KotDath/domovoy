@@ -8,7 +8,9 @@ import '../../../core/llm/llm.dart';
 import '../../../core/rag/models.dart';
 import '../../../core/rag/turn.dart';
 import '../../../core/rag/retrieval.dart';
+import '../../../core/rag/grounding.dart';
 import '../../chat/application/chat_run_preparer.dart';
+import 'rag_final_answer_gate.dart';
 
 typedef RagQueryRewriterFactory =
     RagQueryRewriter Function(
@@ -26,6 +28,7 @@ final class RagChatController extends ChangeNotifier
     this.dynamicContext,
     this.queryRewriterFactory,
     this.defaultRetrieval = const RagRetrievalConfig(),
+    this.strictGrounding = false,
   }) : retrieval = defaultRetrieval,
        strategy = defaultRetrieval.strategy ?? ChunkStrategy.structure;
   final RagTurnCoordinator coordinator;
@@ -35,6 +38,8 @@ final class RagChatController extends ChangeNotifier
   final RagQueryRewriterFactory? queryRewriterFactory;
   bool enabled = false;
   bool neutralEvaluation = false;
+  bool strictGrounding;
+  RagGroundingFault groundingFault = RagGroundingFault.none;
   RagProtocol protocol = RagProtocol.m1;
   final RagRetrievalConfig defaultRetrieval;
   RagRetrievalConfig retrieval;
@@ -59,6 +64,8 @@ final class RagChatController extends ChangeNotifier
     ChunkStrategy? strategy,
     RagProtocol? protocol,
     RagRetrievalConfig? retrieval,
+    bool? strictGrounding,
+    RagGroundingFault? groundingFault,
   }) {
     if (busy) return;
     this.enabled = enabled ?? this.enabled;
@@ -67,6 +74,8 @@ final class RagChatController extends ChangeNotifier
     this.strategy = strategy ?? this.strategy;
     this.protocol = protocol ?? this.protocol;
     this.retrieval = retrieval ?? this.retrieval;
+    this.strictGrounding = strictGrounding ?? this.strictGrounding;
+    this.groundingFault = groundingFault ?? this.groundingFault;
     _notify();
   }
 
@@ -106,6 +115,8 @@ final class RagChatController extends ChangeNotifier
     final neutral = neutralEvaluation;
     final selectedCorpus = corpus;
     final selectedStrategy = strategy;
+    final grounded = useRag && strictGrounding;
+    final selectedFault = groundingFault;
     if (useRag &&
         (selectedProtocol == RagProtocol.m3 ||
             selectedProtocol == RagProtocol.m4) &&
@@ -125,9 +136,12 @@ final class RagChatController extends ChangeNotifier
         model.capabilities.reasoning == ModelReasoningCapability.required
         ? ReasoningMode.enabled
         : ReasoningMode.disabled;
+    final instruction = grounded
+        ? ragGroundedAnswerInstruction
+        : ragAnswerInstructions;
     final prompt = neutral
-        ? ragAnswerInstructions
-        : '${snapshot.definition.systemPrompt}\n\n$ragAnswerInstructions';
+        ? instruction
+        : '${snapshot.definition.systemPrompt}\n\n$instruction';
     final id = ragHash(
       '$project|$session|${DateTime.now().microsecondsSinceEpoch}|'
       '${Random.secure().nextInt(1 << 32)}',
@@ -230,10 +244,32 @@ final class RagChatController extends ChangeNotifier
       checkRagCancellation(cancellation.isCancelled);
       progress = 'Найдено источников: ${prepared.evidence.length}';
       _notify();
+      if (grounded && prepared.evidence.isEmpty) {
+        return await _prepareHostAbstention(
+          prepared,
+          snapshot,
+          neutral,
+          total,
+          cancellation,
+        );
+      }
+      final gate = grounded
+          ? RagFinalAnswerGate(
+              turn: prepared,
+              fault: selectedFault,
+              persistDiagnostic: (diagnostic) => traces.saveDiagnostic(
+                project,
+                session,
+                attemptIds.last,
+                diagnostic,
+              ),
+            )
+          : null;
       return ChatPreparedRun(
-        recordCompletedTurn: !neutral,
+        recordCompletedTurn: !neutral && !grounded,
         options: AgentRunOptions(
-          maxModelTurns: QuotaOverride.value(1),
+          maxModelTurns: QuotaOverride.value(grounded ? 2 : 1),
+          finalAnswerGate: gate,
           maxToolCalls: QuotaOverride.value(0),
           maxOutputTokensPerTurn: QuotaOverride.value(output),
           reasoning: AgentReasoningOverride(
@@ -272,6 +308,9 @@ final class RagChatController extends ChangeNotifier
                 'id': attemptId,
                 'session_revision_at_admission': snapshot.revision,
                 'neutral_evaluation': neutral,
+                'strict_grounding': grounded,
+                'fault_injection': selectedFault.name,
+                'answer_attempt_ordinal': attempt - 1,
                 'request': {
                   'model': request.model.toJson(),
                   'generation': request.generation.toJson(),
@@ -295,6 +334,11 @@ final class RagChatController extends ChangeNotifier
         onSettled: (settled, terminal) async {
           final ledger = settled.tokenAccounting.ledger
               .skip(snapshot.tokenAccounting.ledger.length)
+              .where(
+                (item) =>
+                    item.entry.operationKind ==
+                    AgentModelOperationKind.assistant,
+              )
               .toList();
           try {
             for (var i = 0; i < attemptIds.length; i++) {
@@ -303,6 +347,9 @@ final class RagChatController extends ChangeNotifier
               final accepted =
                   last?.outcome == AgentModelInvocationOutcome.completed &&
                   last?.responseMessageId != null;
+              final responseIndex = settled.transcript.messageIds.indexOf(
+                last?.responseMessageId,
+              );
               await traces.saveCompletion(project, session, attemptId, {
                 'terminal': terminal.runtimeType.toString(),
                 'invocation_outcome': last?.outcome.name,
@@ -312,11 +359,16 @@ final class RagChatController extends ChangeNotifier
                 'provider_attempt_id': last?.attemptId.value,
                 'usage': last?.usage.toJson(),
                 'elapsed_ms': total.elapsedMilliseconds,
+                if (accepted && gate?.accepted != null)
+                  'grounding': gate!.accepted!.toJson(),
                 'answer': accepted
-                    ? settled.transcript.messages.last.parts
-                          .whereType<LlmTextPart>()
-                          .map((p) => p.text)
-                          .join('')
+                    ? gate?.accepted?.render() ??
+                          (responseIndex >= 0
+                              ? settled.transcript.messages[responseIndex].parts
+                                    .whereType<LlmTextPart>()
+                                    .map((p) => p.text)
+                                    .join('')
+                              : null)
                     : null,
               });
             }
@@ -353,6 +405,84 @@ final class RagChatController extends ChangeNotifier
       _notify();
       rethrow;
     }
+  }
+
+  Future<ChatPreparedRun> _prepareHostAbstention(
+    RagPreparedTurn prepared,
+    AgentSessionSnapshot before,
+    bool neutral,
+    Stopwatch total,
+    CancellationToken cancellation,
+  ) async {
+    final project = prepared.request.project,
+        session = prepared.request.session;
+    final attemptId = '${prepared.request.id}-host';
+    await traces.saveRequest(project, session, attemptId, {
+      ...prepared.toJson(),
+      'id': attemptId,
+      'session_revision_at_admission': before.revision,
+      'neutral_evaluation': neutral,
+      'strict_grounding': true,
+      'reason': 'insufficient_evidence',
+      'physical_answer_requests': 0,
+      'request': {
+        'kind': 'host_response_without_answer_model',
+        'model': null,
+        'generation': null,
+        'system_prompt': '',
+        'messages': <Object?>[],
+        'tools_count': 0,
+        'continuation_count': 0,
+        'utf8_bytes': 0,
+      },
+      'created_at_utc': DateTime.now().toUtc().toIso8601String(),
+    });
+    checkRagCancellation(cancellation.isCancelled);
+    return ChatPreparedRun(
+      recordCompletedTurn: false,
+      options: AgentRunOptions(
+        respondWithoutModel: AgentRespondWithoutModel(
+          ragInsufficientEvidenceAnswer,
+        ),
+      ),
+      onSettled: (settled, terminal) async {
+        final accepted =
+            terminal is AgentRunCompleted &&
+            settled.transcript.messages.length ==
+                before.transcript.messages.length + 2 &&
+            settled.transcript.messages.last.role == LlmMessageRole.assistant;
+        try {
+          await traces.saveCompletion(project, session, attemptId, {
+            'terminal': terminal.runtimeType.toString(),
+            'reason': 'insufficient_evidence',
+            'physical_answer_requests': 0,
+            'usage': null,
+            'accepted_message_id': accepted
+                ? settled.transcript.messageIds.last?.value
+                : null,
+            'elapsed_ms': total.elapsedMilliseconds,
+            'answer': accepted ? ragInsufficientEvidenceAnswer : null,
+            'grounding': {
+              'status': 'abstained',
+              'claims': <Object?>[],
+              'quote_validation': 'no_evidence',
+              'semantic_entailment': 'not_applicable',
+            },
+          });
+          if (!_disposed && _project == project && _session == session) {
+            history = await traces.list(project, session);
+          }
+        } on Object {
+          error = 'Не удалось сохранить результат отказа в RAG-трассе.';
+        } finally {
+          busy = false;
+          progress = accepted
+              ? 'Отказ: недостаточно данных'
+              : 'Ответ не сохранён';
+          _notify();
+        }
+      },
+    );
   }
 
   @override

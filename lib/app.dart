@@ -885,6 +885,7 @@ final class DomovoyDependencies {
       ragChat: ragStorage == null
           ? null
           : RagChatController(
+              strictGrounding: true,
               defaultRetrieval: calibratedRagRetrieval,
               coordinator: RagTurnCoordinator(
                 repository: ragRepository!,

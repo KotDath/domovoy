@@ -6,6 +6,7 @@ import '../../../core/rag/models.dart';
 import '../../../core/rag/turn.dart';
 import '../../../core/rag/retrieval.dart';
 import '../application/rag_chat_controller.dart';
+import '../application/rag_final_answer_gate.dart';
 
 class RagChatBar extends StatelessWidget {
   const RagChatBar({
@@ -141,6 +142,47 @@ class RagInspectorPage extends StatelessWidget {
                 : (value) => controller.configure(neutral: value),
           ),
           if (controller.enabled) ...[
+            SwitchListTile(
+              title: const Text('Проверять цитаты до сохранения'),
+              subtitle: const Text(
+                'Ответ поступит в историю после проверки JSON, источников и точных цитат. Смысл цитат оценивается отдельно.',
+              ),
+              value: controller.strictGrounding,
+              onChanged: controller.busy
+                  ? null
+                  : (v) => controller.configure(strictGrounding: v),
+            ),
+            if (controller.strictGrounding)
+              DropdownButtonFormField<RagGroundingFault>(
+                key: ValueKey(controller.groundingFault),
+                initialValue: controller.groundingFault,
+                decoration: const InputDecoration(
+                  labelText: 'Диагностика: явная подмена ответа',
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: RagGroundingFault.none,
+                    child: Text('Отключена'),
+                  ),
+                  DropdownMenuItem(
+                    value: RagGroundingFault.wrongChunkId,
+                    child: Text('Демо: неверный chunk ID'),
+                  ),
+                  DropdownMenuItem(
+                    value: RagGroundingFault.wrongQuote,
+                    child: Text('Демо: выдуманная цитата'),
+                  ),
+                ],
+                onChanged: controller.busy
+                    ? null
+                    : (v) => controller.configure(groundingFault: v),
+              ),
+            if (controller.groundingFault != RagGroundingFault.none)
+              const Text(
+                'Включена демонстрационная подмена: реальный ответ модели намеренно повреждается перед проверкой. Отклонённые черновики не входят в историю.',
+              ),
+          ],
+          if (controller.enabled) ...[
             Text('Настройки отбора · ${controller.retrieval.calibrationId}'),
             if (controller.retrieval.calibrationId == 'manual-experiment')
               const Text(
@@ -199,8 +241,10 @@ class RagInspectorPage extends StatelessWidget {
                     ),
             ),
           ],
-          const Text(
-            'Ссылки показывают извлечённые источники. Цитаты и смысл ответа на этом этапе не проверены.',
+          Text(
+            controller.strictGrounding
+                ? 'Точные цитаты проверяет приложение. Это не автоматическое доказательство смысла ответа. Старые запросы могли выполняться без проверки.'
+                : 'Ссылки показывают извлечённые источники. Цитаты и смысл ответа не проверены.',
           ),
           if (controller.error != null) Text(controller.error!),
           if (controller.history.isEmpty)
@@ -220,6 +264,8 @@ class _TraceCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final request = trace['request'] as Map? ?? {};
     final completion = trace['completion'] as Map?;
+    final diagnostic = trace['diagnostic'] as Map?;
+    final grounding = completion?['grounding'] as Map?;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -234,6 +280,27 @@ class _TraceCard extends StatelessWidget {
               'Кандидаты: ${(trace['candidates'] as List? ?? []).length} → '
               'источники: ${(trace['candidates'] as List? ?? []).where((c) => c['sent'] == true).length}',
             ),
+            if (trace['strict_grounding'] == true)
+              Text(
+                'Проверка ответа: ${grounding?['status'] ?? (diagnostic?['accepted'] == false ? 'отклонён' : 'ожидание')}',
+              ),
+            if (trace['physical_answer_requests'] == 0)
+              const Text('Недостаточно данных · запросов к модели ответа: 0'),
+            if (diagnostic != null)
+              ExpansionTile(
+                title: Text(
+                  'Диагностика проверки · ${diagnostic['accepted'] == true ? 'принят' : 'отклонён'} · ${diagnostic['reason'] ?? 'точные цитаты'}',
+                ),
+                children: [
+                  SelectableText(
+                    const JsonEncoder.withIndent('  ').convert(diagnostic),
+                  ),
+                ],
+              ),
+            if (grounding != null)
+              for (final claim
+                  in (grounding['claims'] as List? ?? []).whereType<Map>())
+                _GroundedClaimCard(claim: claim, trace: trace),
             if (trace['rewritten_query'] != null)
               SelectableText('Поисковый запрос: ${trace['rewritten_query']}'),
             if ((trace['rewrite_audit'] as Map?)?['fallback_reason'] != null)
@@ -294,6 +361,116 @@ class _TraceCard extends StatelessWidget {
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GroundedClaimCard extends StatelessWidget {
+  const _GroundedClaimCard({required this.claim, required this.trace});
+  final Map claim, trace;
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SelectableText(claim['text'] as String),
+          for (final citation
+              in (claim['evidence'] as List).whereType<Map>()) ...[
+            SelectableText('«${citation['quote']}»'),
+            Text('${citation['source']} · ${citation['section']}'),
+            TextButton(
+              onPressed: () {
+                final candidate = (trace['candidates'] as List)
+                    .whereType<Map>()
+                    .where(
+                      (c) => (c['chunk'] as Map)['id'] == citation['chunk_id'],
+                    )
+                    .firstOrNull;
+                if (candidate == null || candidate['sent'] != true) return;
+                Navigator.of(context).push<void>(
+                  MaterialPageRoute(
+                    builder: (_) => _CitationPage(
+                      chunk: candidate['chunk'] as Map,
+                      citation: citation,
+                    ),
+                  ),
+                );
+              },
+              child: const Text('Открыть цитату в источнике'),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
+class _CitationPage extends StatelessWidget {
+  const _CitationPage({required this.chunk, required this.citation});
+  final Map chunk, citation;
+  @override
+  Widget build(BuildContext context) {
+    final text = chunk['text'] as String;
+    final start = (citation['start_utf16'] as int) - (chunk['start'] as int);
+    final end = (citation['end_utf16'] as int) - (chunk['start'] as int);
+    final valid =
+        citation['revision'] == chunk['revision'] &&
+        start >= 0 &&
+        end <= text.length &&
+        end > start &&
+        text.substring(start, end) == citation['quote'];
+    return Scaffold(
+      appBar: AppBar(title: const Text('Источник и точная цитата')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${chunk['source']} · ${chunk['section']}'),
+            SelectableText(
+              'chunk_id ${chunk['id']}\nrevision ${chunk['revision']}\n'
+              'UTF-16 [${citation['start_utf16']}, ${citation['end_utf16']}) · страницы ${citation['page_start']}–${citation['page_end']}',
+            ),
+            if (!valid)
+              const Text(
+                'Сохранённая цитата не совпадает с ревизией источника.',
+              )
+            else ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                child: SelectableText(text.substring(start, end)),
+              ),
+              ExpansionTile(
+                title: const Text('Чанк целиком с подсветкой'),
+                children: [
+                  SelectableText.rich(
+                    TextSpan(
+                      style: DefaultTextStyle.of(context).style,
+                      children: [
+                        TextSpan(text: text.substring(0, start)),
+                        TextSpan(
+                          text: text.substring(start, end),
+                          style: TextStyle(
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.secondaryContainer,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        TextSpan(text: text.substring(end)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),

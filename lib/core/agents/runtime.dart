@@ -18,6 +18,7 @@ import 'definition.dart';
 import 'dynamic_context.dart';
 import 'errors.dart';
 import 'events.dart';
+import 'final_answer_gate.dart';
 import 'hooks.dart';
 import 'ids.dart';
 import 'messaging.dart';
@@ -3224,6 +3225,25 @@ final class _LiveRun implements AgentRun {
       session.appendContextMessage(input);
       await _checkpoint();
       _resetIdle();
+      final hostResponse = options.respondWithoutModel;
+      if (hostResponse != null) {
+        _throwIfCancelled();
+        session.appendContextMessage(
+          LlmMessage(
+            role: LlmMessageRole.assistant,
+            parts: [LlmTextPart(hostResponse.text)],
+          ),
+        );
+        await _checkpoint();
+        _emit(AgentAnswerDelta(hostResponse.text));
+        await _completeWith(
+          AgentRunCompleted(
+            finishReason: LlmFinishReason.stop,
+            usage: session.usage,
+          ),
+        );
+        return;
+      }
       await _loop();
     } on _RunStop catch (stop) {
       await _finishStop(stop.reason);
@@ -3467,12 +3487,16 @@ final class _LiveRun implements AgentRun {
               sawModelDelta = true;
               reasoning.write(text);
               _resetIdle();
-              _emit(AgentReasoningDelta(text));
+              if (options.finalAnswerGate == null) {
+                _emit(AgentReasoningDelta(text));
+              }
             case LlmTextDelta(:final text):
               sawModelDelta = true;
               answer.write(text);
               _resetIdle();
-              _emit(AgentAnswerDelta(text));
+              if (options.finalAnswerGate == null) {
+                _emit(AgentAnswerDelta(text));
+              }
             case LlmToolCallDelta():
               sawModelDelta = true;
               assembler.add(event);
@@ -3544,9 +3568,61 @@ final class _LiveRun implements AgentRun {
       } on LlmException catch (error) {
         throw AgentException(agentErrorFromLlm(error.error));
       }
+      var acceptedText = answer.toString();
+      final gate = options.finalAnswerGate;
+      if (gate != null) {
+        if (calls.isNotEmpty) {
+          throwAgent(
+            AgentErrorKind.protocol,
+            'Final-answer validation forbids tool calls.',
+          );
+        }
+        var decision = await gate.evaluate(
+          AgentFinalAnswerDraft(
+            text: acceptedText,
+            request: request.snapshot(),
+            finishReason: finish,
+            repairAttempt: false,
+          ),
+          cancelSource.token,
+        );
+        _throwIfCancelled();
+        if (decision is AgentFinalAnswerRejected) {
+          final repairRequest = decision.repairRequest;
+          _finalizePendingAttempt(AgentModelInvocationOutcome.completed);
+          await _checkpoint();
+          if (repairRequest == null) {
+            throwAgent(
+              AgentErrorKind.protocol,
+              'Final answer rejected by host validation.',
+            );
+          }
+          final repaired = await _repairFinalAnswer(repairRequest);
+          decision = await gate.evaluate(
+            AgentFinalAnswerDraft(
+              text: repaired,
+              request: repairRequest.snapshot(),
+              finishReason: LlmFinishReason.stop,
+              repairAttempt: true,
+            ),
+            cancelSource.token,
+          );
+          _throwIfCancelled();
+        }
+        if (decision is! AgentFinalAnswerAccepted) {
+          throwAgent(
+            AgentErrorKind.protocol,
+            'Final answer failed validation after one repair.',
+          );
+        }
+        acceptedText = decision.text;
+        completedTurnState = null;
+        _emit(AgentAnswerDelta(acceptedText));
+      }
       final assistantParts = <LlmContentPart>[
-        if (reasoning.isNotEmpty) LlmReasoningPart(reasoning.toString()),
-        if (answer.isNotEmpty) LlmTextPart(answer.toString()),
+        if (gate == null && reasoning.isNotEmpty)
+          LlmReasoningPart(reasoning.toString()),
+        if (acceptedText.isNotEmpty) LlmTextPart(acceptedText),
         ...calls,
       ];
       if (assistantParts.isNotEmpty) {
@@ -3945,6 +4021,105 @@ final class _LiveRun implements AgentRun {
   }) {
     _emit(AgentToolFinished(callId: callId, success: success));
     return LlmToolResultPart(callId: callId, content: content);
+  }
+
+  Future<String> _repairFinalAnswer(LlmRequest request) async {
+    _throwIfCancelled();
+    _checkDuration();
+    _checkBudgets(preWork: true);
+    if (guards.maxModelTurns != null &&
+        _runModelTurns >= guards.maxModelTurns!) {
+      throw _RunStop(AgentStopReason.modelTurnLimit);
+    }
+    if (request.model != selection.model ||
+        request.generation != _generation ||
+        request.context.tools.isNotEmpty ||
+        request.context.continuationEntries.isNotEmpty ||
+        request.context.messages.length != 1 ||
+        request.context.messages.single.role != LlmMessageRole.user) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Final-answer repair must be isolated and use the admitted model and generation.',
+      );
+    }
+    final maxBytes = options.preparedContext?.maxRequestBytes;
+    if (maxBytes != null &&
+        utf8.encode(jsonEncode(request.snapshot().toJson())).length >
+            maxBytes) {
+      throwAgent(
+        AgentErrorKind.configuration,
+        'Final-answer repair exceeds the reserved request budget.',
+      );
+    }
+    final turnId = TurnId(session.runtime.ids.next('turn'));
+    // Repair is subordinate to the buffered turn's validation. Its draft must
+    // not reach lifecycle consumers before the outer gate accepts an answer.
+    _throwIfCancelled();
+    _runModelTurns++;
+    session.modelTurns++;
+    final requestMessageId = session.transcript.messageIds.lastOrNull;
+    if (requestMessageId == null) {
+      throwAgent(
+        AgentErrorKind.protocol,
+        'Final-answer repair has no admitted user message.',
+      );
+    }
+    final attempt = _PendingAssistantAttempt(
+      attemptId: ProviderAttemptId(
+        session.runtime.ids.next('provider-attempt'),
+      ),
+      model: request.model,
+      runId: id,
+      turnId: turnId,
+      retryOrdinal: 0,
+      requestMessageId: requestMessageId,
+      contextRevision: session._effectiveTokenAccounting.contextRevision,
+    );
+    _pendingAttempt = attempt;
+    await options.preparedContext?.beforeRequest?.call(
+      request.snapshot(),
+      cancelSource.token,
+    );
+    _throwIfCancelled();
+    final text = StringBuffer();
+    LlmFinishReason? finish;
+    await for (final event in _providerEvents(request)) {
+      _throwIfCancelled();
+      switch (event) {
+        case LlmTextDelta(text: final delta):
+          text.write(delta);
+          _resetIdle();
+        case LlmReasoningDelta():
+          _resetIdle();
+        case LlmUsageUpdate(:final usage):
+          _onUsage(usage);
+        case LlmCompleted(:final finishReason, :final usage):
+          finish = finishReason;
+          if (usage != null) attempt.reconcile(usage);
+        case LlmFailed(:final error):
+          throw AgentException(agentErrorFromLlm(error));
+        case LlmToolCallDelta():
+          throwAgent(
+            AgentErrorKind.protocol,
+            'Final-answer repair returned a forbidden tool call.',
+          );
+        case LlmCancelled():
+          throwAgent(
+            AgentErrorKind.cancelled,
+            'Final-answer repair cancelled.',
+          );
+      }
+    }
+    _throwIfCancelled();
+    _checkBudgets(preWork: false);
+    if (finish != LlmFinishReason.stop) {
+      throwAgent(
+        AgentErrorKind.protocol,
+        'Final-answer repair did not finish normally.',
+      );
+    }
+    _throwIfCancelled();
+    return text.toString();
   }
 
   Future<void> _drainInbound() async {

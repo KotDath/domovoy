@@ -353,5 +353,11 @@ abstract interface class RagTraceRepository {
     String id,
     Map<String, Object?> completion,
   );
+  Future<void> saveDiagnostic(
+    String project,
+    String session,
+    String id,
+    Map<String, Object?> diagnostic,
+  );
   Future<List<Map<String, dynamic>>> list(String project, String session);
 }
