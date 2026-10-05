@@ -302,7 +302,14 @@ void main() {
                   beforeMessages + 2,
                 );
                 expect(accepted.single['request']['tools_count'], 0);
-                expect(answers.first['request']['messages'], hasLength(1));
+                expect(
+                  answers.first['request']['messages'],
+                  hasLength(
+                    answers.first['task_state_used'] == true
+                        ? 1
+                        : beforeMessages + 1,
+                  ),
+                );
                 expect(
                   accepted.single['task_state']['revision'],
                   after.revision,
@@ -462,7 +469,7 @@ final class _Env {
       name: 'Day25 dialogue',
       systemPrompt: '',
       initialMessages: initialMessages,
-      model: BuiltInLlmCatalog.deepSeekFlashModel.ref,
+      model: BuiltInLlmCatalog.deepSeekV4ProModel.ref,
       generation: LlmGenerationConfig(
         reasoningMode: ReasoningMode.disabled,
         temperature: 0,

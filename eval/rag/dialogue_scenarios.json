@@ -2,7 +2,7 @@
   "version": 1,
   "authority": "docs/rag/implementation-plan.md",
   "protocol": "M1 fixed top-5; no recalibration of day23 state-free cutoffs",
-  "generator": "deepseek/deepseek-flash",
+  "generator": "deepseek/deepseek-v4-pro",
   "generation": {
     "temperature": 0,
     "reasoning": "disabled",

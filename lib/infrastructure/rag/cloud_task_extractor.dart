@@ -74,6 +74,7 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
     final output = StringBuffer();
     LlmUsage? usage;
     String terminal = 'TaskExtractionFailed';
+    String? rejectionReason;
     final resolved = registry.resolve(model);
     final request = LlmRequest(
       model: model,
@@ -214,6 +215,11 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         throw TimeoutException('Task-state extraction timed out', timeout);
       }
       rethrow;
+    } on Object catch (error) {
+      rejectionReason = error is FormatException
+          ? error.message.toString()
+          : 'failure_${error.runtimeType}';
+      rethrow;
     } finally {
       timer.cancel();
       local.cancel();
@@ -225,6 +231,10 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         'usage': usage?.toJson(),
         'elapsed_ms': clock.elapsedMilliseconds,
         'response_sha256': ragHash(output.toString()),
+        if (terminal != 'TaskExtractionValidated') ...{
+          'rejection_reason': rejectionReason ?? terminal,
+          'rejected_output_diagnostic_only': output.toString(),
+        },
         'private_reasoning': 'omitted',
       });
     }

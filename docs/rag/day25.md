@@ -2,7 +2,7 @@
 
 Authority: [agreed plan](implementation-plan.md), [assignment](assignment.md).
 Baseline: challenge `52c8ab5fd51856b8c90c9f348ef5f0ed1391ab20`.
-Implementation/evaluation source: `5d3d7a9` (full SHA recorded in evaluation config).
+Implementation/evaluation source: full SHA recorded in final evaluation config.
 Delivery verification is in progress; this document will be finalized from actual
 receipts and video checks before publishing the branch.
 
@@ -65,12 +65,12 @@ isolated repair requests are audited separately.
 
 ## Checks and evidence
 
-Full deterministic suite: 1483 passed, four pre-existing skips. Android/Linux debug
+Full deterministic suite: 1484 passed, four pre-existing skips. Android/Linux debug
 builds and analyzer logs are retained under
 `/home/kotdath/Videos/domovoy/evidence/day-25/`.
 Real evaluation source: `integration_test/day25_live_io_test.dart`; questions are
 frozen in `eval/rag/dialogue_scenarios.json`. Two twelve-question dialogues use
-DeepSeek Flash, temperature 0, reasoning disabled, output cap 2048, M1 fixed top-5,
+DeepSeek V4 Pro, temperature 0, reasoning disabled, output cap 2048, M1 fixed top-5,
 neutral profile and no tools/continuations. Both restart before question nine.
 MemGPT, MemoryBank and Generative Agents PDFs have verified bytes/hash/version/page
 count from `eval/rag/arxiv_sources.json`; actual extraction/indexing precedes paper
@@ -96,3 +96,10 @@ needs semantic review; provider behavior is probabilistic and its server revisio
 and cache policy are not controlled. Complete provenance is intentionally retained;
 full-state JSONL snapshots can grow quadratically in a very long-lived conversation.
 Repository CAS assumes one composed writer, matching the existing storage contract.
+
+The day-25 final candidate uses DeepSeek V4 Pro rather than Flash: real Flash
+runs exposed format/slot extraction/semantic errors. Earlier days remain evaluated
+on their recorded model. Both off/on comparisons use the same chosen Pro model;
+this is a declared model choice, not an improvement attributed solely to memory.
+Rejected extractor output and a bounded diagnostic failure reason are retained
+separately from accepted conditions; private reasoning is never included.
