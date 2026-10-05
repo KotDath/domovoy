@@ -109,6 +109,15 @@ changes are preserved. Final independent Codex review uses `gpt-6.1-sol` high an
 receives the assignment, agreed plan, baseline diff and all actual answers/sources.
 Neither model reviewer is labelled as a human expert.
 
+No frozen question/answer lookup or question-ID routing is present in production.
+Evaluation expectations are checked only after requests and never enter model
+context. Scenario-specific extractor examples (time value, acronym and named
+unresolved choices) and the paper-ID UI default were removed after a separate
+hardcode audit. Generic schema/lifecycle rules remain. Retrieval thresholds are
+measured, frozen calibration artifacts bound to corpus/model hashes, not expected
+answers. The day-23 rewriter contains a small name-preservation dictionary: it
+only protects matching words already present in the input; it supplies no facts.
+
 Exact quotes and schema do not prove semantic entailment. Derived labeling still
 needs semantic review; provider behavior is probabilistic and its server revision
 and cache policy are not controlled. Complete provenance is intentionally retained;

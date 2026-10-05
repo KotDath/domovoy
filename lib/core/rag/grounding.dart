@@ -9,7 +9,7 @@ contains scoped user conditions, NOT document facts or manually confirmed memory
 Use its actual chunk_id for user choices/terms/goals and copy the exact text.
 User-state quotes may be one character; document quotes still require eight.
 Never attribute a user choice to a document or vice versa. For calculations based
-on user conditions and documented rules (e.g. a proposed daily cron), add
+on user conditions and documented rules, add
 "kind":"derived" to that claim and cite BOTH the active user-state evidence
 and relevant document rules. Distinguish a proposed calculation from an executed
 action; no tools/actions are available. Unknown choices remain unspecified.

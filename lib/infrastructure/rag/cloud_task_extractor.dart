@@ -10,7 +10,8 @@ const ragTaskExtractionInstruction =
     '''Maintain the current dialogue's task state using ONLY the newest USER message
 and existing USER state. No documents, assistant answers, tools, profile or old
 transcript are available or admissible. Return ONLY JSON
-{"updates":[{"id":"constraint.time","kind":"constraint","quote":"08:30"}]}.
+{"updates":[]} when no user-declared conditions change. Otherwise put the
+actual extracted rows in updates; do not copy any example value.
 Every row has exactly id,kind,quote, optionally action:"retire". Maximum eight rows.
 Every quote is a VERBATIM nonempty substring of NEWEST user message, at most1000
 characters. No paraphrase, translation, invented values, copied old quotes or metadata.
@@ -29,7 +30,7 @@ scope. This is REQUIRED even when a documentation question follows the declarati
 The replacement restrictions below apply ONLY when a prior goal already exists;
 they never prohibit initial goal creation. A mixed initial goal+question is not
 a read-only factual request.
-A question starting "Return to CP" or "Return to our original task" does not
+A question asking to return to an earlier topic or recover the existing task does not
 choose a new goal. Never replace it with a question or paraphrase. Automatic
 replacement of an EXISTING goal requires the NEW user message to start explicitly "Our new goal is"
 or "Change our goal to" (or the corresponding Russian explicit goal-change form);
@@ -46,15 +47,15 @@ even when the same message ends with a documentation question.
 Do not drop an explicitly stated operating condition merely because it says "may".
 A question itself is NOT an
 open_question, goal or constraint. open_question is ONLY an explicitly undecided
-USER CHOICE, e.g. a model or delivery channel the user says they have not chosen.
+USER CHOICE, e.g. a venue or guest list the user says they have not chosen.
 If the user says choices "remain undecided", they MUST be recorded if absent
 from prior state: that is an explicit unresolved decision, not a factual question.
-Split multiple unresolved choices into separate slots, e.g. open_question.model
-and open_question.delivery; both may quote the same complete newest-user sentence.
+Split multiple unresolved choices into separate semantic slots; both may quote
+the same complete newest-user sentence if it declares both choices undecided.
 Do not skip an explicit undecided choice just because it has no selected value.
 Messages that ONLY ask recovery or return to a topic are READ-ONLY: return {"updates":[]}
-even if they mention "CP definition", "confirmation requirement", "output format"
-or "undecided settings". Such names are NOT new values. Keep ALL prior semantic
+even if they name existing terms, restrictions, preferences or unresolved choices.
+Such names are NOT new values. Keep ALL prior semantic
 slots across these questions, not just the goal. Keep the ongoing goal across detours. Hypotheticals/question premises are not choices.
 MIXED messages are different: extract explicit NEW declarative choices,
 clarifications or changed preferences even if a later sentence asks recovery.

@@ -92,6 +92,12 @@ void main() {
           ),
           'retry_protocol':
               'Frozen question unchanged; each explicit new USER send retained and measured. First submissions graded separately. No extra repair per turn.',
+          'explicit_replay_resubmissions_max': const int.fromEnvironment(
+            'RAG_EVAL_EXPLICIT_REPLAY_RESUBMISSIONS',
+            defaultValue: 0,
+          ),
+          'replay_retry_protocol':
+              'Repeat the WHOLE frozen off/on pair only after rejection; preserve every initial side and trial. Never mix trials or modify original history/state.',
           'tools': 0,
           'profile': 'neutral',
           'shared_memory': 'disabled',
@@ -109,6 +115,7 @@ void main() {
 
         List<RagDocument>? papers;
         RagIndex? paperIndex;
+        final rejectedReplayScenarios = <String>[];
         try {
           for (final scenario in scenarios['scenarios'] as List) {
             final project = 'day25-${scenario['id']}-$stamp';
@@ -395,103 +402,141 @@ void main() {
                 project,
                 sessionId.value,
               );
-              final replays = await env.rag.replayLastQuestion(
-                env.chat.state.selectedSession!,
-                CancellationSource().token,
+              const maxReplayResubmissions = int.fromEnvironment(
+                'RAG_EVAL_EXPLICIT_REPLAY_RESUBMISSIONS',
+                defaultValue: 0,
               );
-              expect(replays, hasLength(2));
-              for (final replay in replays) {
-                final on = replay['state_enabled'] == true;
-                write({
-                  ...replay,
-                  'scenario': scenario['id'],
-                  'question_id':
-                      '${scenario['id']}-replay-${on ? 'on' : 'off'}',
-                  'diagnostic_replay': true,
-                  'state_after': (await states.load(
-                    project,
-                    sessionId.value,
-                  )).toJson(),
-                });
+              expect(maxReplayResubmissions, inInclusiveRange(0, 2));
+              for (var trial = 0; trial <= maxReplayResubmissions; trial++) {
+                final replays = await env.rag.replayLastQuestion(
+                  env.chat.state.selectedSession!,
+                  CancellationSource().token,
+                );
+                expect(replays, hasLength(2));
+                for (final replay in replays) {
+                  final on = replay['state_enabled'] == true;
+                  write({
+                    ...replay,
+                    'scenario': scenario['id'],
+                    'question_id':
+                        '${scenario['id']}-replay-${on ? 'on' : 'off'}${trial == 0 ? '' : '-retry-$trial'}',
+                    'logical_question_id':
+                        '${scenario['id']}-replay-${on ? 'on' : 'off'}',
+                    'replay_trial_ordinal': trial,
+                    'explicit_diagnostic_resubmission': trial > 0,
+                    'diagnostic_replay': true,
+                    'state_after': (await states.load(
+                      project,
+                      sessionId.value,
+                    )).toJson(),
+                  });
+                }
+                // Both sides already made real provider calls. Preserve both
+                // receipts even when an assertion rejects one side.
+                for (final replay in replays) {
+                  final on = replay['state_enabled'] == true;
+                  final added = replay['traces'] as List;
+                  expect(
+                    added.where(
+                      (t) => t['protocol'] == 'task_state_extraction',
+                    ),
+                    isEmpty,
+                  );
+                  expect(
+                    added.where(
+                      (t) => t['completion']['accepted_message_id'] != null,
+                    ),
+                    isEmpty,
+                    reason: 'Replay does not link to original accepted history',
+                  );
+                  final accepted = added
+                      .where(
+                        (t) => t['completion']['replay_message_id'] != null,
+                      )
+                      .toList();
+                  expect(
+                    accepted,
+                    hasLength(replay['accepted'] == true ? 1 : 0),
+                  );
+                  if (accepted.isNotEmpty) {
+                    expect(accepted.single['task_state_used'], on);
+                  }
+                  expect(
+                    added.firstWhere(
+                      (t) => t['protocol'] == 'm1',
+                    )['request']['messages'],
+                    hasLength(3),
+                  );
+                  for (final trace in added) {
+                    expect(trace['request']['tools_count'], 0);
+                    expect(trace['request']['continuation_count'], 0);
+                  }
+                }
+                final a =
+                    (replays[0]['traces'] as List).firstWhere(
+                          (t) => t['protocol'] == 'm1',
+                        )['request']
+                        as Map;
+                final b =
+                    (replays[1]['traces'] as List).firstWhere(
+                          (t) => t['protocol'] == 'm1',
+                        )['request']
+                        as Map;
+                expect(a['model'], b['model']);
+                expect(a['generation'], b['generation']);
+                expect(a['messages'], b['messages']);
+                expect(replays[0]['tail'], replays[1]['tail']);
+                String withoutState(String prompt) => prompt
+                    .replaceAll(stateBeforeReplay.context, '')
+                    .split('\n')
+                    .map((s) => s.trim())
+                    .where((s) => s.isNotEmpty)
+                    .join('\n');
+                expect(
+                  withoutState(a['system_prompt'] as String),
+                  withoutState(b['system_prompt'] as String),
+                );
+                expect(
+                  env.chat.state.selectedSession!.transcript.toJson(),
+                  originalTranscript,
+                );
+                runConfig['diagnostic_replay'] = {
+                  'real_product_path': true,
+                  'original_transcript_unchanged': true,
+                  'tail_ids': replays.first['tail_message_ids'],
+                  'source_question_id':
+                      replays.first['source_question_message_id'],
+                  'settings_matched': true,
+                  'no_extractor': true,
+                  'trial_ordinal': trial,
+                  'both_accepted': replays.every((r) => r['accepted'] == true),
+                };
+                expect(
+                  (await states.load(project, sessionId.value)).toJson(),
+                  stateBeforeReplay.toJson(),
+                  reason:
+                      'Final recovery question introduces no new selected conditions',
+                );
+                if (replays.every((r) => r['accepted'] == true)) break;
+                if (trial == maxReplayResubmissions) {
+                  rejectedReplayScenarios.add(scenario['id'] as String);
+                } else {
+                  debugPrint(
+                    'DAY25 explicit diagnostic resubmission: ${scenario['id']} WHOLE off/on pair, trial ${trial + 1}; both prior sides retained',
+                  );
+                }
               }
-              // Both sides already made real provider calls. Preserve both
-              // receipts even when an assertion rejects one side.
-              for (final replay in replays) {
-                final on = replay['state_enabled'] == true;
-                expect(replay['accepted'], true);
-                final added = replay['traces'] as List;
-                expect(
-                  added.where((t) => t['protocol'] == 'task_state_extraction'),
-                  isEmpty,
-                );
-                expect(
-                  added.where(
-                    (t) => t['completion']['accepted_message_id'] != null,
-                  ),
-                  isEmpty,
-                  reason: 'Replay does not link to original accepted history',
-                );
-                final accepted = added
-                    .where((t) => t['completion']['replay_message_id'] != null)
-                    .single;
-                expect(accepted['task_state_used'], on);
-                expect(
-                  added.firstWhere(
-                    (t) => t['protocol'] == 'm1',
-                  )['request']['messages'],
-                  hasLength(3),
-                );
-                expect(accepted['request']['tools_count'], 0);
-                expect(accepted['request']['continuation_count'], 0);
-              }
-              final a =
-                  (replays[0]['traces'] as List).firstWhere(
-                        (t) => t['protocol'] == 'm1',
-                      )['request']
-                      as Map;
-              final b =
-                  (replays[1]['traces'] as List).firstWhere(
-                        (t) => t['protocol'] == 'm1',
-                      )['request']
-                      as Map;
-              expect(a['model'], b['model']);
-              expect(a['generation'], b['generation']);
-              expect(a['messages'], b['messages']);
-              expect(replays[0]['tail'], replays[1]['tail']);
-              String withoutState(String prompt) => prompt
-                  .replaceAll(stateBeforeReplay.context, '')
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .where((s) => s.isNotEmpty)
-                  .join('\n');
-              expect(
-                withoutState(a['system_prompt'] as String),
-                withoutState(b['system_prompt'] as String),
-              );
-              expect(
-                env.chat.state.selectedSession!.transcript.toJson(),
-                originalTranscript,
-              );
-              runConfig['diagnostic_replay'] = {
-                'real_product_path': true,
-                'original_transcript_unchanged': true,
-                'tail_ids': replays.first['tail_message_ids'],
-                'source_question_id':
-                    replays.first['source_question_message_id'],
-                'settings_matched': true,
-                'no_extractor': true,
-              };
-              expect(
-                (await states.load(project, sessionId.value)).toJson(),
-                stateBeforeReplay.toJson(),
-                reason:
-                    'Final recovery question introduces no new selected conditions',
-              );
             } finally {
               await env.close();
               knowledge.dispose();
             }
           }
+          expect(
+            rejectedReplayScenarios,
+            isEmpty,
+            reason:
+                'All initial failures retained; final whole pair still rejected',
+          );
         } finally {
           File('${output.path}.config.json').writeAsStringSync(
             const JsonEncoder.withIndent('  ').convert(config),
