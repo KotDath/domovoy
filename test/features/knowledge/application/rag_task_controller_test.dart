@@ -207,6 +207,17 @@ void main() {
             replay.last['tail_message_ids'],
           );
           expect(provider.requests, hasLength(4));
+          expect(
+            provider.requests[1].context.messages,
+            hasLength(1),
+            reason:
+                'Stored conditions, not older rendered assistant answers, supply task context',
+          );
+          expect(
+            provider.requests[1].context.systemPrompt,
+            contains('UNTRUSTED_PRIOR_DIALOGUE_JSON'),
+          );
+          expect(provider.requests[1].context.systemPrompt, contains('09:00'));
           final off = provider.requests[2], on = provider.requests[3];
           expect(off.context.messages, on.context.messages);
           expect(off.context.messages, hasLength(3));

@@ -17,6 +17,57 @@ import '../../../support/rag_grounding_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('whitespace JSON draft has only one strict text-mode repair', () async {
+    final f = RagGroundingFixture();
+    final gate = RagFinalAnswerGate(
+      turn: f.turn,
+      persistDiagnostic: (_) async {},
+    );
+    final req = LlmRequest(
+      model: BuiltInLlmCatalog.deepSeekV4FlashModel.ref,
+      context: LlmContext(),
+      generation: LlmGenerationConfig(
+        responseFormat: LlmResponseFormat.jsonObject,
+        reasoningMode: ReasoningMode.disabled,
+        temperature: 0,
+        maxOutputTokens: 2048,
+      ),
+    ).snapshot();
+    final first = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: '   ',
+        request: req,
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: false,
+      ),
+      CancellationSource().token,
+    );
+    final repair = (first as AgentFinalAnswerRejected).repairRequest!;
+    expect(repair.generation.responseFormat, LlmResponseFormat.text);
+    expect(repair.generation.maxOutputTokens, 2048);
+    expect(repair.generation.temperature, 0);
+    final invalid = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: 'Still invalid',
+        request: repair.snapshot(),
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: true,
+      ),
+      CancellationSource().token,
+    );
+    expect((invalid as AgentFinalAnswerRejected).repairRequest, isNull);
+    expect(gate.accepted, isNull);
+    final accepted = await gate.evaluate(
+      AgentFinalAnswerDraft(
+        text: f.answer(),
+        request: repair.snapshot(),
+        finishReason: LlmFinishReason.stop,
+        repairAttempt: true,
+      ),
+      CancellationSource().token,
+    );
+    expect(accepted, isA<AgentFinalAnswerAccepted>());
+  });
   for (final mode in ['valid', 'wrong ID', 'wrong quote', 'empty']) {
     test(
       'production preparation persists $mode outcome separately from drafts',

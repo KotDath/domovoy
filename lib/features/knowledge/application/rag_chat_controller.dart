@@ -381,12 +381,23 @@ final class RagChatController extends ChangeNotifier
               ),
             );
       checkRagCancellation(cancellation.isCancelled);
+      final isolateCurrentUser =
+          grounded && frozenState != null && !diagnosticReplay;
+      // Preserve the full admitted conversation as quoted data rather than
+      // assistant-role formatting examples. It is not citable evidence and
+      // cannot write user task conditions. Private reasoning is excluded.
+      final priorDialogue = isolateCurrentUser
+          ? 'UNTRUSTED_PRIOR_DIALOGUE_JSON\n${jsonEncode([
+              for (var i = 0; i < snapshot.transcript.messages.length; i++) {'message_id': snapshot.transcript.messageIds[i]?.value, 'role': snapshot.transcript.messages[i].role.name, 'text': snapshot.transcript.messages[i].parts.whereType<LlmTextPart>().map((p) => p.text).join('\n')},
+            ])}\nEND_UNTRUSTED_PRIOR_DIALOGUE_JSON'
+          : '';
       final frozenPrompt = [
         prompt,
         if (dynamic != null) dynamic.systemPromptText,
         if (frozenState != null || diagnosticReplay)
           ragTaskGroundingInstruction,
         if (frozenState != null) frozenState.context,
+        if (priorDialogue.isNotEmpty) priorDialogue,
       ].join('\n\n');
       // Provider JSON syntax prevents copying rendered historical Markdown;
       // the host still validates schema, scope and exact citation substrings.
@@ -402,7 +413,7 @@ final class RagChatController extends ChangeNotifier
         context: LlmContext(
           systemPrompt: frozenPrompt,
           messages: [
-            ...snapshot.transcript.messages,
+            if (!isolateCurrentUser) ...snapshot.transcript.messages,
             LlmMessage(role: LlmMessageRole.user, parts: [LlmTextPart(input)]),
           ],
         ),
@@ -512,6 +523,7 @@ final class RagChatController extends ChangeNotifier
           ),
           preparedContext: AgentPreparedContext(
             responseFormat: responseFormat,
+            isolateCurrentUser: isolateCurrentUser,
             systemPromptOverride: [
               prompt,
               if (frozenState != null || diagnosticReplay)
@@ -524,6 +536,7 @@ final class RagChatController extends ChangeNotifier
               systemPromptText: [
                 if (dynamic != null) dynamic.systemPromptText,
                 if (frozenState != null) frozenState.context,
+                if (priorDialogue.isNotEmpty) priorDialogue,
                 prepared.context,
               ].where((s) => s.isNotEmpty).join('\n\n'),
               audit: prepared,
@@ -566,6 +579,9 @@ final class RagChatController extends ChangeNotifier
                 'task_state_update_notice': extractionNotice,
                 'id': attemptId,
                 'session_revision_at_admission': snapshot.revision,
+                'history_policy': isolateCurrentUser
+                    ? 'quoted_prior_dialogue_with_current_user'
+                    : 'retained_transcript',
                 'neutral_evaluation': neutral,
                 'strict_grounding': grounded,
                 'fault_injection': selectedFault.name,

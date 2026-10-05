@@ -302,6 +302,7 @@ void main() {
                   beforeMessages + 2,
                 );
                 expect(accepted.single['request']['tools_count'], 0);
+                expect(answers.first['request']['messages'], hasLength(1));
                 expect(
                   accepted.single['task_state']['revision'],
                   after.revision,
@@ -367,12 +368,25 @@ void main() {
                     .where((t) => t['completion']['replay_message_id'] != null)
                     .single;
                 expect(accepted['task_state_used'], on);
-                expect(accepted['request']['messages'], hasLength(3));
+                expect(
+                  added.firstWhere(
+                    (t) => t['protocol'] == 'm1',
+                  )['request']['messages'],
+                  hasLength(3),
+                );
                 expect(accepted['request']['tools_count'], 0);
                 expect(accepted['request']['continuation_count'], 0);
               }
-              final a = (replays[0]['traces'] as List).last['request'] as Map;
-              final b = (replays[1]['traces'] as List).last['request'] as Map;
+              final a =
+                  (replays[0]['traces'] as List).firstWhere(
+                        (t) => t['protocol'] == 'm1',
+                      )['request']
+                      as Map;
+              final b =
+                  (replays[1]['traces'] as List).firstWhere(
+                        (t) => t['protocol'] == 'm1',
+                      )['request']
+                      as Map;
               expect(a['model'], b['model']);
               expect(a['generation'], b['generation']);
               expect(a['messages'], b['messages']);

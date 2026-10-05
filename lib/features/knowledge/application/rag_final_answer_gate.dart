@@ -86,7 +86,21 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
           ? null
           : LlmRequest(
               model: draft.request.model,
-              generation: draft.request.generation,
+              // JSON-mode providers can return only whitespace. The single
+              // isolated repair uses text transport in that case, still requiring
+              // the same strict application JSON and exact evidence validation.
+              generation:
+                  candidate.trim().isEmpty &&
+                      draft.request.generation.responseFormat ==
+                          LlmResponseFormat.jsonObject
+                  ? LlmGenerationConfig(
+                      responseFormat: LlmResponseFormat.text,
+                      reasoningMode: draft.request.generation.reasoningMode,
+                      reasoningEffort: draft.request.generation.reasoningEffort,
+                      temperature: draft.request.generation.temperature,
+                      maxOutputTokens: draft.request.generation.maxOutputTokens,
+                    )
+                  : draft.request.generation,
               context: LlmContext(
                 systemPrompt: [
                   ragGroundedAnswerInstruction,
