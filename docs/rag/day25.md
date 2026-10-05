@@ -2,9 +2,9 @@
 
 Authority: [agreed plan](implementation-plan.md), [assignment](assignment.md).
 Baseline: challenge `52c8ab5fd51856b8c90c9f348ef5f0ed1391ab20`.
-Implementation/evaluation source: full SHA recorded in final evaluation config.
-Delivery verification is in progress; this document will be finalized from actual
-receipts and video checks before publishing the branch.
+Implementation/evaluation source: `048057f4c0d9be91c8a609906ac7d778f28b63da`.
+Delivery artifacts and actual measurements are listed below; reviewed product
+source is unchanged by the delivery documentation commit.
 
 ## Behavior
 
@@ -104,15 +104,100 @@ The frozen questions remain unchanged. Optional bounded explicit USER
 resubmissions retain all failed/insufficient initial turns and measure every extra
 send; first submissions and successful retries are graded separately. The one
 model repair per user turn is unchanged. Both actual replay rows are persisted
-before either acceptance assertion. Full final real evaluation, expert grading,
-review receipts and recording sign-off are pending at this draft stage.
+before either acceptance assertion. The final Linux-native evaluation passed in
+19m55s. Its raw JSONL SHA-256 is
+`31d3892888d68b1fa5015a49ba02e547fdc519e9376327bf9c9a4ccd80aeb41f`.
+There are 30 actual rows: 24 distinct questions, two explicit USER resubmissions
+(A07 and A10 after citation rejection), and four initial-trial matched replays.
+11/24 initial physical drafts passed; 22/24 initial USER submissions passed after
+at most one isolated repair, and 24/24 terminal answers passed after the two
+explicit USER resubmissions. All 24
+initial turns retained the required conditions, including when the answer failed.
+114 exact citations (50 user-state citations) passed independent provenance,
+owner, revision, source identity and UTF-16 checks. There were 48 physical answer
+requests, including 18 single repairs, and 26 auxiliary extractor requests.
+Every physical request has reported usage: answer input/output 320547/23677;
+extractor input/output 38620/1022. The median initial end-to-end turn was 27046.5ms;
+per-completion elapsed fields use a shared turn stopwatch and must not be summed
+as independent transport latency. Both restart/isolation and unchanged original
+state/transcript checks passed.
+
+Independent Codex AI semantic grading of all actual drafts and accepted claims
+scores terminal ordinary answers 39/48 (A 19/24, B 20/24), versus 36/48 for initial
+answers. Matched replay scores are A off/on 1/2 and B off/on 0/1. This is a developed
+scenario evaluation, not held-out or human grading. Exact quotes do not guarantee
+that a claim follows from its source: A05 incorrectly draws a documentation-wide
+negative from an undecided USER choice; B07 abstains despite relevant limits;
+A04 overstates DST independence; A08 labels a combined cron/user inference as
+document-only; B10 omits forgetting/reinforcement details. B replay-off invents a
+scheduling goal, and B replay-on recovers conditions but omits requested document
+facts. These defects remain disclosed rather than counted as perfect answers.
+
+A separate real-provider seven-input garden probe uses different time/zone,
+objective and glossary values. All seven final postconditions passed, including
+preserving a compound no-purchases/no-physical-changes restriction when only the
+goal changes; the ignored ambiguous update is audited. The probe is narrow
+additional evidence, not a universal generalization guarantee. Earlier probe
+failures remain preserved.
+
+The completed Android run uses separate sessions in the same default project.
+All 24 initial USER sends were admitted, with no explicit USER resends. It uses
+24 auxiliary calls and 45 physical answer calls (13 isolated repairs), with
+137 independently checked citations: 66 document and 71 USER. Both first whole
+replay trials rejected the off answer and accepted the on answer. Each was
+explicitly repeated once as a WHOLE pair; both selected sides then passed the
+mechanical citation gate. All eight actual replay sides, including failures, are
+preserved; original state and the full session record were unchanged immediately
+after each trial. Later chat selection updates session metadata only.
+Android proves chat isolation; Linux independently checks project and chat
+isolation. Independent AI semantic scores are Android A 17/24 and B 19/24,
+combined 36/48, distinct from the Linux-native terminal 39/48. Selected replay
+scores are A off/on 0/2 and B off/on 0/1. These are developed scenarios, not
+held-out accuracy. Actual UI generation has no configured temperature (unlike
+native temperature 0); off/on settings are identical and explicitly checked.
+Both twelve-question dialogues retain all required conditions across restart.
+No replay sides are mixed between trials.
+
+Separate Android semantic review found serious factual contradictions: A01 and
+A12 say Android uses WorkManager although their exact Russian source says it is
+not used. The first replay-on answer also overstates the unattended limitation.
+The second replay-on answer states the scheduler facts correctly, and its off
+answer honestly abstains. These original clips are retained; twelve admitted
+answers are not labelled twelve factually correct answers. A12 correctly recovers
+the USER goal, latest clock/zone, restrictions and undecided choices. Independent
+review identifies model-quality errors rather than a newly discovered source,
+state or citation-gate bypass; it does not justify perfect factual claims.
+
+## Verified Android recording
+
+Durable video: `/home/kotdath/Videos/domovoy/day-25-demo.mp4`.
+H.264, 1080×2400, no audio; duration 3075.204044s;
+SHA-256 `9237714bbe1554255dfec98fdb9a3b91ac22b73785255d590ca95f04b20a52cb`.
+The 38 whole chronological clips have seekable chapters. Both actual rejected
+first replay pairs remain visible, followed by their explicitly repeated whole
+pairs. Supplemental real UI history tours show both restart answers, paper
+answers and final conditions; they make no model calls. Earlier top-of-chat
+viewport positions did not show every new answer immediately. Original clips,
+fresh accessibility snapshots, request/source packets and the final playlist
+manifest remain in `/home/kotdath/Videos/domovoy/evidence/day-25/`.
+Five technical setup/unsent-input/failed supplemental visibility attempts are
+excluded with explicit reasons in `day25-final-video-manifest.json`; all are
+preserved separately. No actual model failure is excluded. The final MP4 passed
+metadata, chapter-count, whole-duration and full decode checks. Android UI and
+capture use Orca on the existing emulator. Native automated evaluation and
+Android UI generation are separate measurements with their limits above.
 
 ## Review policy and limitations
 
 Pi uses `opencode-go/deepseek-v4.1-flash` with authority/source packs and a maximum
 of three cycles. Cycles one and two requested fixes; their transcripts and applied
-changes are preserved. Final independent Codex review uses `gpt-6.1-sol` high and
-receives the assignment, agreed plan, baseline diff and all actual answers/sources.
+changes are preserved. Cycle three APPROVED the exact implementation and measured
+evaluation, with delivery explicitly pending video verification. The final
+independent Codex review uses `gpt-6.1-sol` high and
+received the assignment, agreed plan, baseline diff and all actual answers/sources.
+Final source review APPROVED source `048057f`, with no blocking code finding;
+independent Android source/provenance/semantic and video review receipts are
+preserved alongside the raw evidence.
 Neither model reviewer is labelled as a human expert.
 
 No frozen question/answer lookup or question-ID routing is present in production.
