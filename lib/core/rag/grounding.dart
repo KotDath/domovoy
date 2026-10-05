@@ -13,7 +13,11 @@ on user conditions and documented rules (e.g. a proposed daily cron), add
 "kind":"derived" to that claim and cite BOTH the active user-state evidence
 and relevant document rules. Distinguish a proposed calculation from an executed
 action; no tools/actions are available. Unknown choices remain unspecified.
-Factual task diversions do not change the stored task goal.''';
+Factual task diversions do not change the stored task goal.
+Respond to ONLY the current question, not every state fact or retrieved passage.
+Keep the answer concise, normally two to six relevant claims; do not fill the
+maximum. Claim text MUST use the current user's language (English for an English
+question); verbatim quotations retain their original source language.''';
 
 const ragGroundedAnswerInstruction = '''Return ONLY JSON with exactly two keys:
 {"status":"answered|partial|abstained","claims":[{"text":"one factual claim",

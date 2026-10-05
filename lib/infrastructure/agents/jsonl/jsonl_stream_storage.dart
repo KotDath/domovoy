@@ -12,3 +12,14 @@ abstract interface class JsonlStreamStorage {
   /// Best-effort removal of inactive generations for [key].
   Future<void> cleanup(String key);
 }
+
+/// Atomic publication with a synchronous admission check at the commit boundary.
+/// Failure keeps the previous active pointer; inactive prepared bytes may remain.
+abstract interface class JsonlGuardedStreamStorage
+    implements JsonlStreamStorage {
+  Future<void> publishGuarded(
+    String key,
+    List<int> contents, {
+    required void Function() beforeCommit,
+  });
+}

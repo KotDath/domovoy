@@ -51,6 +51,7 @@ final class RagChatController extends ChangeNotifier
   bool taskStateEnabled = true;
   RagTaskState? taskState;
   Map<String, Object?>? taskExtractionAudit;
+  String? taskStateNotice;
   List<Map<String, Object?>> taskStateDiff = [];
   bool enabled = false;
   bool neutralEvaluation = false;
@@ -108,6 +109,7 @@ final class RagChatController extends ChangeNotifier
     taskState = null;
     taskStateDiff = [];
     taskExtractionAudit = null;
+    taskStateNotice = null;
     error = null;
     _notify();
     if (session == null) return;
@@ -130,8 +132,9 @@ final class RagChatController extends ChangeNotifier
   Future<void> editTaskFact(
     String id,
     RagTaskFactKind kind,
-    String quote,
-  ) async {
+    String quote, {
+    bool retire = false,
+  }) async {
     final before = taskState;
     if (before == null || taskStates == null) {
       throw StateError('No selected task-state scope');
@@ -139,7 +142,12 @@ final class RagChatController extends ChangeNotifier
     final patch = RagTaskPatch.parse(
       jsonEncode({
         'updates': [
-          {'id': id, 'kind': kind.wireName, 'quote': quote},
+          {
+            'id': id,
+            'kind': kind.wireName,
+            'quote': quote,
+            if (retire) 'action': 'retire',
+          },
         ],
       }),
       quote,
@@ -177,6 +185,14 @@ final class RagChatController extends ChangeNotifier
                 .firstOrNull
                 ?.quote,
             'after': f.quote,
+            'revision': next.revision,
+          },
+      for (final f in before.facts)
+        if (!next.facts.any((active) => active.id == f.id))
+          {
+            'id': f.id,
+            'before': f.quote,
+            'after': 'снято',
             'revision': next.revision,
           },
     ];
@@ -234,6 +250,8 @@ final class RagChatController extends ChangeNotifier
     busy = true;
     progress = 'Подготовка контекста…';
     error = null;
+    taskStateNotice = null;
+    String? extractionNotice;
     _notify();
     try {
       RagTaskState? frozenState;
@@ -241,68 +259,101 @@ final class RagChatController extends ChangeNotifier
         final before = await taskStates!.load(project, session);
         checkRagCancellation(cancellation.isCancelled);
         final factory = taskExtractorFactory;
-        if (factory == null) {
-          throw StateError('Task-state extractor unavailable');
-        }
         progress = 'Проверка пользовательских условий…';
         _notify();
         var published = false;
-        final extraction = await factory(
-          snapshot.selection.model,
-          (request) async {
-            await traces.saveRequest(project, session, '$id-state', {
-              'version': 1,
-              'id': '$id-state',
-              'project': project,
-              'session': session,
-              'query': input,
-              'protocol': 'task_state_extraction',
-              'candidates': [],
-              'state_revision_at_admission': before.revision,
-              'request': {
-                'model': request['model'],
-                'generation': request['generation'],
-                'system_prompt': (request['context'] as Map)['systemPrompt'],
-                'messages': (request['context'] as Map)['messages'],
-                'tools_count': 0,
-                'continuation_count': 0,
-                'sha256': ragHash(jsonEncode(request)),
-              },
-            });
-            published = true;
-          },
-          (audit) async {
-            if (published) {
-              await traces.saveCompletion(project, session, '$id-state', {
-                ...audit,
-                'accepted_message_id': null,
-              });
-            }
-          },
-        ).extract(before, input, cancellation);
-        checkRagCancellation(cancellation.isCancelled);
-        final next = extraction.patch.apply(
-          before,
-          userText: input,
-          submissionId: id,
-        );
-        if (identical(next, before)) {
-          final current = await taskStates!.load(project, session);
-          if (current.revision != before.revision) {
-            throw const RagTaskStateConflict();
+        var auditFailed = false;
+        Future<void> auditSafely(Future<void> Function() action) async {
+          try {
+            await action();
+          } on Object {
+            auditFailed = true;
+            rethrow;
           }
-        } else {
-          await taskStates!.save(
-            next,
-            expectedRevision: before.revision,
-            cancellation: cancellation,
-          );
+        }
+
+        RagTaskExtraction? extraction;
+        try {
+          if (factory == null) {
+            throw StateError('Task-state extractor unavailable');
+          }
+          extraction = await factory(
+            snapshot.selection.model,
+            (request) async {
+              await auditSafely(
+                () => traces.saveRequest(project, session, '$id-state', {
+                  'version': 1,
+                  'id': '$id-state',
+                  'project': project,
+                  'session': session,
+                  'query': input,
+                  'protocol': 'task_state_extraction',
+                  'candidates': [],
+                  'state_revision_at_admission': before.revision,
+                  'request': {
+                    'model': request['model'],
+                    'generation': request['generation'],
+                    'system_prompt':
+                        (request['context'] as Map)['systemPrompt'],
+                    'messages': (request['context'] as Map)['messages'],
+                    'tools_count': 0,
+                    'continuation_count': 0,
+                    'sha256': ragHash(jsonEncode(request)),
+                  },
+                }),
+              );
+              published = true;
+            },
+            (audit) async {
+              if (published) {
+                await auditSafely(
+                  () => traces.saveCompletion(project, session, '$id-state', {
+                    ...audit,
+                    'accepted_message_id': null,
+                  }),
+                );
+              }
+            },
+          ).extract(before, input, cancellation);
+        } on Object catch (failure) {
+          if (auditFailed ||
+              failure is RagCancelled ||
+              failure is RagTaskStateConflict ||
+              cancellation.isCancelled) {
+            rethrow;
+          }
+          extractionNotice =
+              'Память задачи не обновлена: извлекатель недоступен или ответ не прошёл проверку. В этом ответе сохранённые условия не используются; повторите уточнение позже.';
+          if (!_disposed && _project == project && _session == session) {
+            taskStateNotice = extractionNotice;
+            _notify();
+          }
         }
         checkRagCancellation(cancellation.isCancelled);
-        frozenState = next;
-        if (!_disposed && _project == project && _session == session) {
-          taskExtractionAudit = extraction.audit;
-          _showTaskUpdate(before, next);
+        if (extraction != null) {
+          final next = extraction.patch.apply(
+            before,
+            userText: input,
+            submissionId: id,
+          );
+          if (identical(next, before)) {
+            final current = await taskStates!.load(project, session);
+            if (current.revision != before.revision) {
+              throw const RagTaskStateConflict();
+            }
+          } else {
+            await taskStates!.save(
+              next,
+              expectedRevision: before.revision,
+              cancellation: cancellation,
+            );
+          }
+          checkRagCancellation(cancellation.isCancelled);
+          frozenState = next;
+          if (!_disposed && _project == project && _session == session) {
+            taskExtractionAudit = extraction.audit;
+            _showTaskUpdate(before, next);
+          }
         }
       }
       final dynamic = neutral
@@ -453,6 +504,9 @@ final class RagChatController extends ChangeNotifier
               if (frozenState != null) {
                 final current = await taskStates!.load(project, session);
                 if (current.revision != frozenState.revision) {
+                  error =
+                      'Память задачи изменена перед запросом. Повторите вопрос.';
+                  _notify();
                   throw const RagTaskStateConflict();
                 }
                 checkRagCancellation(token.isCancelled);
@@ -472,6 +526,9 @@ final class RagChatController extends ChangeNotifier
               ];
               await traces.saveRequest(project, session, attemptId, {
                 ...prepared.toJson(),
+                'task_state_enabled': useTaskState,
+                'task_state_used': frozenState != null,
+                'task_state_update_notice': extractionNotice,
                 'id': attemptId,
                 'session_revision_at_admission': snapshot.revision,
                 'neutral_evaluation': neutral,

@@ -76,8 +76,10 @@ final class RagTaskState {
     this.revision = 0,
     Iterable<RagTaskFact> facts = const [],
     Iterable<RagTaskFact> superseded = const [],
+    Iterable<RagTaskFact> retirements = const [],
   }) : facts = List.unmodifiable(facts),
-       superseded = List.unmodifiable(superseded) {
+       superseded = List.unmodifiable(superseded),
+       retirements = List.unmodifiable(retirements) {
     if (project.isEmpty ||
         session.isEmpty ||
         revision < 0 ||
@@ -85,7 +87,11 @@ final class RagTaskState {
         this.facts.map((f) => f.id).toSet().length != this.facts.length) {
       throw const FormatException('Invalid task-state scope/revision');
     }
-    for (final fact in [...this.facts, ...this.superseded]) {
+    for (final fact in [
+      ...this.facts,
+      ...this.superseded,
+      ...this.retirements,
+    ]) {
       fact.validate();
       if (fact.sourceRevision > revision) {
         throw const FormatException('Task fact is from a future revision');
@@ -94,7 +100,7 @@ final class RagTaskState {
   }
   final String project, session;
   final int revision;
-  final List<RagTaskFact> facts, superseded;
+  final List<RagTaskFact> facts, superseded, retirements;
 
   factory RagTaskState.fromJson(Map<String, dynamic> json) {
     if (json['version'] != 1 || json['type'] != 'rag_task_state') {
@@ -108,6 +114,7 @@ final class RagTaskState {
       revision: json['revision'] as int,
       facts: (json['facts'] as List).map(read),
       superseded: (json['superseded'] as List).map(read),
+      retirements: ((json['retirements'] as List?) ?? []).map(read),
     );
   }
 
@@ -120,6 +127,7 @@ final class RagTaskState {
     'application': 'automatic_validated_user_quotes_not_confirmed_memory',
     'facts': facts.map((f) => f.toJson()).toList(),
     'superseded': superseded.map((f) => f.toJson()).toList(),
+    'retirements': retirements.map((f) => f.toJson()).toList(),
   };
 
   /// Identity binds the exact revision AND owner. Another chat's IDs are invalid.
@@ -154,7 +162,8 @@ bool _validId(String id, RagTaskFactKind kind) =>
     RegExp(r'^[a-z][a-z0-9_.-]{1,63}$').hasMatch(id);
 
 final class RagTaskUpdate {
-  const RagTaskUpdate(this.id, this.kind, this.quote);
+  const RagTaskUpdate(this.id, this.kind, this.quote, {this.retire = false});
+  final bool retire;
   final String id, quote;
   final RagTaskFactKind kind;
 }
@@ -182,7 +191,8 @@ final class RagTaskPatch {
     final updates = <RagTaskUpdate>[];
     for (final row in root['updates'] as List) {
       if (row is! Map ||
-          row.length != 3 ||
+          !((row.length == 3 && !row.containsKey('action')) ||
+              (row.length == 4 && row['action'] == 'retire')) ||
           row['id'] is! String ||
           row['kind'] is! String ||
           row['quote'] is! String) {
@@ -200,9 +210,20 @@ final class RagTaskPatch {
           updates.any((u) => u.id == id)) {
         throw const FormatException('Task-state quote/identity invalid');
       }
-      updates.add(RagTaskUpdate(id, kind, quote));
+      final retire = row['action'] == 'retire';
+      if (retire && !before.facts.any((f) => f.id == id && f.kind == kind)) {
+        throw const FormatException('Retirement requires an existing slot');
+      }
+      updates.add(RagTaskUpdate(id, kind, quote, retire: retire));
     }
-    final ids = {...before.facts.map((f) => f.id), ...updates.map((u) => u.id)};
+    final ids = {...before.facts.map((f) => f.id)};
+    for (final u in updates) {
+      if (u.retire) {
+        ids.remove(u.id);
+      } else {
+        ids.add(u.id);
+      }
+    }
     if (ids.length > 24) throw const FormatException('Task-state capacity');
     return RagTaskPatch(updates);
   }
@@ -215,12 +236,13 @@ final class RagTaskPatch {
   }) {
     final active = {for (final fact in before.facts) fact.id: fact};
     final old = before.superseded.toList();
+    final retired = before.retirements.toList();
     var changed = false;
     for (final update in updates) {
-      if (active[update.id]?.quote == update.quote) continue;
+      if (!update.retire && active[update.id]?.quote == update.quote) continue;
       final previous = active[update.id];
       if (previous != null) old.add(previous);
-      active[update.id] = RagTaskFact(
+      final nextFact = RagTaskFact(
         id: update.id,
         kind: update.kind,
         quote: update.quote,
@@ -229,6 +251,13 @@ final class RagTaskPatch {
         sourceRevision: before.revision + 1,
         sourceKind: sourceKind,
       );
+      nextFact.validate();
+      if (update.retire) {
+        active.remove(update.id);
+        retired.add(nextFact);
+      } else {
+        active[update.id] = nextFact;
+      }
       changed = true;
     }
     return changed
@@ -238,6 +267,7 @@ final class RagTaskPatch {
             revision: before.revision + 1,
             facts: active.values,
             superseded: old,
+            retirements: retired,
           )
         : before;
   }

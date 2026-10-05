@@ -73,9 +73,16 @@ final class JsonlRagTaskStateRepository implements RagTaskStateRepository {
         throw const RagTaskStateConflict();
       }
       checkRagCancellation(cancellation.isCancelled);
-      await storage.publish(
+      final guarded = storage;
+      if (guarded is! JsonlGuardedStreamStorage) {
+        throw StateError(
+          'Task state requires cancellation-aware atomic storage',
+        );
+      }
+      await guarded.publishGuarded(
         key,
         encodeRagJsonl([...rows, jsonDecode(encoded) as Map<String, dynamic>]),
+        beforeCommit: () => checkRagCancellation(cancellation.isCancelled),
       );
     });
     _pending[key] = next;

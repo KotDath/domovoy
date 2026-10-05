@@ -120,6 +120,11 @@ class RagChatBar extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Text(controller.error ?? controller.progress),
           ),
+        if (controller.taskStateNotice != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text(controller.taskStateNotice!),
+          ),
         child,
       ],
     ),

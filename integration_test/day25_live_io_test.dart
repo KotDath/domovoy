@@ -193,8 +193,12 @@ void main() {
                     final id = meta['arxiv_id'] as String;
                     final file = File(
                       id.startsWith('2310')
-                          ? '/home/kotdath/Videos/domovoy/evidence/day-21/MemGPT-2310.08560v2.pdf'
-                          : '/home/kotdath/Downloads/domovoy-rag-papers/$id.pdf',
+                          ? const String.fromEnvironment(
+                              'RAG_MEMGPT_PDF',
+                              defaultValue:
+                                  '/home/kotdath/Videos/domovoy/evidence/day-21/MemGPT-2310.08560v2.pdf',
+                            )
+                          : "${const String.fromEnvironment('RAG_PAPERS_DIR', defaultValue: '/home/kotdath/Downloads/domovoy-rag-papers')}/$id.pdf",
                     );
                     final bytes = file.readAsBytesSync();
                     expect(bytes.length, meta['bytes']);

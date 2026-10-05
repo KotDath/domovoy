@@ -90,7 +90,11 @@ final class RagPreparedTurn {
         'task_state_evidence': request.taskState!.facts
             .map(request.taskState!.evidenceJson)
             .toList(),
-        'retrieval_query': request.taskState!.retrievalQuery(request.query),
+        'retrieval_query': request.protocol == RagProtocol.m2
+            ? request.query
+            : request.taskState!.retrievalQuery(request.query),
+        'task_state_enabled': true,
+        'reranker_query': request.query,
       },
       'rewritten_query': rewrittenQuery,
       'rewrite_audit': rewriteAudit,
@@ -179,8 +183,19 @@ final class RagTurnCoordinator {
         'Task-state owner differs from admitted turn',
       );
     }
-    final retrievalQuery =
-        state?.retrievalQuery(request.query) ?? request.query;
+    final retrievalQuery = request.protocol == RagProtocol.m2
+        ? request.query
+        : state?.retrievalQuery(request.query) ?? request.query;
+    if (state != null &&
+        state.facts.isNotEmpty &&
+        (request.protocol == RagProtocol.m3 ||
+            request.protocol == RagProtocol.m4) &&
+        request.retrieval.calibrationId != 'uncalibrated') {
+      throw StateError(
+        'Профиль M3/M4 рассчитан без памяти задачи. '
+        'Выключите память задачи, выберите M1/M2 или явно задайте экспериментальные пороги.',
+      );
+    }
     if (request.protocol == RagProtocol.m0) {
       return RagPreparedTurn(
         request: request,
@@ -274,7 +289,7 @@ final class RagTurnCoordinator {
       }
       // Preserve the entire dense pool, scoring the original user intention.
       final result = await engine.rerank(
-        retrievalQuery,
+        request.query,
         candidates,
         rankModel,
         cancellation,

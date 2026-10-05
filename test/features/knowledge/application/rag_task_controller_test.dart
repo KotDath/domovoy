@@ -19,7 +19,8 @@ import '../../../support/rag_fakes.dart';
 import '../../../support/rag_grounding_fixture.dart';
 
 final class _Extractor implements RagTaskExtractor {
-  _Extractor({this.entered, this.release});
+  _Extractor({this.entered, this.release, this.fail = false});
+  final bool fail;
   final Completer<void>? entered, release;
   final inputs = <String>[];
   @override
@@ -29,6 +30,7 @@ final class _Extractor implements RagTaskExtractor {
     CancellationToken cancellation,
   ) async {
     inputs.add(input);
+    if (fail) throw const FormatException("Extractor response rejected");
     entered?.complete();
     if (release != null) await release!.future;
     final time = input.contains('08:30') ? '08:30' : '09:00';
@@ -49,7 +51,12 @@ final class _Extractor implements RagTaskExtractor {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  for (final scenario in ['on', 'off', 'late manual edit']) {
+  for (final scenario in [
+    'on',
+    'off',
+    'late manual edit',
+    'extractor failure',
+  ]) {
     test(
       'task-state preparation $scenario respects scope and actual request',
       () async {
@@ -88,7 +95,11 @@ void main() {
         final release = scenario == 'late manual edit'
             ? Completer<void>()
             : null;
-        final extractor = _Extractor(entered: entered, release: release);
+        final extractor = _Extractor(
+          entered: entered,
+          release: release,
+          fail: scenario == 'extractor failure',
+        );
         final rag =
             RagChatController(
               strictGrounding: true,
@@ -119,8 +130,17 @@ void main() {
         await chat.createChat();
         await rag.attach(chat.state.selectedSession);
         final scope = chat.state.selectedId!.value;
+        if (scenario == 'extractor failure') {
+          await rag.editTaskFact(
+            'constraint.time',
+            RagTaskFactKind.constraint,
+            '09:00',
+          );
+        }
         final sending = chat.send(
-          'Chosen time 09:00. What is the SOUL.md limit?',
+          scenario == 'extractor failure'
+              ? 'Change chosen time to 08:30. What is the SOUL.md limit?'
+              : 'Chosen time 09:00. What is the SOUL.md limit?',
         );
         if (entered != null) {
           await entered.future;
@@ -165,6 +185,19 @@ void main() {
             provider.requests.single.context.systemPrompt,
             isNot(contains('USER_TASK_STATE_EVIDENCE_JSON')),
           );
+        } else if (scenario == 'extractor failure') {
+          expect(saved.revision, 1);
+          expect(saved.facts.single.quote, '09:00');
+          expect(rag.taskStateNotice, contains('не обновлена'));
+          expect(provider.requests, hasLength(1));
+          expect(
+            provider.requests.single.context.systemPrompt,
+            isNot(contains('USER_TASK_STATE_EVIDENCE_JSON')),
+          );
+          expect(chat.state.selectedSession!.transcript.messages, hasLength(2));
+          final trace = (await traces.list('default', scope)).single;
+          expect(trace['task_state_used'], false);
+          expect(trace['task_state_update_notice'], contains('не обновлена'));
         } else {
           expect(saved.facts.single.quote, '07:45');
           expect(saved.facts.single.sourceKind, 'manual_user_edit');

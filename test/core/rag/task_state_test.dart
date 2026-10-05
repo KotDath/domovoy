@@ -92,6 +92,79 @@ void main() {
     expect((await repo.load('A', 'one')).revision, 0);
   });
 
+  test('retire a resolved user choice, preserving both source submissions', () {
+    final initial = RagTaskState(project: 'p', session: 's');
+    final question = RagTaskPatch.parse(
+      '{"updates":[{"id":"open_question.model","kind":"open_question","quote":"Model remains undecided"}]}',
+      'Model remains undecided',
+      initial,
+    ).apply(initial, userText: 'Model remains undecided', submissionId: 'one');
+    const chosen = 'I choose DeepSeek';
+    final next = RagTaskPatch.parse(
+      '{"updates":[{"id":"open_question.model","kind":"open_question","quote":"I choose DeepSeek","action":"retire"},{"id":"constraint.model","kind":"constraint","quote":"DeepSeek"}]}',
+      chosen,
+      question,
+    ).apply(question, userText: chosen, submissionId: 'two');
+    expect(next.facts.single.id, 'constraint.model');
+    expect(next.context, isNot(contains('undecided')));
+    expect(next.superseded.single.submissionId, 'one');
+    expect(next.retirements.single.quote, chosen);
+    expect(next.retirements.single.sourceRevision, 2);
+    expect(next.retirements.single.submissionId, 'two');
+    final replay = RagTaskState.fromJson(
+      jsonDecode(jsonEncode(next.toJson())) as Map<String, dynamic>,
+    );
+    expect(replay.toJson(), next.toJson());
+    expect(
+      () => RagTaskPatch.parse(
+        '{"updates":[{"id":"open_question.unknown","kind":"open_question","quote":"I choose DeepSeek","action":"retire"}]}',
+        chosen,
+        question,
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => RagTaskPatch.parse(
+        '{"updates":[{"id":"open_question.model","kind":"open_question","quote":"Model remains undecided","action":"retire"}]}',
+        chosen,
+        question,
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test(
+    'retirement frees one of twenty-four active slots without dropping history',
+    () {
+      final before = RagTaskState(
+        project: 'p',
+        session: 's',
+        revision: 1,
+        facts: [
+          for (var i = 0; i < 24; i++)
+            RagTaskFact(
+              id: 'constraint.slot$i',
+              kind: RagTaskFactKind.constraint,
+              quote: 'old$i',
+              userText: 'old$i',
+              submissionId: 'first',
+              sourceRevision: 1,
+              sourceKind: 'automatic_user_quote',
+            ),
+        ],
+      );
+      const input = 'Remove old0 and choose new';
+      final next = RagTaskPatch.parse(
+        '{"updates":[{"id":"constraint.slot0","kind":"constraint","quote":"Remove old0","action":"retire"},{"id":"constraint.new","kind":"constraint","quote":"new"}]}',
+        input,
+        before,
+      ).apply(before, userText: input, submissionId: 'second');
+      expect(next.facts, hasLength(24));
+      expect(next.superseded.single.quote, 'old0');
+      expect(next.retirements.single.quote, 'Remove old0');
+    },
+  );
+
   test(
     'old state, documents and fabricated metadata cannot supply new user facts',
     () {

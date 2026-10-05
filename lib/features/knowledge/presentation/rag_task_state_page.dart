@@ -23,13 +23,18 @@ class _RagTaskStatePageState extends State<RagTaskStatePage> {
     super.dispose();
   }
 
-  Future<void> _save() async {
+  Future<void> _save({bool retire = false}) async {
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
-      await widget.controller.editTaskFact(_id.text.trim(), _kind, _value.text);
+      await widget.controller.editTaskFact(
+        _id.text.trim(),
+        _kind,
+        _value.text,
+        retire: retire,
+      );
       if (mounted) setState(_value.clear);
     } on RagTaskStateConflict {
       if (mounted) {
@@ -70,7 +75,7 @@ class _RagTaskStatePageState extends State<RagTaskStatePage> {
                   : (v) => c.configure(taskStateEnabled: v),
             ),
             const Text(
-              'Это условия этой беседы, а не общая или подтверждённая долговременная память Domovoy. Документы и ответы ассистента не изменяют их.',
+              'Это условия этой беседы, а не общая или подтверждённая долговременная память Domovoy. Документы и ответы ассистента не изменяют их. Для M3/M4 с памятью задачи нужны явно экспериментальные пороги; прежняя калибровка рассчитана без неё.',
             ),
             if (state == null)
               const Text('Выберите чат: память задачи ещё не загружена.')
@@ -130,6 +135,18 @@ class _RagTaskStatePageState extends State<RagTaskStatePage> {
                     ),
                 ],
               ),
+              ExpansionTile(
+                title: Text('Снятые условия · ${state.retirements.length}'),
+                children: [
+                  for (final f in state.retirements)
+                    ListTile(
+                      title: Text('${f.id} · снято r${f.sourceRevision}'),
+                      subtitle: SelectableText(
+                        'Причина из вашей реплики: ${f.quote}',
+                      ),
+                    ),
+                ],
+              ),
               const Divider(),
               const Text('Ручное редактирование'),
               DropdownButtonFormField<RagTaskFactKind>(
@@ -158,10 +175,14 @@ class _RagTaskStatePageState extends State<RagTaskStatePage> {
               ),
               if (_error != null) Text(_error!),
               FilledButton(
-                onPressed: _saving ? null : _save,
+                onPressed: _saving ? null : () => _save(),
                 child: Text(
                   _saving ? 'Сохранение…' : 'Сохранить ручную правку',
                 ),
+              ),
+              OutlinedButton(
+                onPressed: _saving ? null : () => _save(retire: true),
+                child: const Text('Снять условие (история сохранится)'),
               ),
             ],
           ],

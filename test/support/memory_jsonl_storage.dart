@@ -6,7 +6,7 @@ import 'package:domovoy/infrastructure/agents/jsonl/jsonl_stream_storage.dart';
 ///
 /// Tests address individual streams through [MemoryJsonlKeyCodec] so they can
 /// replace bytes, append partial tails, or fail enumeration.
-final class FakeMemoryJsonlStorage implements JsonlStreamStorage {
+final class FakeMemoryJsonlStorage implements JsonlGuardedStreamStorage {
   final Map<String, List<int>> _streams = <String, List<int>>{};
   var failList = false;
 
@@ -43,6 +43,16 @@ final class FakeMemoryJsonlStorage implements JsonlStreamStorage {
 
   @override
   Future<void> publish(String key, List<int> contents) async {
+    _streams[key] = List<int>.from(contents);
+  }
+
+  @override
+  Future<void> publishGuarded(
+    String key,
+    List<int> contents, {
+    required void Function() beforeCommit,
+  }) async {
+    beforeCommit();
     _streams[key] = List<int>.from(contents);
   }
 

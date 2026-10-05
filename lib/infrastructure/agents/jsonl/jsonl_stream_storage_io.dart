@@ -31,7 +31,7 @@ JsonlStreamStorage createPlatformJsonlStreamStorage() {
 /// One instance serializes its own filesystem operations. As specified by the
 /// repository contract, coordination between processes or independently
 /// constructed concurrent writers is intentionally unsupported.
-final class JsonlFilesystemStreamStorage implements JsonlStreamStorage {
+final class JsonlFilesystemStreamStorage implements JsonlGuardedStreamStorage {
   JsonlFilesystemStreamStorage({
     required this.applicationSupportDirectoryResolver,
     this.stageHook,
@@ -137,7 +137,21 @@ final class JsonlFilesystemStreamStorage implements JsonlStreamStorage {
   }
 
   @override
-  Future<void> publish(String key, List<int> contents) {
+  Future<void> publish(String key, List<int> contents) =>
+      _publish(key, contents);
+
+  @override
+  Future<void> publishGuarded(
+    String key,
+    List<int> contents, {
+    required void Function() beforeCommit,
+  }) => _publish(key, contents, beforeCommit: beforeCommit);
+
+  Future<void> _publish(
+    String key,
+    List<int> contents, {
+    void Function()? beforeCommit,
+  }) {
     final immutableContents = Uint8List.fromList(contents);
     return _executor.run(() async {
       _validateKey(key);
@@ -166,6 +180,7 @@ final class JsonlFilesystemStreamStorage implements JsonlStreamStorage {
         '${jsonEncode(<String, Object?>{'type': _manifestType, 'version': _manifestVersion, 'key': key, 'generation': generationName})}\n',
       );
       await _writeFlushed(manifestTemporary, manifest);
+      beforeCommit?.call();
       await manifestTemporary.rename(
         p.join(namespace.path, activeManifestName),
       );
