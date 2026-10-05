@@ -84,6 +84,7 @@ final class RagTaskState {
         session.isEmpty ||
         revision < 0 ||
         this.facts.length > 24 ||
+        this.facts.where((f) => f.kind == RagTaskFactKind.goal).length > 1 ||
         this.facts.map((f) => f.id).toSet().length != this.facts.length) {
       throw const FormatException('Invalid task-state scope/revision');
     }
@@ -161,6 +162,23 @@ bool _validId(String id, RagTaskFactKind kind) =>
     id.startsWith('${kind.wireName}.') &&
     RegExp(r'^[a-z][a-z0-9_.-]{1,63}$').hasMatch(id);
 
+void _validateChosenSlot(String id, String quote) {
+  if (id == 'constraint.time' &&
+      !RegExp(r'^(?:[01]?[0-9]|2[0-3]):[0-5][0-9]$').hasMatch(quote)) {
+    throw const FormatException(
+      'Chosen time must be an independent HH:MM quote',
+    );
+  }
+  if (id == 'constraint.timezone' &&
+      !RegExp(
+        r'^(?:UTC|[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)+)$',
+      ).hasMatch(quote)) {
+    throw const FormatException(
+      'Chosen timezone must be an independent zone quote',
+    );
+  }
+}
+
 final class RagTaskUpdate {
   const RagTaskUpdate(this.id, this.kind, this.quote, {this.retire = false});
   final bool retire;
@@ -211,6 +229,7 @@ final class RagTaskPatch {
         throw const FormatException('Task-state quote/identity invalid');
       }
       final retire = row['action'] == 'retire';
+      if (!retire) _validateChosenSlot(id, quote);
       if (retire && !before.facts.any((f) => f.id == id && f.kind == kind)) {
         throw const FormatException('Retirement requires an existing slot');
       }
@@ -225,6 +244,9 @@ final class RagTaskPatch {
       }
     }
     if (ids.length > 24) throw const FormatException('Task-state capacity');
+    if (ids.where((id) => id.startsWith('goal.')).length > 1) {
+      throw const FormatException('Only one active task goal is supported');
+    }
     return RagTaskPatch(updates);
   }
 
@@ -242,6 +264,7 @@ final class RagTaskPatch {
       if (!update.retire && active[update.id]?.quote == update.quote) continue;
       final previous = active[update.id];
       if (previous != null) old.add(previous);
+      if (!update.retire) _validateChosenSlot(update.id, update.quote);
       final nextFact = RagTaskFact(
         id: update.id,
         kind: update.kind,

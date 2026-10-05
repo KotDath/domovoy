@@ -24,6 +24,11 @@ Only explicit intentions, chosen conditions, defined terms and clarifications
 belong in state. A factual/documentation question or diversion is NOT an
 open_question, goal or constraint. open_question is ONLY an explicitly undecided
 USER CHOICE, e.g. a model or delivery channel the user says they have not chosen.
+If the user says choices "remain undecided", they MUST be recorded if absent
+from prior state: that is an explicit unresolved decision, not a factual question.
+Split multiple unresolved choices into separate slots, e.g. open_question.model
+and open_question.delivery; both may quote the same complete newest-user sentence.
+Do not skip an explicit undecided choice just because it has no selected value.
 Keep the ongoing goal across detours. Hypotheticals/question premises are not choices.
 When a user explicitly resolves/retracts an existing slot, emit that existing
 id+kind with action:"retire" and an exact NEW user quote evidencing the resolution.
@@ -101,7 +106,11 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
     }
     final local = CancellationSource();
     final registration = cancellation.register(local.cancel);
-    final timer = Timer(timeout, local.cancel);
+    var timedOut = false;
+    final timer = Timer(timeout, () {
+      timedOut = true;
+      local.cancel();
+    });
     try {
       await beforeRequest?.call(requestJson);
       checkRagCancellation(local.token.isCancelled);
@@ -181,6 +190,12 @@ final class CloudRagTaskExtractor implements RagTaskExtractor {
         'validation':
             'exact new-user quotation; host scope/revision; not semantic proof',
       });
+    } on RagCancelled {
+      if (timedOut && !cancellation.isCancelled) {
+        terminal = 'TaskExtractionTimedOut';
+        throw TimeoutException('Task-state extraction timed out', timeout);
+      }
+      rethrow;
     } finally {
       timer.cancel();
       local.cancel();

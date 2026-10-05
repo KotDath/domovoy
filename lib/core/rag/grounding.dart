@@ -17,7 +17,11 @@ Factual task diversions do not change the stored task goal.
 Respond to ONLY the current question, not every state fact or retrieved passage.
 Keep the answer concise, normally two to six relevant claims; do not fill the
 maximum. Claim text MUST use the current user's language (English for an English
-question); verbatim quotations retain their original source language.''';
+question); verbatim quotations retain their original source language.
+Earlier assistant messages in the transcript are HOST-RENDERED prose and citations
+for humans, not the model output format. Do not imitate that Markdown. Use ONLY
+the current supplied evidence IDs, never previous answers' stale IDs.
+Your response MUST remain the strict status/claims/evidence JSON object.''';
 
 const ragGroundedAnswerInstruction = '''Return ONLY JSON with exactly two keys:
 {"status":"answered|partial|abstained","claims":[{"text":"one factual claim",

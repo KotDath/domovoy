@@ -14,9 +14,11 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
     required this.turn,
     required this.persistDiagnostic,
     this.fault = RagGroundingFault.none,
+    this.includeTaskInstruction = false,
   });
   final RagPreparedTurn turn;
   final RagGroundingFault fault;
+  final bool includeTaskInstruction;
   final Future<void> Function(Map<String, Object?>) persistDiagnostic;
   RagGroundedAnswer? accepted;
   final diagnostics = <Map<String, Object?>>[];
@@ -88,7 +90,7 @@ final class RagFinalAnswerGate implements AgentFinalAnswerGate {
               context: LlmContext(
                 systemPrompt: [
                   ragGroundedAnswerInstruction,
-                  if (turn.request.taskState != null)
+                  if (turn.request.taskState != null || includeTaskInstruction)
                     ragTaskGroundingInstruction,
                 ].join('\n\n'),
                 messages: [

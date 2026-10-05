@@ -19,8 +19,13 @@ import '../../../support/rag_fakes.dart';
 import '../../../support/rag_grounding_fixture.dart';
 
 final class _Extractor implements RagTaskExtractor {
-  _Extractor({this.entered, this.release, this.fail = false});
-  final bool fail;
+  _Extractor({
+    this.entered,
+    this.release,
+    this.fail = false,
+    this.timeout = false,
+  });
+  final bool fail, timeout;
   final Completer<void>? entered, release;
   final inputs = <String>[];
   @override
@@ -30,6 +35,7 @@ final class _Extractor implements RagTaskExtractor {
     CancellationToken cancellation,
   ) async {
     inputs.add(input);
+    if (timeout) throw TimeoutException("Extractor timed out");
     if (fail) throw const FormatException("Extractor response rejected");
     entered?.complete();
     if (release != null) await release!.future;
@@ -56,6 +62,7 @@ void main() {
     'off',
     'late manual edit',
     'extractor failure',
+    'extractor timeout',
   ]) {
     test(
       'task-state preparation $scenario respects scope and actual request',
@@ -64,7 +71,7 @@ void main() {
         final provider = QueueScriptedLlmProvider(
           id: BuiltInLlmCatalog.deepSeek,
           wireFamily: LlmWireFamily.openaiChatCompletions,
-          turns: [textTurn(f.answer()), textTurn(f.answer())],
+          turns: List.generate(4, (_) => textTurn(f.answer())),
         );
         final sessions = InMemoryAgentSessionRepository();
         final runtime = testRuntime(provider: provider, repository: sessions);
@@ -99,6 +106,7 @@ void main() {
           entered: entered,
           release: release,
           fail: scenario == 'extractor failure',
+          timeout: scenario == 'extractor timeout',
         );
         final rag =
             RagChatController(
@@ -130,7 +138,7 @@ void main() {
         await chat.createChat();
         await rag.attach(chat.state.selectedSession);
         final scope = chat.state.selectedId!.value;
-        if (scenario == 'extractor failure') {
+        if (scenario.startsWith('extractor')) {
           await rag.editTaskFact(
             'constraint.time',
             RagTaskFactKind.constraint,
@@ -138,7 +146,7 @@ void main() {
           );
         }
         final sending = chat.send(
-          scenario == 'extractor failure'
+          scenario.startsWith('extractor')
               ? 'Change chosen time to 08:30. What is the SOUL.md limit?'
               : 'Chosen time 09:00. What is the SOUL.md limit?',
         );
@@ -168,7 +176,7 @@ void main() {
           expect(request['task_state']['revision'], 1);
           expect(
             request['retrieval_query'],
-            contains('constraint.time: 09:00'),
+            'Chosen time 09:00. What is the SOUL.md limit?',
           );
           await chat.send(
             'Change chosen time to 08:30. What is the SOUL.md limit?',
@@ -178,6 +186,64 @@ void main() {
             (await states.load('default', scope)).superseded.single.quote,
             '09:00',
           );
+          final original = chat.state.selectedSession!.transcript.toJson();
+          final stateBefore = (await states.load('default', scope)).toJson();
+          final replay = await rag.replayLastQuestion(
+            chat.state.selectedSession!,
+            CancellationSource().token,
+          );
+          expect(replay.map((r) => r['accepted']), [true, true]);
+          expect(
+            extractor.inputs,
+            hasLength(2),
+            reason: 'Diagnostic does not invoke a fake extractor',
+          );
+          expect(chat.state.selectedSession!.transcript.toJson(), original);
+          expect((await states.load('default', scope)).toJson(), stateBefore);
+          expect(replay.first['tail'], replay.last['tail']);
+          expect(
+            replay.first['tail_message_ids'],
+            replay.last['tail_message_ids'],
+          );
+          expect(provider.requests, hasLength(4));
+          final off = provider.requests[2], on = provider.requests[3];
+          expect(off.context.messages, on.context.messages);
+          expect(off.context.messages, hasLength(3));
+          expect(off.model, on.model);
+          expect(off.generation.toJson(), on.generation.toJson());
+          String removeState(String p) => p
+              .replaceAll(
+                RegExp(
+                  r'USER_TASK_STATE_EVIDENCE_JSON\n.*?\nEND_USER_TASK_STATE_EVIDENCE',
+                  dotAll: true,
+                ),
+                '',
+              )
+              .split('\n')
+              .map((s) => s.trim())
+              .where((s) => s.isNotEmpty)
+              .join('\n');
+          expect(
+            removeState(off.context.systemPrompt),
+            removeState(on.context.systemPrompt),
+          );
+          final rows = await traces.list('default', scope);
+          final diagnostic = rows
+              .where((r) => r['diagnostic_replay'] == true)
+              .toList();
+          expect(diagnostic, hasLength(2));
+          expect(
+            diagnostic.every(
+              (r) => r['completion']['accepted_message_id'] == null,
+            ),
+            true,
+          );
+          expect(
+            diagnostic.every(
+              (r) => r['completion']['replay_message_id'] != null,
+            ),
+            true,
+          );
         } else if (scenario == 'off') {
           expect(extractor.inputs, isEmpty);
           expect(saved.facts, isEmpty);
@@ -185,7 +251,7 @@ void main() {
             provider.requests.single.context.systemPrompt,
             isNot(contains('USER_TASK_STATE_EVIDENCE_JSON')),
           );
-        } else if (scenario == 'extractor failure') {
+        } else if (scenario.startsWith('extractor')) {
           expect(saved.revision, 1);
           expect(saved.facts.single.quote, '09:00');
           expect(rag.taskStateNotice, contains('не обновлена'));

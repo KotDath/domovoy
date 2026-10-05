@@ -1,12 +1,26 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/rag/task_state.dart';
+import 'package:domovoy/core/rag/models.dart';
 import 'package:domovoy/infrastructure/rag/cloud_task_extractor.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/agent_harness.dart';
 import '../../support/rag_task_state_fixture.dart';
+
+final class _SilentProvider implements LlmProvider {
+  @override
+  ProviderId get id => BuiltInLlmCatalog.deepSeek;
+  @override
+  LlmWireFamily get wireFamily => LlmWireFamily.openaiChatCompletions;
+  @override
+  Stream<LlmEvent> stream(
+    LlmRequest request, {
+    required CancellationToken cancellation,
+  }) => Stream<LlmEvent>.multi((_) {});
+}
 
 void main() {
   for (final valid in [true, false]) {
@@ -80,6 +94,45 @@ void main() {
         );
         expect(receipts.single['usage'], isNotNull);
         expect(receipts.single['private_reasoning'], 'omitted');
+        await runtime.close();
+      },
+    );
+  }
+
+  for (final parentCancels in [false, true]) {
+    test(
+      'extractor ${parentCancels ? 'user cancellation' : 'timeout'} is distinct and releases parent registration',
+      () async {
+        final runtime = testRuntime(provider: _SilentProvider());
+        final source = CancellationSource();
+        final receipts = <Map<String, Object?>>[];
+        final extractor = CloudRagTaskExtractor(
+          registry: runtime.registry,
+          model: testDefinition().model,
+          timeout: const Duration(milliseconds: 40),
+          afterResult: (r) async => receipts.add(r),
+        );
+        final future = extractor.extract(
+          RagTaskState(project: 'p', session: 's'),
+          'Chosen time 9:00',
+          source.token,
+        );
+        final assertion = expectLater(
+          future,
+          throwsA(
+            parentCancels ? isA<RagCancelled>() : isA<TimeoutException>(),
+          ),
+        );
+        if (parentCancels) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+          source.cancel();
+        }
+        await assertion;
+        expect(source.registrationCount, 0);
+        expect(
+          receipts.single['terminal'],
+          parentCancels ? 'TaskExtractionCancelled' : 'TaskExtractionTimedOut',
+        );
         await runtime.close();
       },
     );

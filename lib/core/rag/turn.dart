@@ -90,7 +90,7 @@ final class RagPreparedTurn {
         'task_state_evidence': request.taskState!.facts
             .map(request.taskState!.evidenceJson)
             .toList(),
-        'retrieval_query': request.protocol == RagProtocol.m2
+        'retrieval_query': request.protocol.index < RagProtocol.m3.index
             ? request.query
             : request.taskState!.retrievalQuery(request.query),
         'task_state_enabled': true,
@@ -183,7 +183,7 @@ final class RagTurnCoordinator {
         'Task-state owner differs from admitted turn',
       );
     }
-    final retrievalQuery = request.protocol == RagProtocol.m2
+    final retrievalQuery = request.protocol.index < RagProtocol.m3.index
         ? request.query
         : state?.retrievalQuery(request.query) ?? request.query;
     if (state != null &&

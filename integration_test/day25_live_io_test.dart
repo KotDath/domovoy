@@ -322,100 +322,90 @@ void main() {
                   isEmpty,
                 );
               }
-              // Real diagnostic: same original owner, separate disposable runtimes.
-              // Neither runtime is given any earlier transcript or summary.
-              final tail = env.chat.state.selectedSession!.transcript.messages
-                  .sublist(
-                    env.chat.state.selectedSession!.transcript.messages.length -
-                        4,
-                    env.chat.state.selectedSession!.transcript.messages.length -
-                        2,
-                  );
-              expect(tail, hasLength(2));
-              final lastQuestion =
-                  (scenario['questions'] as List).last['question'] as String;
-              runConfig['replay_tail'] = tail.map((m) => m.toJson()).toList();
+              final originalTranscript = env
+                  .chat
+                  .state
+                  .selectedSession!
+                  .transcript
+                  .toJson();
               final stateBeforeReplay = await states.load(
                 project,
                 sessionId.value,
               );
-              for (final on in [false, true]) {
-                final transientStore = InMemoryAgentSessionRepository();
-                final shadow = _Env(
-                  client,
-                  credentials,
-                  transientStore,
-                  repository,
-                  traces,
-                  states,
-                  models,
-                  initialMessages: tail,
-                  stateOn: on,
+              final replays = await env.rag.replayLastQuestion(
+                env.chat.state.selectedSession!,
+                CancellationSource().token,
+              );
+              expect(replays, hasLength(2));
+              for (final replay in replays) {
+                final on = replay['state_enabled'] == true;
+                write({
+                  ...replay,
+                  'scenario': scenario['id'],
+                  'question_id':
+                      '${scenario['id']}-replay-${on ? 'on' : 'off'}',
+                  'diagnostic_replay': true,
+                  'state_after': (await states.load(
+                    project,
+                    sessionId.value,
+                  )).toJson(),
+                });
+                expect(replay['accepted'], true);
+                final added = replay['traces'] as List;
+                expect(
+                  added.where((t) => t['protocol'] == 'task_state_extraction'),
+                  isEmpty,
                 );
-                try {
-                  final s = await shadow.stack.runtime
-                      .agent(shadow.definition)
-                      .createSession(
-                        id: sessionId,
-                        projectId: ProjectId(project),
-                      );
-                  await shadow.rag.attach(s.snapshot);
-                  final priorTraces = (await traces.list(
-                    project,
-                    sessionId.value,
-                  )).map((t) => t['id']).toSet();
-                  final prepared = await shadow.rag.prepare(
-                    s.snapshot,
-                    lastQuestion,
-                    CancellationSource().token,
-                  );
-                  final terminal = await s
-                      .run(lastQuestion, options: prepared!.options)
-                      .events
-                      .last;
-                  await prepared.onSettled?.call(s.snapshot, terminal);
-                  final added = (await traces.list(
-                    project,
-                    sessionId.value,
-                  )).where((t) => !priorTraces.contains(t['id'])).toList();
-                  final accepted = added
-                      .where(
-                        (t) =>
-                            t['protocol'] == 'm1' &&
-                            (t['completion'] as Map?)?['accepted_message_id'] !=
-                                null,
-                      )
-                      .toList();
-                  write({
-                    'scenario': scenario['id'],
-                    'question_id':
-                        '${scenario['id']}-replay-${on ? 'on' : 'off'}',
-                    'diagnostic_replay': true,
-                    'state_enabled': on,
-                    'question': lastQuestion,
-                    'tail': tail.map((m) => m.toJson()).toList(),
-                    'accepted': accepted.isNotEmpty,
-                    'terminal': terminal.runtimeType.toString(),
-                    'state_after': (await states.load(
-                      project,
-                      sessionId.value,
-                    )).toJson(),
-                    'transcript': s.snapshot.transcript.toJson(),
-                    'traces': added,
-                  });
-                  expect(accepted, hasLength(1));
-                  expect(s.snapshot.transcript.messages, hasLength(4));
-                  expect(accepted.single['task_state'] != null, on);
-                  expect(
-                    added
-                        .where((t) => t['protocol'] == 'task_state_extraction')
-                        .length,
-                    on ? 1 : 0,
-                  );
-                } finally {
-                  await shadow.close();
-                }
+                expect(
+                  added.where(
+                    (t) => t['completion']['accepted_message_id'] != null,
+                  ),
+                  isEmpty,
+                  reason: 'Replay does not link to original accepted history',
+                );
+                final accepted = added
+                    .where((t) => t['completion']['replay_message_id'] != null)
+                    .single;
+                expect(accepted['task_state_used'], on);
+                expect(accepted['request']['messages'], hasLength(3));
+                expect(accepted['request']['tools_count'], 0);
+                expect(accepted['request']['continuation_count'], 0);
               }
+              final a = (replays[0]['traces'] as List).last['request'] as Map;
+              final b = (replays[1]['traces'] as List).last['request'] as Map;
+              expect(a['model'], b['model']);
+              expect(a['generation'], b['generation']);
+              expect(a['messages'], b['messages']);
+              expect(replays[0]['tail'], replays[1]['tail']);
+              String withoutState(String prompt) => prompt
+                  .replaceAll(
+                    RegExp(
+                      r'USER_TASK_STATE_EVIDENCE_JSON\n.*?\nEND_USER_TASK_STATE_EVIDENCE',
+                      dotAll: true,
+                    ),
+                    '',
+                  )
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .where((s) => s.isNotEmpty)
+                  .join('\n');
+              expect(
+                withoutState(a['system_prompt'] as String),
+                withoutState(b['system_prompt'] as String),
+              );
+              expect(
+                env.chat.state.selectedSession!.transcript.toJson(),
+                originalTranscript,
+              );
+              runConfig['diagnostic_replay'] = {
+                'real_product_path': true,
+                'original_transcript_unchanged': true,
+                'tail_ids': replays.first['tail_message_ids'],
+                'source_question_id':
+                    replays.first['source_question_message_id'],
+                'settings_matched': true,
+                'no_extractor': true,
+              };
               expect(
                 (await states.load(project, sessionId.value)).toJson(),
                 stateBeforeReplay.toJson(),

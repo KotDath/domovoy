@@ -133,6 +133,57 @@ void main() {
     );
   });
 
+  test('time and timezone are independent exact user choices', () {
+    final before = RagTaskState(project: 'p', session: 's');
+    for (final row in [
+      {
+        'id': 'constraint.time',
+        'kind': 'constraint',
+        'quote': '09:00 Europe/Moscow',
+      },
+      {'id': 'constraint.time', 'kind': 'constraint', 'quote': '25:61'},
+      {
+        'id': 'constraint.timezone',
+        'kind': 'constraint',
+        'quote': '09:00 Europe/Moscow',
+      },
+    ]) {
+      expect(
+        () => RagTaskPatch.parse(
+          jsonEncode({
+            'updates': [row],
+          }),
+          row['quote']!,
+          before,
+        ),
+        throwsFormatException,
+      );
+    }
+    expect(
+      RagTaskPatch.parse(
+        '{"updates":[{"id":"constraint.time","kind":"constraint","quote":"9:00"}]}',
+        'I choose 9:00',
+        before,
+      ).updates.single.quote,
+      '9:00',
+    );
+    const text = '09:00 Europe/Moscow';
+    final first = RagTaskPatch.parse(
+      '{"updates":[{"id":"constraint.time","kind":"constraint","quote":"09:00"},{"id":"constraint.timezone","kind":"constraint","quote":"Europe/Moscow"}]}',
+      text,
+      before,
+    ).apply(before, userText: text, submissionId: 'one');
+    final changed = changedTaskState(first, '08:30');
+    expect(
+      changed.facts.where((f) => f.id == 'constraint.timezone').single.quote,
+      'Europe/Moscow',
+    );
+    expect(
+      changed.facts.where((f) => f.id == 'constraint.time').single.quote,
+      '08:30',
+    );
+  });
+
   test(
     'retirement frees one of twenty-four active slots without dropping history',
     () {
