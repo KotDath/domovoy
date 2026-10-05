@@ -14,7 +14,6 @@ delivery manifest.
 | 22 | `feature/day-22` | `/home/kotdath/Videos/domovoy/day-22-demo.mp4` | 229.109722s | `81cd05a45c98dd014cf4c66ba7dc610c87a8bf2255bf865052385104e1da0bee` |
 | 23 | `feature/day-23` | `/home/kotdath/Videos/domovoy/day-23-demo.mp4` | 467.359122s | `563d45ff0e4d34add33b969a1400aaa53495b1713de5b18f055852d1d75c10dd` |
 | 24 | `feature/day-24` | `/home/kotdath/Videos/domovoy/day-24-demo.mp4` | 321.573656s | `984169131894e063442bf23ac1eaa836663350746973f87616f3b6c64d7a8e47` |
-
 | 25 | `feature/day-25` | `/home/kotdath/Videos/domovoy/day-25-demo.mp4` | 3075.204044s | `9237714bbe1554255dfec98fdb9a3b91ac22b73785255d590ca95f04b20a52cb` |
 
 Videos use H.264 at 1080×2400 without audio. Original whole clips, accessibility
