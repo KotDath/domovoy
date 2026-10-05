@@ -9,6 +9,7 @@ import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/projects/ids.dart';
 import 'package:domovoy/core/rag/models.dart';
 import 'package:domovoy/core/rag/turn.dart';
+import 'package:domovoy/core/rag/task_state.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_controller.dart';
 import 'package:domovoy/features/knowledge/application/knowledge_controller.dart';
 import 'package:domovoy/features/knowledge/application/rag_chat_controller.dart';
@@ -30,7 +31,7 @@ import 'package:path_provider/path_provider.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets(
-    'real twelve-turn dialogues, restart and isolated tail replay',
+    'real twelve-question dialogues, restart and isolated tail replay',
     (tester) async {
       expect(Platform.isLinux, true);
       await tester.pumpWidget(
@@ -292,6 +293,11 @@ void main() {
                       )
                       .toList();
                   final after = await states.load(project, sessionId.value);
+                  final missingConditions = _missingTaskConditions(
+                    scenario['id'] as String,
+                    question['id'] as String,
+                    after,
+                  );
                   final row = <String, Object?>{
                     'scenario': scenario['id'],
                     'question_id': retry == 0
@@ -303,6 +309,8 @@ void main() {
                     'question': question['question'],
                     'corpus': question['corpus'],
                     'accepted': accepted.isNotEmpty,
+                    'functional_state_complete': missingConditions.isEmpty,
+                    'missing_task_conditions': missingConditions,
                     'command_success': result.isSuccess,
                     'workspace_error': env.chat.state.error?.message,
                     'elapsed_ms': watch.elapsedMilliseconds,
@@ -315,13 +323,20 @@ void main() {
                   };
                   write(row);
                   if ((accepted.isEmpty ||
-                          accepted.single['task_state_used'] != true) &&
+                          accepted.single['task_state_used'] != true ||
+                          missingConditions.isNotEmpty) &&
                       retry < maxResubmissions) {
                     debugPrint(
                       'DAY25 explicit USER resubmission: ${question['id']} attempt ${retry + 1}; failed/insufficient prior attempt retained',
                     );
                     continue;
                   }
+                  expect(
+                    missingConditions,
+                    isEmpty,
+                    reason:
+                        'Explicit user conditions must survive: ${question['id']}',
+                  );
                   expect(
                     accepted,
                     hasLength(1),
@@ -483,6 +498,139 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 45)),
   );
+}
+
+// Scenario expectations are checked AFTER real requests and never enter prompts.
+List<String> _missingTaskConditions(
+  String scenario,
+  String question,
+  RagTaskState state,
+) {
+  final number = int.parse(question.substring(1));
+  final missing = <String>[];
+  bool has(String value, {RagTaskFactKind? kind}) => state.facts.any(
+    (f) => (kind == null || f.kind == kind) && f.quote.contains(value),
+  );
+  void require(bool ok, String name) {
+    if (!ok) missing.add(name);
+  }
+
+  if (scenario == 'A') {
+    require(
+      has('morning digest', kind: RagTaskFactKind.goal) && has('Android'),
+      'actual digest objective',
+    );
+    require(
+      has('not creating or running any task') ||
+          has('not create or execute tasks'),
+      'discussion only, no actions',
+    );
+    if (number >= 2) {
+      require(
+        state.facts.any(
+          (f) =>
+              f.id == 'constraint.time' &&
+              f.quote == (number >= 8 ? '08:30' : '09:00'),
+        ),
+        'latest chosen clock',
+      );
+      require(
+        state.facts.any(
+          (f) => f.id == 'constraint.timezone' && f.quote == 'Europe/Moscow',
+        ),
+        'independent timezone',
+      );
+      require(has('application may be closed'), 'app-may-be-closed condition');
+    }
+    if (number >= 3) {
+      require(
+        has('no external server or external scheduler'),
+        'no external scheduling',
+      );
+    }
+    if (number >= 5) {
+      require(
+        state.facts
+                    .where(
+                      (f) =>
+                          f.kind == RagTaskFactKind.openQuestion &&
+                          (f.quote.contains('Delivery channel') ||
+                              f.quote.contains('digest model')),
+                    )
+                    .length >=
+                2 &&
+            has('Delivery channel', kind: RagTaskFactKind.openQuestion) &&
+            has('digest model', kind: RagTaskFactKind.openQuestion),
+        'both undecided choices',
+      );
+    }
+    if (number >= 7) {
+      require(
+        has('MD means morning digest', kind: RagTaskFactKind.glossary) ||
+            state.facts.any(
+              (f) =>
+                  f.id == 'glossary.md' && f.quote.contains('morning digest'),
+            ),
+        'MD definition',
+      );
+    }
+  } else {
+    require(
+      has(
+        'project-specific context versus global user memory',
+        kind: RagTaskFactKind.goal,
+      ),
+      'original memory objective',
+    );
+    if (number >= 2) {
+      require(has('explicit confirmation'), 'chosen confirmation');
+    }
+    if (number >= 3) {
+      require(
+        has('CP means project context', kind: RagTaskFactKind.glossary) ||
+            state.facts.any(
+              (f) =>
+                  f.id == 'glossary.cp' && f.quote.contains('project context'),
+            ),
+        'CP definition',
+      );
+    }
+    if (number >= 5) {
+      require(
+        has(
+          'disabling a memory switch must not be treated as deleting stored records',
+        ),
+        'off preserves records',
+      );
+    }
+    if (number >= 7) {
+      require(
+        state.facts
+                    .where(
+                      (f) =>
+                          f.kind == RagTaskFactKind.openQuestion &&
+                          (f.quote.contains('Memory limits') ||
+                              f.quote.contains('extraction model')),
+                    )
+                    .length >=
+                2 &&
+            has('Memory limits', kind: RagTaskFactKind.openQuestion) &&
+            has('extraction model', kind: RagTaskFactKind.openQuestion),
+        'both undecided settings',
+      );
+    }
+    if (number >= 8) {
+      require(
+        has('short explanation followed by sources'),
+        'LATEST chosen answer format',
+      );
+      require(
+        has('no changes or actions should be performed'),
+        'no actions clarification',
+      );
+    }
+  }
+  return missing;
 }
 
 final class _Env {

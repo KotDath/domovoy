@@ -45,10 +45,17 @@ from prior state: that is an explicit unresolved decision, not a factual questio
 Split multiple unresolved choices into separate slots, e.g. open_question.model
 and open_question.delivery; both may quote the same complete newest-user sentence.
 Do not skip an explicit undecided choice just because it has no selected value.
-Recovery questions and returns to a topic are READ-ONLY: return {"updates":[]}
+Messages that ONLY ask recovery or return to a topic are READ-ONLY: return {"updates":[]}
 even if they mention "CP definition", "confirmation requirement", "output format"
 or "undecided settings". Such names are NOT new values. Keep ALL prior semantic
 slots across these questions, not just the goal. Keep the ongoing goal across detours. Hypotheticals/question premises are not choices.
+MIXED messages are different: extract explicit NEW declarative choices,
+clarifications or changed preferences even if a later sentence asks recovery.
+For example "Clarification: my output must be JSON. Remind me of the goal"
+updates the output preference from the first sentence and leaves the goal alone.
+Do not let a trailing recovery request erase or ignore the preceding new choice.
+Replace the prior semantic preference slot when its value changes; preserve its
+old value as superseded through the host patch, not as a second active preference.
 When a user explicitly resolves/retracts an existing slot, emit that existing
 id+kind with action:"retire" and an exact NEW user quote evidencing the resolution.
 Retire a resolved open_question as well as storing the selected choice in its own
