@@ -8,7 +8,6 @@ import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
 import 'package:domovoy/core/projects/ids.dart';
 import 'package:domovoy/core/rag/models.dart';
-import 'package:domovoy/core/rag/task_state.dart';
 import 'package:domovoy/core/rag/turn.dart';
 import 'package:domovoy/features/chat/application/chat_workspace_controller.dart';
 import 'package:domovoy/features/knowledge/application/knowledge_controller.dart';
