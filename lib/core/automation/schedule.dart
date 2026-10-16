@@ -118,7 +118,7 @@ final class OneShotSchedule extends AutomationSchedule {
 
   @override
   DateTime? nextAfter(DateTime afterUtc, AutomationTimeZones zones) =>
-      atUtc.isAfter(afterUtc) ? atUtc : null;
+      atUtc.isAfter(afterUtc) ? null : atUtc;
 
   @override
   List<DateTime> nextOccurrences({
