@@ -18,6 +18,69 @@ final class HostGitObjectVerifier implements ProjectGitObjectVerifier {
   final Duration timeout;
   final int maxOutputBytes;
 
+  Future<bool> _inWorkspace(String root, String directory) async {
+    if (p.equals(root, directory) || p.isWithin(root, directory)) return true;
+    // Filesystem identity also covers case aliases and Windows short names.
+    for (var current = directory; ; current = p.dirname(current)) {
+      if (await FileSystemEntity.identical(root, current)) return true;
+      if (p.equals(current, p.dirname(current))) return false;
+    }
+  }
+
+  Future<String> _gitExecutable(String root) async {
+    final names = Platform.isWindows
+        ? const ['git.exe', 'git.com']
+        : const ['git'];
+    for (var entry in (Platform.environment['PATH'] ?? '').split(
+      Platform.isWindows ? ';' : ':',
+    )) {
+      if (Platform.isWindows &&
+          entry.length >= 2 &&
+          entry.startsWith('"') &&
+          entry.endsWith('"')) {
+        entry = entry.substring(1, entry.length - 1);
+      }
+      // Never make a PATH entry absolute relative to the selected workspace.
+      if (!p.isAbsolute(entry) || p.isRootRelative(entry)) continue;
+      try {
+        final directory = await Directory(entry).resolveSymbolicLinks();
+        if (await _inWorkspace(root, p.normalize(entry)) ||
+            await _inWorkspace(root, directory)) {
+          continue;
+        }
+        for (final name in names) {
+          try {
+            final executable = await File(
+              p.join(directory, name),
+            ).resolveSymbolicLinks();
+            if (await _inWorkspace(root, p.dirname(executable))) continue;
+            final stat = await File(executable).stat();
+            if (stat.type != FileSystemEntityType.file) continue;
+            if (Platform.isWindows) {
+              // Batch wrappers require a shell; only native executables qualify.
+              if (!{
+                '.exe',
+                '.com',
+              }.contains(p.extension(executable).toLowerCase())) {
+                continue;
+              }
+            } else if (stat.mode & 0x49 == 0) {
+              continue;
+            }
+            return executable;
+          } on FileSystemException {
+            // Broken/inaccessible candidate: continue with the next host entry.
+          }
+        }
+      } on FileSystemException {
+        // Missing/inaccessible directory: never fall back to the workspace.
+      }
+    }
+    throw const FormatException(
+      'No trusted absolute host Git executable found',
+    );
+  }
+
   @override
   Future<void> verify({
     required String root,
@@ -25,6 +88,7 @@ final class HostGitObjectVerifier implements ProjectGitObjectVerifier {
     required String commonDirectory,
     required String head,
   }) async {
+    final executable = await _gitExecutable(root);
     Future<void> safe(String path) async {
       if (!p.isWithin(root, path) ||
           await FileSystemEntity.isLink(path) ||
@@ -107,15 +171,9 @@ final class HostGitObjectVerifier implements ProjectGitObjectVerifier {
       }
     }
     final environment = <String, String>{
-      for (final name in [
-        'PATH',
-        'SystemRoot',
-        'WINDIR',
-        'TEMP',
-        'TMP',
-        'TMPDIR',
-      ])
+      for (final name in ['SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR'])
         name: ?Platform.environment[name],
+      'PATH': p.dirname(executable),
       'GIT_CONFIG_NOSYSTEM': '1',
       'GIT_CONFIG_SYSTEM': Platform.isWindows ? 'NUL' : '/dev/null',
       'GIT_CONFIG_GLOBAL': Platform.isWindows ? 'NUL' : '/dev/null',
@@ -143,6 +201,7 @@ final class HostGitObjectVerifier implements ProjectGitObjectVerifier {
       ]) ...['-c', config],
     ];
     await _run(
+      executable,
       [
         ...arguments,
         'fsck',
@@ -156,6 +215,7 @@ final class HostGitObjectVerifier implements ProjectGitObjectVerifier {
       environment,
     );
     final current = await _run(
+      executable,
       [...arguments, 'rev-parse', '--verify', 'HEAD^{commit}'],
       root,
       environment,
@@ -166,12 +226,13 @@ final class HostGitObjectVerifier implements ProjectGitObjectVerifier {
   }
 
   Future<String> _run(
+    String executable,
     List<String> arguments,
     String root,
     Map<String, String> environment,
   ) async {
     final process = await Process.start(
-      'git',
+      executable,
       arguments,
       workingDirectory: root,
       environment: environment,

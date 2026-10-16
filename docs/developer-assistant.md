@@ -12,6 +12,9 @@
 Для такого desktop-каталога нужен установленный Git в PATH: приложение проверяет
 настоящий ODB через read-only `git fsck` и HEAD через `rev-parse`, включая обычные
 packed clones и checkout после `git gc`. Рабочие файлы, ветка и ODB не меняются.
+Git предварительно разрешается в абсолютный host executable: пустые/относительные
+PATH entries, пути внутри проекта и symlink targets внутри проекта не допускаются.
+На POSIX нужен executable bit; Windows использует native git.exe/git.com без batch shell.
 Git запускается без shell, с ограничениями времени/вывода, без наследования Git
 переменных/ключей, global/system config, replacement objects, hooks и lazy fetch.
 Object alternates, promisor ODB, metadata symlinks, config includes и fsck overrides

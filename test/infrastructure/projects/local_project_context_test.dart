@@ -108,6 +108,68 @@ void main() {
   );
 
   test(
+    'desktop never executes workspace Git through hostile PATH entries',
+    () async {
+      await git(['gc', '--prune=now']);
+      final head = await git(['rev-parse', 'HEAD']);
+      final marker = File('${temp.path}/workspace-git-executed');
+      final malicious = File('${repo.path}/git');
+      String quote(String text) => "'${text.replaceAll("'", "'\\''")}'";
+      await malicious.writeAsString(
+        '#!/bin/sh\nprintf executed >> ${quote(marker.path)}\nexec /usr/bin/git "\$@"\n',
+      );
+      applyPortableFileMode(malicious.path, executable: true);
+      final alias = '${temp.path}/workspace-alias';
+      await Link(alias).create(repo.path);
+      final outsideBin = await Directory('${temp.path}/outside-bin').create();
+      await Link('${outsideBin.path}/git').create(malicious.path);
+      await Directory('${repo.path}/relative-bin').create();
+      await Link('${repo.path}/relative-bin/git').create(malicious.path);
+      final packageFile = File('.dart_tool/package_config.json').absolute;
+      final config = jsonDecode(await packageFile.readAsString()) as Map;
+      final flutterPackage = (config['packages'] as List)
+          .cast<Map>()
+          .singleWhere((p) => p['name'] == 'flutter');
+      final rootUri = flutterPackage['rootUri'] as String;
+      final flutterRoot = Directory.fromUri(
+        packageFile.uri.resolve(rootUri.endsWith('/') ? rootUri : '$rootUri/'),
+      ).parent.parent;
+      final dart = '${flutterRoot.path}/bin/cache/dart-sdk/bin/dart';
+      final packages = packageFile.path;
+      final probe = File(
+        'test/support/project_git_context_probe.dart',
+      ).absolute.path;
+      Future<ProcessResult> run(String path) => Process.run(
+        dart,
+        ['--packages=$packages', probe, repo.path],
+        workingDirectory: repo.path,
+        environment: {'PATH': path},
+        runInShell: false,
+      );
+      for (final path in [
+        '.:/usr/bin:/bin',
+        ':relative-bin:/usr/bin:/bin',
+        '${repo.path}:/usr/bin:/bin',
+        '$alias:/usr/bin:/bin',
+        '${outsideBin.path}:/usr/bin:/bin',
+      ]) {
+        final result = await run(path);
+        expect(result.exitCode, 0, reason: '${result.stderr}');
+        final context = jsonDecode('${result.stdout}') as Map;
+        expect(context['head'], head);
+        expect(context['branch'], 'feature/docs/context');
+        expect(await marker.exists(), isFalse, reason: path);
+      }
+      final denied = await run(
+        '.:relative-bin:${repo.path}:${outsideBin.path}:',
+      );
+      expect(denied.exitCode, 1);
+      expect(await marker.exists(), isFalse);
+    },
+    skip: !Platform.isLinux,
+  );
+
+  test(
     'ordinary packed clone works without export or metadata mutation',
     () async {
       final sourceHead = await git(['rev-parse', 'HEAD']);
