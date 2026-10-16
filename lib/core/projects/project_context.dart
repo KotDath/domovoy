@@ -18,6 +18,17 @@ abstract interface class ProjectContextService {
   );
 }
 
+/// Optional host capability. Paths have already been authorized by the caller;
+/// implementations must only verify the actual repository, without changing it.
+abstract interface class ProjectGitObjectVerifier {
+  Future<void> verify({
+    required String root,
+    required String gitDirectory,
+    required String commonDirectory,
+    required String head,
+  });
+}
+
 final class ProjectGitContext {
   const ProjectGitContext({required this.head, this.branch});
   final String head;

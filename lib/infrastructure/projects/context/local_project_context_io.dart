@@ -8,15 +8,19 @@ import '../../../core/projects/ids.dart';
 import '../../../core/projects/project_context.dart';
 import '../../../core/rag/models.dart';
 import 'git_object_verifier_io.dart';
+import 'portable_file_mode_io.dart';
 
 /// No Flutter, path_provider or shell dependency. The caller authorizes roots.
 final class LocalProjectContextService implements ProjectContextService {
   const LocalProjectContextService({
     required this.resolveRoot,
     this.documentationRoots = const {'docs', 'doc', 'documentation'},
+    this.selectGitVerifier,
   });
   final Set<String> documentationRoots;
   final Future<String> Function(ProjectId) resolveRoot;
+  final Future<ProjectGitObjectVerifier?> Function(ProjectId)?
+  selectGitVerifier;
   static const maxArchiveBytes = 128 * 1024 * 1024;
   static const excluded = {
     '.git',
@@ -163,7 +167,7 @@ final class LocalProjectContextService implements ProjectContextService {
     final head = await _metadata(root, p.join(git, 'HEAD'));
     final oid = RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');
     if (oid.hasMatch(head)) {
-      await _verifyObjects(root, common, head);
+      await _verifyGitObjects(project, root, git, common, head);
       return ProjectGitContext(head: head);
     }
     if (!head.startsWith('ref: refs/heads/')) {
@@ -193,8 +197,28 @@ final class LocalProjectContextService implements ProjectContextService {
     if (commit == null || !oid.hasMatch(commit)) {
       throw const FormatException('Git branch has no valid commit');
     }
-    await _verifyObjects(root, common, commit);
+    await _verifyGitObjects(project, root, git, common, commit);
     return ProjectGitContext(head: commit, branch: ref.substring(11));
+  }
+
+  Future<void> _verifyGitObjects(
+    ProjectId project,
+    String root,
+    String git,
+    String common,
+    String head,
+  ) async {
+    final verifier = await selectGitVerifier?.call(project);
+    if (verifier == null) {
+      await _verifyObjects(root, common, head);
+    } else {
+      await verifier.verify(
+        root: root,
+        gitDirectory: git,
+        commonDirectory: common,
+        head: head,
+      );
+    }
   }
 
   Future<void> _verifyObjects(String root, String common, String head) async {
@@ -306,6 +330,10 @@ final class LocalProjectContextService implements ProjectContextService {
           throw const FormatException('Unsafe or duplicate archive path');
         }
         final size = octal(124, 12);
+        final mode = octal(100, 8);
+        if (mode < 0 || mode > 0xfff) {
+          throw const FormatException('Invalid archive mode');
+        }
         final kind = h[156];
         if (!(kind == 0 || kind == 48 || kind == 53) ||
             (kind == 53 && size != 0)) {
@@ -329,6 +357,7 @@ final class LocalProjectContextService implements ProjectContextService {
           await File(
             target,
           ).writeAsBytes(bytes.sublist(offset + 512, offset + 512 + size));
+          applyPortableFileMode(target, executable: mode & 0x49 != 0);
         }
         offset += 512 + ((size + 511) ~/ 512) * 512;
       }

@@ -5,6 +5,8 @@ import 'package:domovoy/core/llm/cancellation.dart';
 import 'package:domovoy/core/projects/ids.dart';
 import 'package:domovoy/core/rag/models.dart';
 import 'package:domovoy/infrastructure/projects/context/local_project_context_io.dart';
+import 'package:domovoy/infrastructure/projects/context/host_git_object_verifier_io.dart';
+import 'package:domovoy/infrastructure/projects/context/portable_file_mode_io.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -55,6 +57,7 @@ void main() {
     await File(
       '${repo.path}/scripts/build',
     ).writeAsString('#!/bin/sh\necho build');
+    applyPortableFileMode('${repo.path}/scripts/build', executable: true);
     await git([
       'add',
       'README.md',
@@ -68,6 +71,105 @@ void main() {
   tearDown(() => temp.delete(recursive: true));
   LocalProjectContextService service() =>
       LocalProjectContextService(resolveRoot: (_) async => repo.path);
+  LocalProjectContextService desktop({
+    HostGitObjectVerifier verifier = const HostGitObjectVerifier(),
+  }) => LocalProjectContextService(
+    resolveRoot: (_) async => repo.path,
+    selectGitVerifier: (_) async => verifier,
+  );
+
+  test(
+    'direct desktop root preserves actual packed branch and current files',
+    () async {
+      final first = await desktop().gitContext(project);
+      await git(['gc', '--prune=now']);
+      expect((await desktop().gitContext(project)).head, first.head);
+      await File(
+        '${repo.path}/README.md',
+      ).writeAsString('CURRENT DIRTY README');
+      final beforeStatus = await git(['status', '--porcelain']);
+      final packed = await desktop().gitContext(project);
+      expect(packed.branch, 'feature/docs/context');
+      expect(packed.head, await git(['rev-parse', 'HEAD']));
+      expect(
+        (await desktop().scanDocumentation(project, token)).first.text,
+        'CURRENT DIRTY README',
+      );
+      expect(await git(['status', '--porcelain']), beforeStatus);
+      await git(['switch', '-c', 'feature/current/branch']);
+      expect(
+        (await desktop().gitContext(project)).branch,
+        'feature/current/branch',
+      );
+      await git(['checkout', '--detach']);
+      expect((await desktop().gitContext(project)).branch, isNull);
+      expect(await git(['status', '--porcelain']), beforeStatus);
+    },
+  );
+
+  test(
+    'ordinary packed clone works without export or metadata mutation',
+    () async {
+      final sourceHead = await git(['rev-parse', 'HEAD']);
+      final cloned = '${temp.path}/ordinary-clone';
+      final result = await Process.run('git', [
+        'clone',
+        '--no-local',
+        repo.path,
+        cloned,
+      ]);
+      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(
+        await Directory('$cloned/.git/objects/pack').list().isEmpty,
+        isFalse,
+      );
+      repo = Directory(cloned);
+      expect((await desktop().gitContext(project)).head, sourceHead);
+      expect(
+        (await desktop().gitContext(project)).branch,
+        'feature/docs/context',
+      );
+      expect(await git(['status', '--porcelain']), isEmpty);
+    },
+  );
+
+  test(
+    'desktop rejects external ODB links and verification config includes',
+    () async {
+      await git(['config', 'include.path', '${temp.path}/outside-config']);
+      await expectLater(desktop().gitContext(project), throwsFormatException);
+      await git(['config', '--unset', 'include.path']);
+      final config = File('${repo.path}/.git/config');
+      final original = await config.readAsString();
+      await config.writeAsString(
+        '\ufeff[include]\npath = ${temp.path}/outside-config\n',
+      );
+      await expectLater(desktop().gitContext(project), throwsFormatException);
+      await config.writeAsString(original);
+      final alternate = File('${repo.path}/.git/objects/info/alternates');
+      await alternate.parent.create(recursive: true);
+      await alternate.writeAsString('${temp.path}/outside-objects');
+      await expectLater(desktop().gitContext(project), throwsFormatException);
+      await alternate.delete();
+      await Link('${repo.path}/.git/objects/outside').create(temp.path);
+      await expectLater(desktop().gitContext(project), throwsFormatException);
+    },
+  );
+
+  test('desktop subprocess time and output are bounded', () async {
+    await expectLater(
+      desktop(
+        verifier: const HostGitObjectVerifier(maxOutputBytes: 0),
+      ).gitContext(project),
+      throwsFormatException,
+    );
+    await expectLater(
+      desktop(
+        verifier: const HostGitObjectVerifier(timeout: Duration.zero),
+      ).gitContext(project),
+      throwsFormatException,
+    );
+  });
 
   test(
     'real documentation, paths and content revisions refresh without secret/cache/link leakage',
@@ -130,6 +232,8 @@ void main() {
     () async {
       await git(['gc', '--prune=now']);
       final sourceHead = await git(['rev-parse', 'HEAD']);
+      // Native archive capability deliberately requires portable loose objects;
+      // direct desktop roots use the injected real host verifier tested above.
       await expectLater(service().gitContext(project), throwsFormatException);
       final archive = '${temp.path}/project.tar';
       final result = await Process.run('python3', [
@@ -161,6 +265,22 @@ void main() {
         contains('echo build'),
       );
       expect(
+        (await File('${imported.path}/scripts/build').stat()).mode & 0x49,
+        0x49,
+      );
+      final executed = await Process.run('${imported.path}/scripts/build', []);
+      expect(executed.exitCode, 0);
+      expect('${executed.stdout}'.trim(), 'build');
+      final status = await Process.run('git', [
+        '-C',
+        imported.path,
+        'status',
+        '--porcelain',
+        '--untracked-files=no',
+      ]);
+      expect(status.exitCode, 0);
+      expect('${status.stdout}', isEmpty);
+      expect(
         await Directory('${imported.path}/.git/objects/pack').exists(),
         isFalse,
       );
@@ -191,6 +311,18 @@ void main() {
     'store.jks',
     'store.keystore',
     'id_ed25519',
+    '.netrc',
+    '_netrc',
+    '.git-credentials',
+    '.npmrc',
+    '.pypirc',
+    '.pgpass',
+    '.my.cnf',
+    '.aws/credentials',
+    '.docker/config.json',
+    '.kube/config',
+    '.config/gh/hosts.yml',
+    '.azure/msal_token_cache.json',
   ]) {
     test(
       'export refuses tracked sensitive path $secretPath without publication or contents in errors',
@@ -229,6 +361,57 @@ void main() {
       },
     );
   }
+  for (final kind in ['symlink', 'dangling-symlink', 'regular']) {
+    test(
+      'provenance $kind collision refuses export without touching host data',
+      () async {
+        final outside = File('${temp.path}/outside.txt');
+        if (kind != 'dangling-symlink') {
+          await outside.writeAsString('HOST SENTINEL');
+        }
+        final path = '${repo.path}/PROJECT_PROVENANCE.json';
+        if (kind == 'regular') {
+          await File(path).writeAsString('PROJECT OWNED JSON');
+        } else {
+          await Link(path).create(outside.path);
+        }
+        await git(['add', 'PROJECT_PROVENANCE.json']);
+        await git(['commit', '-m', 'test: provenance collision']);
+        final archive = File('${temp.path}/collision.tar');
+        final result = await Process.run('python3', [
+          'tool/export_project.py',
+          repo.path,
+          archive.path,
+        ]);
+        expect(result.exitCode, isNot(0));
+        expect(await archive.exists(), isFalse);
+        expect(
+          await File('${temp.path}/collision.provenance.json').exists(),
+          isFalse,
+        );
+        if (kind == 'dangling-symlink') {
+          expect(await outside.exists(), isFalse);
+        } else {
+          expect(await outside.readAsString(), 'HOST SENTINEL');
+        }
+        if (kind == 'regular') {
+          expect(await File(path).readAsString(), 'PROJECT OWNED JSON');
+        }
+        expect(
+          await git(['status', '--porcelain', '--untracked-files=no']),
+          isEmpty,
+        );
+        await archive.writeAsString('EXISTING OUTPUT');
+        final retry = await Process.run('python3', [
+          'tool/export_project.py',
+          repo.path,
+          archive.path,
+        ]);
+        expect(retry.exitCode, isNot(0));
+        expect(await archive.readAsString(), 'EXISTING OUTPUT');
+      },
+    );
+  }
   for (final detached in [false, true]) {
     test(
       'exact zero-object Git fixture is rejected (${detached ? 'detached' : 'branch'})',
@@ -246,6 +429,8 @@ void main() {
         };
         final importer = LocalProjectContextService(
           resolveRoot: (_) async => target.path,
+          selectGitVerifier: (_) async =>
+              throw StateError('Import must never use desktop capability'),
         );
         await expectLater(
           importer.importArchive(project, tarFiles(files), token),

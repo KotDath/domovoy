@@ -9,7 +9,15 @@
 
 На desktop создайте проект через «Прикрепить существующую папку» и выберите
 локальный checkout. Чтение проверяет актуальность предоставленного доступа.
-Git CLI для чтения ветки в приложении не нужен.
+Для такого desktop-каталога нужен установленный Git в PATH: приложение проверяет
+настоящий ODB через read-only `git fsck` и HEAD через `rev-parse`, включая обычные
+packed clones и checkout после `git gc`. Рабочие файлы, ветка и ODB не меняются.
+Git запускается без shell, с ограничениями времени/вывода, без наследования Git
+переменных/ключей, global/system config, replacement objects, hooks и lazy fetch.
+Object alternates, promisor ODB, metadata symlinks, config includes и fsck overrides
+отклоняются явно; metadata pointers должны оставаться внутри предоставленного корня.
+Проверка ограничена 100000 metadata entries и 30 секундами на scan/команду,
+суммарный stdout/stderr команды — 1 MiB. Отсутствие host Git — явная ошибка инструмента.
 
 На Android создайте новый пустой проект. На компьютере подготовьте архив:
 
@@ -28,13 +36,24 @@ python3 tool/export_project.py https://example.org/owner/repo.git /tmp/project.t
 
 `PROJECT_PROVENANCE.json` внутри архива и соседний `project.provenance.json`
 содержат исходный URL/путь, commit, branch, найденные файлы лицензии и baseline.
+Имя `PROJECT_PROVENANCE.json` зарезервировано: любой существующий файл/каталог
+или symlink с этим именем (без учёта регистра) приводит к отказу до записи
+metadata и публикации архива; исходные файлы и цель ссылки не меняются.
 Перед публикацией экспорт проверяет пути во всех commit, попавших в shallow clone.
 Если tracked-путь соответствует `.env*`, `.pem`, `.key`, `.jks`, `.keystore`,
-`id_rsa`, `id_ed25519`, `credentials.json` или `service-account.json`, экспорт
+`id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519` (также `_sk`), `credentials.json`,
+`service-account.json`, `application_default_credentials.json` либо конкретному
+credential store, экспорт
 **отказывает**, не создаёт новый архив и не заменяет существующий. Это касается
 также консервативно совпадающих template/fixture-путей: исключить только рабочий
 файл недостаточно, его blob остался бы в Git. Значения файлов не печатаются.
-Обычные credentials.dart и docs/credentials.md сохраняются.
+Конкретные stores: `.netrc`, `_netrc`, `.git-credentials`, `.gitcookies`, `.npmrc`,
+`.pypirc`, `.dockercfg`, `.pgpass`, `.my.cnf`, `.s3cfg`, `.boto`, `.vault-token`,
+`.aws/credentials`, `.docker/config.json`, `.kube/config`, `.gem/credentials`,
+`.bundle/config`, `.config/gh/hosts.yml`, `.config/hub`, `.azure/accessTokens.json`,
+`.azure/msal_token_cache.json`. Сопоставление регистронезависимое.
+Обычные credentials.dart и docs/credentials.md сохраняются. Это конкретная
+политика путей, не поиск секретов в произвольно названном содержимом.
 Фильтры зависимостей/кэшей (`build`, `node_modules` и др.) применяются только к
 каталогам: обычный tracked-файл вроде `scripts/build` остаётся в checkout.
 Ссылки, Git hooks/logs и конфигурация remote не переносятся. `.git/config` заменяется минимальным
@@ -50,19 +69,26 @@ credentials/secrets сохраняются. Это экспорт снимка �
 «База знаний» в нужном проекте → «Импорт checkout .tar в пустой проект» →
 выберите архив системным файловым диалогом. Приложение извлекает файлы в приватный
 временный каталог, проверяет Git и публикует checkout целиком. Повторный импорт
-поверх непустого проекта отклоняется. При ошибке извлечения корень остаётся пустым.
+поверх непустого проекта отклоняется. При ошибке извлечения корень остаётся пустым. На POSIX/Android обычные файлы
+получают 0644, исполняемые — 0755; set-ID/sticky bits из архива не применяются.
+Исполняемость сохраняется через libc без внешнего chmod/Git. Windows явно
+отклоняет архив с executable files: POSIX-права там не поддерживаются этим импортом.
 
 Поддерживается только несжатый USTAR: до 128 MiB архива и суммарного содержимого,
 до 32 MiB на файл и 30000 записей. ZIP/gzip/PAX, абсолютные пути, traversal,
 дубли путей без учёта регистра, ссылки и специальные файлы отклоняются.
 Импорт требует самостоятельный `.git`, без `commondir` и object alternates.
-Перед публикацией и при каждом чтении Git-контекста проверяются настоящие loose
+На Android/в app-managed sandbox перед публикацией и при каждом чтении
+Git-контекста проверяются настоящие loose
 objects: SHA-1/SHA-256, тип, длина, commit/tree/blob references и shallow boundaries.
 Лимиты проверки: 32 MiB на decoded object, 128 MiB суммарно, 15000 объектов,
 30000 ожидающих/проверенных ссылок и глубина 256. Потоковая распаковка прекращается
 при превышении лимита. Gitlinks указывают на отдельные репозитории; их содержимое
 не материализуется и не сертифицируется. Pack-only/неполные/повреждённые ODB
-отклоняются явно; для них используйте host export и новый архив, также на desktop.
+отклоняются явно при native/import-проверке; для импорта используйте host export.
+Desktop direct roots используют описанную выше host-Git capability и читают
+реальную текущую папку без отдельного экспорта. Наличие Git на host никогда
+не ослабляет native-проверку входящего архива.
 Provenance JSON — справочная запись, не замена проверке объектов и не подпись.
 
 ## Индекс и вопросы

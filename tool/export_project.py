@@ -15,8 +15,17 @@ import zlib
 EXCLUDED_DIRECTORIES = {'.dart_tool', 'build', 'node_modules', '.venv', 'venv', '__pycache__',
                         '.idea', '.gradle', 'vendor', 'dist'}
 GIT_EXCLUDED = {'hooks', 'logs', 'config', 'FETCH_HEAD'}
-SECRET_PATTERNS = ['.env*', '*.pem', '*.key', '*.keystore', '*.jks', 'id_rsa',
-                   'id_ed25519', 'credentials.json', 'service-account.json']
+SECRET_NAMES = {'.netrc', '_netrc', '.git-credentials', '.gitcookies', '.npmrc',
+                '.pypirc', '.dockercfg', '.pgpass', '.my.cnf', '.s3cfg', '.boto',
+                '.vault-token', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+                'id_ecdsa_sk', 'id_ed25519_sk', 'credentials.json',
+                'service-account.json', 'application_default_credentials.json'}
+SECRET_PATHS = {('.aws', 'credentials'), ('.docker', 'config.json'),
+                ('.kube', 'config'), ('.gem', 'credentials'), ('.bundle', 'config'),
+                ('.config', 'gh', 'hosts.yml'), ('.config', 'hub'),
+                ('.azure', 'accesstokens.json'), ('.azure', 'msal_token_cache.json')}
+SECRET_PATTERNS = ['.env*', '*.pem', '*.key', '*.keystore', '*.jks',
+                   *sorted(SECRET_NAMES), *sorted('/'.join(p) for p in SECRET_PATHS)]
 
 
 def git(*args):
@@ -26,10 +35,11 @@ def git(*args):
 
 def sensitive_path(path):
     # Concrete file/store names, never ordinary credential-related source/docs.
-    return any(part.lower().startswith('.env') or part.lower() in {
-        'id_rsa', 'id_ed25519', 'credentials.json', 'service-account.json'}
-        or part.lower().endswith(('.pem', '.key', '.keystore', '.jks'))
-        for part in Path(path).parts)
+    parts = tuple(part.lower() for part in Path(path).parts)
+    return (any(part.startswith('.env') or part in SECRET_NAMES
+                or part.endswith(('.pem', '.key', '.keystore', '.jks')) for part in parts)
+            or any(parts[i:i + len(store)] == store
+                   for store in SECRET_PATHS for i in range(len(parts))))
 
 
 def portable_objects(clone, work):
@@ -104,6 +114,10 @@ def main():
             command += ['--branch', args.ref]
         subprocess.run([*command, '--', source, str(clone)], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Reserve our metadata name before any write. exists() alone misses a
+        # dangling symlink; checking directory entries also catches case aliases.
+        if any(p.name.lower() == 'project_provenance.json' for p in clone.iterdir()):
+            raise ValueError('Project provenance namespace collision')
         object_format = portable_objects(clone, work)
         branch = subprocess.run(['git', '-C', str(clone), 'symbolic-ref', '--short', 'HEAD'],
                                 capture_output=True, text=True)
@@ -153,7 +167,8 @@ def main():
         (clone / '.git' / 'config').write_text(config, encoding='utf-8')
         files.append(clone / '.git' / 'config')
         manifest = clone / 'PROJECT_PROVENANCE.json'
-        manifest.write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
+        with manifest.open('x', encoding='utf-8') as metadata:
+            metadata.write(json.dumps(provenance, indent=2) + '\n')
         files.append(manifest)
         temporary = Path(work) / 'project.tar'
         with tarfile.open(temporary, 'w', format=tarfile.USTAR_FORMAT) as archive:
