@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import '../../../core/projects/ids.dart';
+import '../../../core/projects/project_context.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/llm/cancellation.dart';
@@ -15,10 +17,12 @@ final class KnowledgeController extends ChangeNotifier {
     required this.repository,
     required this.models,
     required this.importer,
+    this.projectContext,
   });
   final RagRepository repository;
   final RagModelProvider models;
   final RagDocumentImporter importer;
+  final ProjectContextService? projectContext;
   String project = 'default';
   String corpus = 'domovoy';
   List<RagDocument> documents = [];
@@ -95,6 +99,9 @@ final class KnowledgeController extends ChangeNotifier {
         ..clear()
         ..addAll(loadedIndexes);
       progress = 'Загружено документов: ${documents.length}';
+      if (corpus == projectDocumentationCorpus) {
+        await _refreshProjectDocs(token);
+      }
     });
   }
 
@@ -109,6 +116,43 @@ final class KnowledgeController extends ChangeNotifier {
     model = null;
     await initialize();
   }
+
+  Future<void> refreshProjectDocs() => _run(_refreshProjectDocs);
+
+  Future<void> _refreshProjectDocs(CancellationToken token) async {
+    final service = projectContext;
+    if (service == null) {
+      throw StateError('Local project context is unavailable');
+    }
+    final current = await service.scanDocumentation(ProjectId(project), token);
+    checkRagCancellation(token.isCancelled);
+    await repository.saveDocuments(
+      project,
+      projectDocumentationCorpus,
+      current,
+    );
+    documents = current;
+    hits = [];
+    progress =
+        'README/docs: ${current.length} файлов. Изменённые источники требуют перестройки индекса.';
+  }
+
+  Future<void> importProjectArchive(List<int> bytes) => _run((token) async {
+    final service = projectContext;
+    if (service == null) {
+      throw StateError('Local project context is unavailable');
+    }
+    progress = 'Проверка и импорт checkout…';
+    _notify();
+    await service.importArchive(ProjectId(project), bytes, token);
+    corpus = projectDocumentationCorpus;
+    indexes.clear();
+    for (final kind in ChunkStrategy.values) {
+      final index = await repository.loadIndex(project, corpus, kind);
+      if (index != null) indexes[kind] = index;
+    }
+    await _refreshProjectDocs(token);
+  });
 
   Future<void> checkService() => _run((token) async {
     model = await models.health(token);
@@ -223,6 +267,7 @@ final class KnowledgeController extends ChangeNotifier {
   }
 
   Future<void> buildIndex() => _run((token) async {
+    if (corpus == projectDocumentationCorpus) await _refreshProjectDocs(token);
     if (documents.isEmpty) throw StateError('Сначала добавьте документы');
     final selected = strategy;
     final docs = List<RagDocument>.of(documents);

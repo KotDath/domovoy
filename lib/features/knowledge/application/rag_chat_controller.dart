@@ -107,6 +107,16 @@ final class RagChatController extends ChangeNotifier
     _notify();
   }
 
+  Future<void> refreshProjectSources(AgentSessionSnapshot snapshot) async {
+    final project = snapshot.projectId?.value ?? 'default';
+    final session = snapshot.id.value;
+    final loaded = await traces.list(project, session);
+    if (!_disposed && _project == project && _session == session) {
+      history = loaded;
+      _notify();
+    }
+  }
+
   Future<void> attach(AgentSessionSnapshot? snapshot) async {
     final project = snapshot?.projectId?.value ?? 'default';
     final session = snapshot?.id.value;

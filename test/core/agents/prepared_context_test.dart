@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/llm/llm.dart';
@@ -32,6 +33,106 @@ AgentToolRegistry _tools() => AgentToolRegistry()
   );
 
 void main() {
+  for (final pressure in [false, true]) {
+    test(
+      'isolated run excludes old history from ALL provider calls during ${pressure ? 'pressure compaction' : 'overflow recovery'}',
+      () async {
+        const marker = 'OLD_PRIVATE_HISTORY_MARKER';
+        final model = BuiltInLlmCatalog.deepSeekV4FlashModel;
+        final high = LlmUsage(inputTokens: model.contextBound);
+        final provider = QueueScriptedLlmProvider(
+          id: BuiltInLlmCatalog.deepSeek,
+          wireFamily: LlmWireFamily.openaiChatCompletions,
+          turns: [
+            textTurn(
+              'old answer',
+              usage: pressure ? high : LlmUsage(inputTokens: 1),
+            ),
+            if (pressure) ...[
+              toolTurn(name: 'lookup', callId: 'isolated-tool', usage: high),
+              textTurn('isolated answer', usage: high),
+            ] else
+              [
+                LlmFailed(
+                  LlmError(
+                    kind: LlmErrorKind.contextOverflow,
+                    message: 'context full',
+                  ),
+                ),
+              ],
+          ],
+        );
+        final registry = LlmProviderRegistry();
+        BuiltInLlmCatalog.registerInto(registry);
+        registry.registerProvider(provider);
+        final runtime = InMemoryAgentRuntime(
+          registry: registry,
+          tools: _tools(),
+          contextEstimator: const Utf8FramingAgentContextEstimator(),
+          compactionTrigger: OpenCodeCompactionTrigger(),
+          historyCompactor: OpenCodeSummaryCompactor(
+            llm: RegistryAgentSummaryLlmInvocation(registry),
+          ),
+        );
+        addTearDown(runtime.close);
+        final session = await runtime
+            .agent(testDefinition(tools: [ToolId('lookup')]))
+            .createSession();
+        expect(
+          (await session.run(marker).events.toList()).last,
+          isA<AgentRunCompleted>(),
+        );
+        final before = session.snapshot;
+        final start = provider.requests.length;
+        expect(
+          start,
+          1,
+        ); // One group has nothing removable; no seed summary call.
+        final events = await session
+            .run(
+              '/help explain',
+              options: AgentRunOptions(
+                preparedContext: const AgentPreparedContext(
+                  isolateCurrentRun: true,
+                  suppressDynamicContext: true,
+                  allowedToolIds: {'lookup'},
+                ),
+              ),
+            )
+            .events
+            .toList();
+        expect(
+          events.last,
+          pressure ? isA<AgentRunCompleted>() : isA<AgentRunFailed>(),
+        );
+        final isolatedRequests = provider.requests.skip(start).toList();
+        expect(isolatedRequests, hasLength(pressure ? 2 : 1));
+        for (final request in isolatedRequests) {
+          final captured = jsonEncode(request.snapshot().toJson());
+          expect(captured, isNot(contains(marker)));
+          expect(
+            captured,
+            isNot(contains(OpenCodeSummaryCompactor.summaryType)),
+          );
+        }
+        expect(events.whereType<AgentAutomaticCompactionEvent>(), isEmpty);
+        expect(session.snapshot.compactionState, before.compactionState);
+        expect(
+          session.snapshot.transcript.messages
+              .take(before.transcript.messages.length)
+              .toList(),
+          before.transcript.messages,
+        );
+        expect(
+          session.snapshot.transcript.messageIds
+              .take(before.transcript.messageIds.length)
+              .toList(),
+          before.transcript.messageIds,
+        );
+      },
+    );
+  }
+
   test(
     'observer persists exact prepared request before transport, context is ephemeral',
     () async {

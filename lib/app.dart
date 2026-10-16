@@ -6,6 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import 'core/projects/project_run_scope.dart';
+import 'core/projects/project_context.dart';
+import 'features/knowledge/application/project_help_preparer.dart';
+import 'infrastructure/projects/context/project_context_factory.dart';
+import 'infrastructure/mcp/servers/project/project_mcp_server.dart';
 import 'core/rag/turn.dart';
 import 'features/knowledge/application/rag_chat_controller.dart';
 import 'infrastructure/rag/jsonl_rag_trace_repository.dart';
@@ -359,6 +364,8 @@ final class DomovoyMcpComposition {
     required AgentSessionCatalog catalog,
     required Set<String> piToolIds,
     required McpCompositionInputs inputs,
+    ProjectContextService? projectContext,
+    ProjectRunScopes? projectScopes,
   }) {
     final diagnostics = inputs.diagnostics;
     final capabilities =
@@ -383,7 +390,13 @@ final class DomovoyMcpComposition {
         legacyDiscoveryTimeout: inputs.legacyDiscoveryTimeout,
       ),
     );
-    const builtInIds = <String>{'arxiv', 'digest', 'library', 'automation'};
+    const builtInIds = <String>{
+      'arxiv',
+      'digest',
+      'library',
+      'automation',
+      'project',
+    };
     final connectionRepository = AppOwnedMcpConnectionRepository(
       userStore: inputs.connectionStorage == null
           ? InMemoryMcpConnectionRepository()
@@ -416,6 +429,15 @@ final class DomovoyMcpComposition {
     localServers.register(digestFactory);
     final builtInFailures = <String, String>{};
     final startedBuiltIns = <String>{'arxiv', 'digest'};
+    if (projectContext != null && projectScopes != null) {
+      localServers.register(
+        ProjectMcpServerFactory(
+          projects: projectContext,
+          scopes: projectScopes,
+        ),
+      );
+      startedBuiltIns.add('project');
+    }
 
     // Library owns the device library JSONL; without native storage the
     // server is not registered at all (web/unknown targets).
@@ -471,7 +493,7 @@ final class DomovoyMcpComposition {
     // --- Agent bridge + permissions -------------------------------------
     final bridge = McpAgentToolBridge(
       host: host,
-      digestScopeConnectionIds: const <String>{'digest'},
+      digestScopeConnectionIds: const <String>{'digest', 'project'},
       libraryRunIdConnectionIds: const <String>{'library'},
     );
     bridge.attachTo(tools);
@@ -501,10 +523,18 @@ final class DomovoyMcpComposition {
       id: PolicyId('allow'),
       piToolIds: piToolIds,
       catalog: () => host.snapshot.catalog,
-      selectedToolIds: (invocation) => feature.toolAccess.effectiveToolIds(
-        chatId: invocation.sessionId,
-        projectId: invocation.projectId,
-      ),
+      selectedToolIds: (invocation) => <String>[
+        if (projectScopes?.permits(
+              invocation.runContext,
+              invocation.projectId,
+            ) ==
+            true)
+          projectBranchToolId,
+        ...feature.toolAccess.effectiveToolIds(
+          chatId: invocation.sessionId,
+          projectId: invocation.projectId,
+        ),
+      ],
     );
 
     TasksController? tasksController;
@@ -703,6 +733,8 @@ final class DomovoyDependencies {
     this.disposeCallback,
     this.knowledge,
     this.ragChat,
+    this.projectContext,
+    this.projectScopes,
   }) : modelSettingsStore =
            modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
        _httpClient = httpClient;
@@ -750,6 +782,8 @@ final class DomovoyDependencies {
     );
     final projectStack = createPlatformProjectStack();
     final localTools = createLocalWorkspaceTools(projectStack);
+    final projectContext = createProjectContextService(projectStack);
+    final projectScopes = ProjectRunScopes();
     // The interactive policy starts fail-closed and is replaced by the MCP
     // composition below; no run can start before that replacement happens.
     final interactivePolicy = _McpInteractivePolicySlot();
@@ -807,6 +841,8 @@ final class DomovoyDependencies {
       catalog: stack.catalog,
       piToolIds: <String>{for (final id in localTools.enabled) id.value},
       inputs: resolvedMcpInputs,
+      projectContext: projectContext,
+      projectScopes: projectScopes,
     );
     final profileController = ProfileController(
       profiles: profileRepository,
@@ -877,12 +913,15 @@ final class DomovoyDependencies {
       profileController: profileController,
       profileInterviewLlm: profileInterviewLlm,
       mcp: mcp,
+      projectContext: projectContext,
+      projectScopes: projectScopes,
       knowledge: ragStorage == null
           ? null
           : KnowledgeController(
               repository: ragRepository!,
               models: ragModels,
               importer: NativeRagDocumentImporter(client),
+              projectContext: projectContext,
             ),
       ragChat: ragStorage == null
           ? null
@@ -936,6 +975,8 @@ final class DomovoyDependencies {
   final DomovoyMcpComposition? mcp;
   final KnowledgeController? knowledge;
   final RagChatController? ragChat;
+  final ProjectContextService? projectContext;
+  final ProjectRunScopes? projectScopes;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -1041,7 +1082,20 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
       onTurnCompleted: dependencies.memoryInspector?.recordCompletedTurn,
       chatDeliveries: mcp?.chatDeliveryStore,
       runToolContexts: mcp?.runToolContexts,
-      runPreparer: dependencies.ragChat,
+      runPreparer:
+          dependencies.projectContext != null &&
+              dependencies.projectScopes != null &&
+              dependencies.ragChat != null
+          ? ProjectHelpPreparer(
+              projects: dependencies.projectContext!,
+              scopes: dependencies.projectScopes!,
+              coordinator: dependencies.ragChat!.coordinator,
+              traces: dependencies.ragChat!.traces,
+              fallback: dependencies.ragChat!,
+              ensureMcpReady: dependencies.initializeMcp,
+              refreshSources: dependencies.ragChat!.refreshProjectSources,
+            )
+          : dependencies.ragChat,
       additionalRunTools: mcp == null
           ? null
           : (snapshot) => <ToolId>[

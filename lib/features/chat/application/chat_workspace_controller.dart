@@ -1291,6 +1291,12 @@ final class ChatWorkspaceController {
 }
 
 ChatWorkspaceError _sanitizeWorkspaceError(Object error) {
+  if (error is ChatPreparationException) {
+    return ChatWorkspaceError(
+      kind: AgentErrorKind.configuration,
+      message: error.message,
+    );
+  }
   final kind = error is AgentException
       ? error.error.kind
       : AgentErrorKind.runtime;

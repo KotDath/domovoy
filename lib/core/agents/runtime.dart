@@ -3295,6 +3295,31 @@ final class _LiveRun implements AgentRun {
   /// planning keep using [_currentRequest] so memory never enters their input.
   LlmRequest _providerRequest() {
     final request = _requestWithSystemPrompt(_composedSystemPrompt());
+    if (options.preparedContext?.isolateCurrentRun == true) {
+      final messages = session.transcript.messages;
+      final start = messages.lastIndexWhere(
+        (m) => m.role == LlmMessageRole.user,
+      );
+      if (start < 0) throw StateError('Current run has no user message');
+      return LlmRequest(
+        model: request.model,
+        generation: request.generation,
+        sessionId: request.sessionId,
+        context: LlmContext(
+          systemPrompt: request.context.systemPrompt,
+          messages: messages.sublist(start),
+          tools: request.context.tools,
+          continuationEntries: [
+            for (final entry in request.context.continuationEntries)
+              if (entry.assistantMessageIndex >= start)
+                LlmContinuationEntry(
+                  assistantMessageIndex: entry.assistantMessageIndex - start,
+                  state: entry.state,
+                ),
+          ],
+        ),
+      );
+    }
     if (options.preparedContext?.isolateCurrentUser != true) return request;
     if (options.preparedContext?.disableTools != true) {
       throwAgent(
@@ -3334,7 +3359,11 @@ final class _LiveRun implements AgentRun {
           for (final id in session.definition.enabledTools) id.value: id,
           for (final id in options.additionalEnabledTools) id.value: id,
         },
-      }.values,
+      }.values.where(
+        (id) =>
+            options.preparedContext?.allowedToolIds == null ||
+            options.preparedContext!.allowedToolIds!.contains(id.value),
+      ),
     );
     _toolView = session.runtime.tools.view(
       _enabledTools,
@@ -4665,6 +4694,12 @@ final class _LiveRun implements AgentRun {
     required AgentCompactionReason reason,
     required LlmRequest request,
   }) async {
+    // This run deliberately excludes retained history. Neither pressure nor
+    // overflow may send it to an auxiliary summary model or compact it away.
+    // If the isolated current turn itself overflows, fail without recovery.
+    if (options.preparedContext?.isolateCurrentRun == true) {
+      return _AutomaticCompactionOutcome.skipped;
+    }
     final done = Completer<void>();
     _automaticCompactionDone = done;
     try {
