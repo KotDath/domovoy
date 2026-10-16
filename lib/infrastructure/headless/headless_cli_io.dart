@@ -113,6 +113,9 @@ Future<int> executeHeadless(
   ProductionAgentStack? stack;
   AgentSession? session;
   final token = cancellation.token;
+  final ownedClientCancellation = httpClient == null
+      ? token.register(client.close)
+      : null;
   try {
     final root = await Directory(options.project).resolveSymbolicLinks();
     final state = Directory(
@@ -284,7 +287,7 @@ Future<int> executeHeadless(
       }
       final catalog = stack.providerModelCatalog!;
       // Unknown models fail honestly; headless never invents capabilities.
-      await catalog.refresh();
+      await catalog.refresh(cancellation: token);
     }
     if (!stack.registry.isModelAvailable(model)) {
       throw const FormatException(
@@ -382,6 +385,7 @@ Future<int> executeHeadless(
     if (options.format == 'text') emitText(finalText);
     return 0;
   } finally {
+    ownedClientCancellation?.dispose();
     await session?.close();
     await stack?.runtime.close();
     await stack?.providerModelCatalog?.close();

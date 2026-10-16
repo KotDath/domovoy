@@ -14,6 +14,7 @@ import 'package:domovoy/infrastructure/headless/headless_cli_io.dart';
 import 'package:domovoy/infrastructure/headless/project_sources_io.dart';
 import 'package:domovoy/infrastructure/headless/read_only_tools_io.dart';
 import 'package:domovoy/infrastructure/headless/review_context.dart';
+import 'package:domovoy/infrastructure/llm/discovery/provider_model_catalog.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -489,6 +490,93 @@ void main() {
     },
   );
 
+  for (final deadline in [false, true]) {
+    test(
+      'dynamic catalog ${deadline ? 'deadline' : 'cancellation'} aborts HTTP and dispatches no later requests',
+      () async {
+        final client = _HeldCatalogClient();
+        final cancellation = CancellationSource();
+        final events = <Map<String, Object?>>[];
+        final output = '${sandbox.path}/cancelled-catalog.md';
+        final pending = executeHeadless(
+          options([
+            '--provider',
+            'anthropic',
+            '--model',
+            'claude-sonnet-4-5',
+            '--catalog-file',
+            File('assets/models_fallback.json').absolute.path,
+            '--output-last-message',
+            output,
+          ]),
+          cancellation: cancellation,
+          emit: events.add,
+          emitText: (_) {},
+          httpClient: client,
+          credentialResolver: DefaultProviderCredentialResolver(
+            store: MemoryProviderCredentialStore(),
+            readEnvironment: (_) => null,
+          ),
+        );
+        final outcome = expectLater(pending, throwsA(isA<CatalogCancelled>()));
+        await client.started.future.timeout(const Duration(seconds: 2));
+        final clock = Stopwatch()..start();
+        Timer? timer;
+        if (deadline) {
+          timer = Timer(const Duration(milliseconds: 20), cancellation.cancel);
+        } else {
+          cancellation.cancel();
+        }
+        await outcome.timeout(const Duration(seconds: 1));
+        timer?.cancel();
+        expect(clock.elapsed, lessThan(const Duration(seconds: 1)));
+        await client.aborted.future.timeout(const Duration(seconds: 1));
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(client.urls, [Uri.parse('https://models.dev/api.json')]);
+        expect(
+          events.any(
+            (e) => e['type'] == 'model_selected' || e['type'] == 'result',
+          ),
+          false,
+        );
+        expect(await File(output).exists(), false);
+        expect(cancellation.registrationCount, 0);
+        expect(client.closed, false); // Injected clients remain caller-owned.
+        client.close();
+      },
+    );
+  }
+
+  test(
+    'catalog cancellation during bundled loading cannot fall back or dispatch HTTP',
+    () async {
+      final cancellation = CancellationSource();
+      final loading = Completer<String>();
+      final started = Completer<void>();
+      final client = _HeldCatalogClient();
+      final catalog = ProviderModelCatalog(
+        client: client,
+        credentials: credentials,
+        publishModels: (_) {},
+        loadBundled: () {
+          started.complete();
+          return loading.future;
+        },
+      );
+      final pending = catalog.refresh(cancellation: cancellation.token);
+      final outcome = expectLater(pending, throwsA(isA<CatalogCancelled>()));
+      await started.future;
+      cancellation.cancel();
+      await outcome.timeout(const Duration(seconds: 1));
+      loading.complete('{}');
+      await Future<void>.delayed(Duration.zero);
+      expect(client.urls, isEmpty);
+      expect(cancellation.registrationCount, 0);
+      await catalog.close();
+      client.close();
+    },
+  );
+
   test(
     'entrypoint transitive local imports do not reach Flutter/platform plugins',
     () async {
@@ -549,4 +637,31 @@ Map<String, Object?> _context(ProjectSourceSnapshot snapshot) => {
 final class _Liveness implements ToolExecutionLiveness {
   @override
   void reportProgress({String? detail}) {}
+}
+
+/// Benign stalled HTTP boundary: no sockets, network or credentials.
+final class _HeldCatalogClient extends http.BaseClient {
+  final urls = <Uri>[];
+  final started = Completer<void>();
+  final aborted = Completer<void>();
+  bool closed = false;
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    urls.add(request.url);
+    final pending = Completer<http.StreamedResponse>();
+    if (!started.isCompleted) started.complete();
+    if (request is! http.AbortableRequest)
+      throw StateError('Expected abortable catalog request');
+    request.abortTrigger!.then((_) {
+      if (!aborted.isCompleted) aborted.complete();
+      if (!pending.isCompleted)
+        pending.completeError(http.RequestAbortedException(request.url));
+    });
+    return pending.future;
+  }
+
+  @override
+  void close() {
+    closed = true;
+  }
 }

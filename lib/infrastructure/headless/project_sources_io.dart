@@ -9,7 +9,7 @@ import '../../core/rag/models.dart';
 /// One policy for indexing and read-tool admission. Symlinks are never followed.
 /// This is a text-source policy, not a claim to detect secrets in arbitrary code.
 abstract final class ProjectSourcePolicy {
-  static const version = 'source-v1';
+  static const version = 'source-v2';
   static const excludedDirectories = {
     '.git',
     '.ssh',
@@ -77,6 +77,47 @@ abstract final class ProjectSourcePolicy {
     '.exs',
     '.vue',
   };
+  static const sensitiveNames = {
+    '.netrc',
+    '_netrc',
+    '.git-credentials',
+    '.gitcookies',
+    '.npmrc',
+    '.pypirc',
+    '.dockercfg',
+    '.pgpass',
+    '.my.cnf',
+    '.s3cfg',
+    '.boto',
+    '.vault-token',
+    'id_rsa',
+    'id_dsa',
+    'id_ecdsa',
+    'id_ed25519',
+    'id_ecdsa_sk',
+    'id_ed25519_sk',
+    'credentials.json',
+    'service-account.json',
+    'application_default_credentials.json',
+    'credentials.yaml',
+    'credentials.yml',
+    'secrets.json',
+    'secrets.yaml',
+    'secrets.yml',
+  };
+  static const sensitiveStores = [
+    ['.aws', 'credentials'],
+    ['.docker', 'config.json'],
+    ['.kube', 'config'],
+    ['.gem', 'credentials'],
+    ['.bundle', 'config'],
+    ['.config', 'gh'],
+    ['.config', 'hub'],
+    ['.config', 'gcloud'],
+    ['.azure', 'accesstokens.json'],
+    ['.azure', 'msal_token_cache.json'],
+  ];
+
   static bool permits(String path) {
     if (path.isEmpty || p.posix.isAbsolute(path) || path.contains('\\')) {
       return false;
@@ -91,29 +132,27 @@ abstract final class ProjectSourcePolicy {
     )) {
       return false;
     }
-    final name = parts.last.toLowerCase();
-    if (name == '.env' ||
-        name.startsWith('.env.') ||
-        {'.netrc', '.npmrc', '.pypirc', '.git-credentials'}.contains(name) ||
-        path.startsWith('.config/gh/') ||
-        path.startsWith('.config/gcloud/')) {
+    final lower = parts.map((part) => part.toLowerCase()).toList();
+    if (lower.any(
+          (part) =>
+              part.startsWith('.env') ||
+              sensitiveNames.contains(part) ||
+              ['.pem', '.key', '.keystore', '.jks'].any(part.endsWith),
+        ) ||
+        sensitiveStores.any(
+          (store) => List.generate(lower.length, (i) => i).any(
+            (i) =>
+                i + store.length <= lower.length &&
+                List.generate(
+                  store.length,
+                  (j) => j,
+                ).every((j) => lower[i + j] == store[j]),
+          ),
+        )) {
       return false;
     }
-    if ({
-      'pubspec.lock',
-      'package-lock.json',
-      'yarn.lock',
-      'credentials.json',
-      'credentials.yaml',
-      'credentials.yml',
-      'secrets.json',
-      'secrets.yaml',
-      'secrets.yml',
-      'id_rsa',
-      'id_ed25519',
-      'id_ecdsa',
-      'id_dsa',
-    }.contains(name)) {
+    final name = lower.last;
+    if ({'pubspec.lock', 'package-lock.json', 'yarn.lock'}.contains(name)) {
       return false;
     }
     return extensions.contains(p.posix.extension(name)) ||

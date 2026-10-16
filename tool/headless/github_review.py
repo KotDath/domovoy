@@ -27,18 +27,21 @@ EXTENSIONS = {'.dart', '.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.yaml', '.
               '.xml', '.cmake', '.gradle', '.properties', '.rb', '.ex', '.exs', '.vue'}
 
 
+SENSITIVE_NAMES = {'credentials.yaml', 'secrets.json', 'credentials.json', 'secrets.yaml', 'id_ecdsa', '.git-credentials', '.s3cfg', '.my.cnf', '.dockercfg', '_netrc', '.netrc', '.gitcookies', 'id_dsa', 'secrets.yml', 'id_ed25519', 'id_rsa', '.npmrc', '.pypirc', 'id_ed25519_sk', 'credentials.yml', 'service-account.json', 'application_default_credentials.json', '.vault-token', '.pgpass', '.boto', 'id_ecdsa_sk'}
+SENSITIVE_STORES = {('.docker', 'config.json'), ('.config', 'hub'), ('.azure', 'msal_token_cache.json'), ('.config', 'gcloud'), ('.config', 'gh'), ('.azure', 'accesstokens.json'), ('.gem', 'credentials'), ('.kube', 'config'), ('.bundle', 'config'), ('.aws', 'credentials')}
+
 def permits(path):
     parts = path.split('/')
     if not parts or any(not p or p in {'.', '..'} or
                         p.lower() in EXCLUDED for p in parts) or '\\' in path:
         return False
-    name = parts[-1].lower()
-    if (name == '.env' or name.startswith('.env.') or name in {'.netrc', '.npmrc', '.pypirc', '.git-credentials'} or path.startswith(('.config/gh/', '.config/gcloud/'))):
+    lower = tuple(part.lower() for part in parts)
+    if (any(part.startswith('.env') or part in SENSITIVE_NAMES or
+            part.endswith(('.pem', '.key', '.keystore', '.jks')) for part in lower) or
+            any(lower[i:i+len(store)] == store for store in SENSITIVE_STORES for i in range(len(lower)))):
         return False
-    if name in {'pubspec.lock', 'package-lock.json', 'yarn.lock',
-                'credentials.json', 'credentials.yaml', 'credentials.yml',
-                'secrets.json', 'secrets.yaml', 'secrets.yml',
-                'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa'}:
+    name = lower[-1]
+    if name in {'pubspec.lock', 'package-lock.json', 'yarn.lock'}:
         return False
     return PurePosixPath(name).suffix in EXTENSIONS or name in {
         'readme', 'license', 'copying', 'makefile', 'dockerfile', 'cmakelists.txt',
@@ -195,7 +198,7 @@ def bundle(checkout, base, head, repo, out, expected_paths=None, number=None):
             'diff': diff, 'trusted_rules': rules, 'rag_paths': rag_paths,
             'source_hashes': {p: hashlib.sha256(s.encode()).hexdigest() for p, s in sources.items()},
             'coverage': {'diff': 'complete three-dot diff, no rename folding',
-                         'source_policy': 'source-v1', 'excluded_sources': excluded,
+                         'source_policy': 'source-v2', 'excluded_sources': excluded,
                          'rag_policy': 'changed + sibling code + current docs/README/AGENTS; other text sources readable'}}
     encoded = json.dumps(data, ensure_ascii=False, indent=2)
     if len(encoded.encode()) > 400000:

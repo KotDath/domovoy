@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../../core/llm/capabilities.dart';
+import '../../../core/llm/cancellation.dart';
 import '../../../core/llm/catalog.dart';
 import '../../../core/llm/credentials.dart';
 import '../../../core/llm/generation.dart';
@@ -67,10 +68,11 @@ final class ProviderModelCatalog {
   ProviderCatalogSnapshot? get snapshot => _snapshot;
   Stream<ProviderCatalogSnapshot> get updates => _updates.stream;
 
-  Future<void> initialize() async {
+  Future<void> initialize({CancellationToken? cancellation}) async {
+    _checkCancellation(cancellation);
     if (_snapshot != null || _closed) return;
     try {
-      final cached = await _readCached();
+      final cached = await _wait(_readCached, cancellation);
       if (cached != null) {
         final parsed = jsonDecode(cached);
         if (parsed is Map<String, Object?> &&
@@ -90,10 +92,11 @@ final class ProviderModelCatalog {
         }
       }
     } on Object {
+      _checkCancellation(cancellation);
       // A corrupt cache is ignored; the bundled catalog remains authoritative.
     }
     try {
-      _metadata = _parseMetadata(await _loadBundled());
+      _metadata = _parseMetadata(await _wait(_loadBundled, cancellation));
       if (_snapshot == null) {
         _publish(
           _reconcile(_metadata!, const <String, List<String>>{}),
@@ -103,6 +106,7 @@ final class ProviderModelCatalog {
         );
       }
     } on Object {
+      _checkCancellation(cancellation);
       if (_snapshot == null) {
         _publish(
           <LlmModel>[
@@ -120,8 +124,11 @@ final class ProviderModelCatalog {
     }
   }
 
-  Future<ProviderCatalogSnapshot> refresh() async {
-    await initialize();
+  Future<ProviderCatalogSnapshot> refresh({
+    CancellationToken? cancellation,
+  }) async {
+    await initialize(cancellation: cancellation);
+    _checkCancellation(cancellation);
     final serial = ++_refreshSerial;
     var source = 'models.dev';
     var metadataFresh = false;
@@ -135,12 +142,15 @@ final class ProviderModelCatalog {
           'User-Agent': 'Domovoy/1.0',
         },
         maxBytes: _maxMetadataBytes,
+        cancellation: cancellation,
       );
       metadata = _parseMetadata(body);
       _metadata = metadata;
       metadataFresh = true;
     } on Object {
-      metadata = _metadata ?? _parseMetadata(await _loadBundled());
+      _checkCancellation(cancellation);
+      metadata =
+          _metadata ?? _parseMetadata(await _wait(_loadBundled, cancellation));
       source = 'bundled/cached';
       issues['metadata'] = 'Не удалось обновить сведения о моделях.';
     }
@@ -151,20 +161,30 @@ final class ProviderModelCatalog {
         try {
           final headers = <String, String>{'Accept': 'application/json'};
           if (!entry.publicModels) {
-            final credential = await _credentials.resolve(
-              providerId: ProviderId(entry.id),
-              environmentVariable: entry.environmentVariable,
+            final credential = await _wait(
+              () => _credentials.resolve(
+                providerId: ProviderId(entry.id),
+                environmentVariable: entry.environmentVariable,
+              ),
+              cancellation,
             );
             headers.addAll(_listingHeaders(entry, credential.value));
           }
-          return (entry.id, await _fetchModelIds(entry, headers), null);
+          return (
+            entry.id,
+            await _fetchModelIds(entry, headers, cancellation),
+            null,
+          );
         } on LlmMissingCredentialException {
+          _checkCancellation(cancellation);
           return (entry.id, null, 'Добавьте API-ключ для проверки моделей.');
         } on Object {
+          _checkCancellation(cancellation);
           return (entry.id, null, 'Не удалось получить список моделей.');
         }
       }),
     );
+    _checkCancellation(cancellation);
     if (serial != _refreshSerial || _closed) return _snapshot!;
     final lists = <String, List<String>>{};
     for (final (id, ids, issue) in results) {
@@ -201,13 +221,17 @@ final class ProviderModelCatalog {
       stale: source != 'models.dev' || issues.isNotEmpty,
     );
     try {
-      await _writeCached(
-        jsonEncode(<String, Object?>{
-          'version': 1,
-          'models': models.map((model) => model.toJson()).toList(),
-        }),
+      await _wait(
+        () => _writeCached(
+          jsonEncode(<String, Object?>{
+            'version': 1,
+            'models': models.map((model) => model.toJson()).toList(),
+          }),
+        ),
+        cancellation,
       );
     } on Object {
+      _checkCancellation(cancellation);
       // Cache persistence is best-effort; the published generation is usable.
     }
     return _snapshot!;
@@ -515,13 +539,19 @@ final class ProviderModelCatalog {
   Future<List<String>> _fetchModelIds(
     ApiKeyProviderSpec provider,
     Map<String, String> headers,
+    CancellationToken? cancellation,
   ) async {
     final endpoint = Uri.parse(provider.modelsEndpoint!);
     if (provider.id != 'fireworks' &&
         provider.id != 'anthropic' &&
         provider.id != 'google') {
       return _parseModelIds(
-        await _get(endpoint, headers, maxBytes: _maxProviderBytes),
+        await _get(
+          endpoint,
+          headers,
+          maxBytes: _maxProviderBytes,
+          cancellation: cancellation,
+        ),
         provider,
       );
     }
@@ -536,7 +566,12 @@ final class ProviderModelCatalog {
                 provider.id == 'anthropic' ? 'after_id' : 'pageToken': cursor,
               },
             );
-      final body = await _get(uri, headers, maxBytes: _maxProviderBytes);
+      final body = await _get(
+        uri,
+        headers,
+        maxBytes: _maxProviderBytes,
+        cancellation: cancellation,
+      );
       ids.addAll(_parseModelIds(body, provider));
       final payload = jsonDecode(body);
       if (payload is! Map) throw const FormatException('Invalid model page');
@@ -560,18 +595,73 @@ final class ProviderModelCatalog {
     Uri uri,
     Map<String, String> headers, {
     required int maxBytes,
+    CancellationToken? cancellation,
   }) async {
+    _checkCancellation(cancellation);
     if (uri.scheme != 'https' || uri.userInfo.isNotEmpty) {
       throw const FormatException('Untrusted catalog destination');
     }
-    final response = await _client
-        .get(uri, headers: headers)
-        .timeout(const Duration(seconds: 15));
+    final abort = Completer<void>();
+    final registration = cancellation?.register(() {
+      if (!abort.isCompleted) abort.complete();
+    });
+    final request = http.AbortableRequest(
+      'GET',
+      uri,
+      abortTrigger: abort.future,
+    )..headers.addAll(headers);
+    final expired = Completer<http.Response>();
+    final timer = Timer(const Duration(seconds: 15), () {
+      if (!abort.isCompleted) abort.complete();
+      expired.completeError(TimeoutException('Catalog request timed out'));
+    });
+    late http.Response response;
+    try {
+      response = await _wait(
+        () => Future.any([
+          _client.send(request).then(http.Response.fromStream),
+          expired.future,
+        ]),
+        cancellation,
+      );
+    } finally {
+      timer.cancel();
+      registration?.dispose();
+      if (!abort.isCompleted) abort.complete();
+    }
     if (response.statusCode < 200 ||
         response.statusCode >= 300 ||
         response.bodyBytes.length > maxBytes) {
       throw const FormatException('Catalog request failed');
     }
     return utf8.decode(response.bodyBytes);
+  }
+}
+
+/// Cancellation is a terminal setup outcome, never a metadata fallback.
+final class CatalogCancelled implements Exception {
+  const CatalogCancelled();
+}
+
+void _checkCancellation(CancellationToken? token) {
+  if (token?.isCancelled ?? false) throw const CatalogCancelled();
+}
+
+Future<T> _wait<T>(
+  Future<T> Function() action,
+  CancellationToken? token,
+) async {
+  _checkCancellation(token);
+  if (token == null) return action();
+  final cancelled = Completer<T>();
+  final registration = token.register(
+    () => cancelled.completeError(const CatalogCancelled()),
+  );
+  try {
+    final result = await Future.any([action(), cancelled.future]);
+    _checkCancellation(token);
+    return result;
+  } finally {
+    registration.dispose();
   }
 }

@@ -12,7 +12,9 @@ final class RagModelServiceClient implements RagModelProvider, RagReranker {
   RagModelServiceClient(
     this.client,
     this.baseUrl, {
-    bool allowLoopbackHttp = !const bool.fromEnvironment('dart.vm.product'),
+    bool allowLoopbackHttp =
+        !const bool.fromEnvironment('dart.vm.product') &&
+        !const bool.fromEnvironment('dart.vm.profile'),
   }) {
     final local = {'127.0.0.1', 'localhost', '10.0.2.2'}.contains(baseUrl.host);
     if (baseUrl.userInfo.isNotEmpty ||

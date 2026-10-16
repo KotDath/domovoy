@@ -66,7 +66,9 @@ terminal event and, only on success, a final `result` record. Text mode prints t
 final answer. The last-message file is written only on success; use a fresh path
 for each invocation. Exit status is 0 for success, 2 for configuration/input
 errors, 1 for execution failure, and 130 for cancellation (SIGINT/SIGTERM or the
-wall-clock timeout). Provider, network, tokenizer, embedding and index mismatch
+wall-clock timeout). Dynamic catalog loading/discovery observes the same
+cancellation/deadline, aborts its pending HTTP requests and does not dispatch
+further discovery after cancellation. Provider, network, tokenizer, embedding and index mismatch
 errors fail the run; there is no successful fallback review. Default timeout is
 1200 seconds, and production interactive limits are 10000 model turns/tool calls;
 all are configurable. Resource limits are explicit, not silent truncation.
@@ -76,7 +78,10 @@ all are configurable. Resource limits are explicit, not silent truncation.
 First start the [existing inference gateway](../tool/rag_model_service/README.md),
 with its pinned Qwen3-Embedding-0.6B and tokenizer revisions. Review uses actual
 1024D vectors and the existing M1 dense retrieval coordinator. CPU CI omits
-optional BGE reranking; both tokenizers remain real and pinned for chunk limits.
+optional BGE reranking; both tokenizers remain real and pinned for chunk limits. Preparation explicitly
+loads only the embedding/reranker lock entries; runtime identities remain in the
+lockfile. App loopback HTTP remains debug-only (profile/release deny by default);
+the headless CLI explicitly opts in to its local gateway.
 Do not start a competing service when a gateway is already available.
 
 The deterministic Python helper reads Git objects without checking out or
@@ -125,7 +130,9 @@ Source policy includes ordinary credential/secret implementation/docs and hidden
 CI/config files such as `.github/workflows`, `.editorconfig` and `.gitignore`.
 It excludes `.git`, known caches, `.ssh/.aws/.azure/.kube/.docker/.local`, dotenv
 files, `.netrc/.npmrc/.pypirc/.git-credentials`, `.config/gh` and `.config/gcloud`,
-explicit `credentials.{json,yaml,yml}`/`secrets.{json,yaml,yml}`, private-key
+explicit `credentials.{json,yaml,yml}`/`secrets.{json,yaml,yml}`,
+`service-account.json`/`application_default_credentials.json`, day31 concrete
+store names and nested store path components (case-insensitive), private-key
 basenames, unrecognized binary extensions and generated lockfiles. This is a
 concrete path policy, not a detector for secrets committed in arbitrary source.
 The same policy protects RAG and review reads. Selected source/diff/PR content
