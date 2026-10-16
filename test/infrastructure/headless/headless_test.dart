@@ -380,6 +380,7 @@ void main() {
   test(
     'review uses vector docs/code, readonly registry, trusted template and cache; RAG failure blocks model',
     () async {
+      await File('${project.path}/empty.py').writeAsString('');
       final snapshot = await scanProjectSources(
         project.path,
         CancellationSource().token,
@@ -578,6 +579,62 @@ void main() {
   );
 
   test(
+    'empty and whitespace text remain hashable/readable sources without empty vector passages',
+    () async {
+      final contents = {
+        'pkg/__init__.py': '',
+        'cleared.py': '',
+        'whitespace.txt': '  \t\n',
+      };
+      for (final entry in contents.entries) {
+        final file = File('${project.path}/${entry.key}');
+        await file.parent.create(recursive: true);
+        await file.writeAsString(entry.value);
+      }
+      final snapshot = await scanProjectSources(
+        project.path,
+        CancellationSource().token,
+      );
+      final data = _context(snapshot)
+        ..['changed_files'] = contents.keys.toList();
+      ReviewContext.parse(jsonEncode(data)).verifySources(snapshot);
+      final executor = ReadOnlyWorkspaceExecutor(
+        root: project.path,
+        allowedPaths: snapshot.documents.map((d) => d.source).toSet(),
+      );
+      for (final entry in contents.entries) {
+        final doc = snapshot.documents.singleWhere(
+          (d) => d.source == entry.key,
+        );
+        expect(doc.text, entry.value);
+        expect((data['source_hashes'] as Map)[entry.key], ragHash(entry.value));
+        final read = await executor.execute(
+          ToolInvocation(
+            callId: 'empty',
+            name: 'read',
+            arguments: {'path': entry.key},
+          ),
+          cancellation: CancellationSource().token,
+          liveness: _Liveness(),
+        );
+        expect(read.success, true);
+        if (entry.value.isEmpty) {
+          expect((read.output as Map)['content'], '');
+        }
+      }
+      final index = await buildRagIndex(
+        models: FakeRagModels(),
+        model: const RagModelInfo('fake-v1', 2, 'TEST'),
+        documents: snapshot.documents,
+        strategy: ChunkStrategy.structure,
+        cancellation: CancellationSource().token,
+      );
+      expect(index.documents.map((d) => d.source), containsAll(contents.keys));
+      expect(index.chunks.any((c) => contents.containsKey(c.source)), false);
+    },
+  );
+
+  test(
     'entrypoint transitive local imports do not reach Flutter/platform plugins',
     () async {
       final seen = <String>{};
@@ -650,12 +707,14 @@ final class _HeldCatalogClient extends http.BaseClient {
     urls.add(request.url);
     final pending = Completer<http.StreamedResponse>();
     if (!started.isCompleted) started.complete();
-    if (request is! http.AbortableRequest)
+    if (request is! http.AbortableRequest) {
       throw StateError('Expected abortable catalog request');
+    }
     request.abortTrigger!.then((_) {
       if (!aborted.isCompleted) aborted.complete();
-      if (!pending.isCompleted)
+      if (!pending.isCompleted) {
         pending.completeError(http.RequestAbortedException(request.url));
+      }
     });
     return pending.future;
   }

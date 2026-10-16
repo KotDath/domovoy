@@ -9,7 +9,7 @@ import '../../core/rag/models.dart';
 /// One policy for indexing and read-tool admission. Symlinks are never followed.
 /// This is a text-source policy, not a claim to detect secrets in arbitrary code.
 abstract final class ProjectSourcePolicy {
-  static const version = 'source-v2';
+  static const version = 'source-v3';
   static const excludedDirectories = {
     '.git',
     '.ssh',
@@ -118,8 +118,34 @@ abstract final class ProjectSourcePolicy {
     ['.azure', 'msal_token_cache.json'],
   ];
 
+  static bool validRepositoryPath(String path) {
+    if (path.isEmpty ||
+        path.startsWith('/') ||
+        path.contains('\\') ||
+        RegExp(r'[:\<>"|?*\x00-\x1f\x7f]').hasMatch(path)) {
+      return false;
+    }
+    final device = RegExp(
+      r'^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$',
+      caseSensitive: false,
+    );
+    return path
+        .split('/')
+        .every(
+          (part) =>
+              part.isNotEmpty &&
+              part != '.' &&
+              part != '..' &&
+              !part.endsWith(' ') &&
+              !part.endsWith('.') &&
+              !device.hasMatch(
+                part.split('.').first.replaceFirst(RegExp(r' +$'), ''),
+              ),
+        );
+  }
+
   static bool permits(String path) {
-    if (path.isEmpty || p.posix.isAbsolute(path) || path.contains('\\')) {
+    if (!validRepositoryPath(path)) {
       return false;
     }
     final parts = path.split('/');
@@ -230,16 +256,14 @@ Future<ProjectSourceSnapshot> scanProjectSources(
             'Source corpus exceeds $maxTotalBytes bytes; narrow the workspace.',
           );
         }
-        if (text.trim().isNotEmpty) {
-          docs.add(
-            RagDocument(
-              source: path,
-              title: path,
-              text: text,
-              sourceRevision: 'sha256:${ragHash(text)}',
-            ),
-          );
-        }
+        docs.add(
+          RagDocument(
+            source: path,
+            title: path,
+            text: text,
+            sourceRevision: 'sha256:${ragHash(text)}',
+          ),
+        );
       }
     }
   }

@@ -30,7 +30,29 @@ EXTENSIONS = {'.dart', '.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.yaml', '.
 SENSITIVE_NAMES = {'credentials.yaml', 'secrets.json', 'credentials.json', 'secrets.yaml', 'id_ecdsa', '.git-credentials', '.s3cfg', '.my.cnf', '.dockercfg', '_netrc', '.netrc', '.gitcookies', 'id_dsa', 'secrets.yml', 'id_ed25519', 'id_rsa', '.npmrc', '.pypirc', 'id_ed25519_sk', 'credentials.yml', 'service-account.json', 'application_default_credentials.json', '.vault-token', '.pgpass', '.boto', 'id_ecdsa_sk'}
 SENSITIVE_STORES = {('.docker', 'config.json'), ('.config', 'hub'), ('.azure', 'msal_token_cache.json'), ('.config', 'gcloud'), ('.config', 'gh'), ('.azure', 'accesstokens.json'), ('.gem', 'credentials'), ('.kube', 'config'), ('.bundle', 'config'), ('.aws', 'credentials')}
 
+def valid_repository_path(path):
+    # Reject alternate native syntax on every host, before native Path joins.
+    if (not isinstance(path, str) or not path or path.startswith('/') or
+            re.search(r'[:\\<>"|?*\x00-\x1f\x7f]', path)):
+        return False
+    return all(part not in {'', '.', '..'} and not part.endswith((' ', '.')) and
+               not re.fullmatch(r'(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])', part.split('.', 1)[0].rstrip(' '), re.I)
+               for part in path.split('/'))
+
+
+def snapshot_target(root, path):
+    if not valid_repository_path(path):
+        raise ValueError('Unsafe repository-relative source path')
+    root = Path(root).resolve()
+    target = root.joinpath(*path.split('/'))
+    if target.is_symlink() or not target.resolve().is_relative_to(root):
+        raise ValueError('Source target escapes snapshot root')
+    return target
+
+
 def permits(path):
+    if not valid_repository_path(path):
+        return False
     parts = path.split('/')
     if not parts or any(not p or p in {'.', '..'} or
                         p.lower() in EXCLUDED for p in parts) or '\\' in path:
@@ -134,8 +156,8 @@ def normalize(text):
 def bundle(checkout, base, head, repo, out, expected_paths=None, number=None):
     if not SHA.fullmatch(base) or not SHA.fullmatch(head) or not REPO.fullmatch(repo):
         raise ValueError('Invalid revision/repository')
-    out = Path(out).absolute()
-    checkout = Path(checkout).absolute()
+    out = Path(out).resolve()
+    checkout = Path(checkout).resolve()
     if out == checkout or checkout in out.parents:
         raise ValueError('Bundle must be outside trusted checkout')
     if out.exists():
@@ -148,8 +170,17 @@ def bundle(checkout, base, head, repo, out, expected_paths=None, number=None):
     if expected_paths is not None and set(paths) != set(expected_paths):
         raise ValueError('GitHub file coverage differs from exact local diff (including renames); no partial review')
     diff = git(checkout, 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--full-index', '--unified=5', merge_base, head, '--').decode('utf-8')
-    if 'GIT binary patch' in diff or re.search(r'^Binary files .* differ$', diff, re.M):
-        raise ValueError('Binary diff unsupported; no partial review')
+    # Structured counts describe binary entries; source hunk prose is data.
+    stats = git(checkout, 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
+                '--numstat', '-z', merge_base, head, '--')
+    for entry in stats.split(b'\0'):
+        if not entry:
+            continue
+        counts = entry.split(b'\t', 2)
+        if len(counts) != 3:
+            raise ValueError('Malformed Git diff statistics')
+        if counts[0] == b'-' or counts[1] == b'-':
+            raise ValueError('Binary diff unsupported; no partial review')
     head_tree = tree(checkout, head)
     base_tree = tree(checkout, base)
     sources, excluded = {}, []
@@ -171,8 +202,7 @@ def bundle(checkout, base, head, repo, out, expected_paths=None, number=None):
         if '\0' in text:
             excluded.append(f'{path}: binary')
             continue
-        if text.strip():
-            sources[path] = normalize(text)
+        sources[path] = normalize(text)
     for path in paths:
         if path in head_tree and path not in sources:
             raise ValueError('Changed head file is not fully readable; no partial review')
@@ -198,7 +228,7 @@ def bundle(checkout, base, head, repo, out, expected_paths=None, number=None):
             'diff': diff, 'trusted_rules': rules, 'rag_paths': rag_paths,
             'source_hashes': {p: hashlib.sha256(s.encode()).hexdigest() for p, s in sources.items()},
             'coverage': {'diff': 'complete three-dot diff, no rename folding',
-                         'source_policy': 'source-v2', 'excluded_sources': excluded,
+                         'source_policy': 'source-v3', 'excluded_sources': excluded,
                          'rag_policy': 'changed + sibling code + current docs/README/AGENTS; other text sources readable'}}
     encoded = json.dumps(data, ensure_ascii=False, indent=2)
     if len(encoded.encode()) > 400000:
@@ -206,9 +236,10 @@ def bundle(checkout, base, head, repo, out, expected_paths=None, number=None):
     out.mkdir(parents=True)
     (out / 'sources').mkdir()
     for path, text in sources.items():
-        target = out / 'sources' / path
+        target = snapshot_target(out / 'sources', path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding='utf-8')
+        # Recheck resolved containment after parent creation and before writing.
+        snapshot_target(out / 'sources', path).write_text(text, encoding='utf-8')
     (out / 'review.json').write_text(encoded, encoding='utf-8')
     print(json.dumps({'bundle': str(out), 'base': base, 'head': head,
                       'changed_paths': len(paths), 'sources': len(sources), 'rag_sources': len(rag_paths)}))

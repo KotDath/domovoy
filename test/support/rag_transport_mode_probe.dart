@@ -1,5 +1,6 @@
 // Constructor-only probe. No network requests or credentials.
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:domovoy/infrastructure/rag/model_service_client.dart';
 import 'package:http/http.dart' as http;
@@ -23,7 +24,7 @@ void main() {
     }
   }
 
-  print(
+  stdout.writeln(
     jsonEncode({
       'product': const bool.fromEnvironment('dart.vm.product'),
       'profile': const bool.fromEnvironment('dart.vm.profile'),

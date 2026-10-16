@@ -124,7 +124,14 @@ sources. Unsupported changed files (including credential stores, binary files,
 symlinks and submodules) or an oversized diff cause failure before review; no
 changed path or hunk is silently dropped. Split such a PR for supported review.
 The CLI permits a larger explicit input budget; the GitHub collector currently
-fails above its fixed 400000-byte admission limit. No project tests/code run.
+fails above its fixed 400000-byte admission limit. Empty and whitespace-only UTF-8 files stay in the complete source/hash/read
+manifest; they may contribute no vector passages. Binary entries are determined
+from structured Git numstat metadata, so literal binary-marker prose remains
+ordinary text. Repository-relative paths use portable syntax: drive-qualified,
+drive-relative, rooted, colon/alternate-stream, traversal, native separator,
+control-character and Windows device/alias forms are rejected before snapshot
+publication. Native resolved containment is rechecked before every source write.
+No project tests/code run.
 
 Source policy includes ordinary credential/secret implementation/docs and hidden
 CI/config files such as `.github/workflows`, `.editorconfig` and `.gitignore`.
