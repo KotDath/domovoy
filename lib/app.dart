@@ -1,8 +1,12 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'infrastructure/runtime/production_agent_stack.dart' as engine;
+import 'infrastructure/runtime/production_agent_stack.dart'
+    show ProductionAgentStack;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
@@ -44,7 +48,6 @@ import 'features/projects/application/project_workspace_controller.dart';
 import 'features/projects/presentation/project_workspace_page.dart';
 import 'features/profile/application/profile_controller.dart';
 import 'features/profile/application/profile_interview.dart';
-import 'features/prompt/domain/prompt_workspace.dart';
 import 'features/settings/data/secure_api_key_override_store.dart';
 import 'features/settings/data/secure_model_settings_store.dart';
 import 'features/settings/domain/api_key_credentials.dart';
@@ -68,31 +71,10 @@ import 'infrastructure/memory/memory.dart';
 import 'infrastructure/personalization/personalization.dart';
 import 'infrastructure/projects/platform_projects.dart';
 import 'infrastructure/tools/local_workspace_tools.dart';
-import 'infrastructure/llm/openai_compatible/openai_compatible.dart';
-import 'infrastructure/llm/openai_responses/openai_responses.dart';
-import 'infrastructure/llm/discovery/native_streaming_provider.dart';
-import 'infrastructure/llm/discovery/provider_manifest.dart';
 import 'infrastructure/llm/discovery/provider_model_catalog.dart';
 
-final class ProductionAgentStack {
-  ProductionAgentStack({
-    required this.registry,
-    required this.runtime,
-    required this.promptDefinition,
-    required this.credentials,
-    required this.repository,
-    required this.catalog,
-    this.providerModelCatalog,
-  });
-
-  final LlmProviderRegistry registry;
-  final InMemoryAgentRuntime runtime;
-  final AgentDefinition promptDefinition;
-  final ProviderCredentialResolver credentials;
-  final AgentSessionRepository repository;
-  final AgentSessionCatalog catalog;
-  final ProviderModelCatalog? providerModelCatalog;
-}
+export 'infrastructure/runtime/production_agent_stack.dart'
+    show ProductionAgentStack;
 
 ProductionAgentStack buildProductionAgentStack({
   required http.Client httpClient,
@@ -105,141 +87,29 @@ ProductionAgentStack buildProductionAgentStack({
   AgentToolRegistry? tools,
   List<ToolId> enabledTools = const <ToolId>[],
   ToolPermissionPolicy? interactivePolicy,
-}) {
-  if ((repository == null) != (catalog == null)) {
-    throw ArgumentError(
-      'Repository and catalog replacements must be supplied together.',
+}) => engine.buildProductionAgentStack(
+  httpClient: httpClient,
+  credentials: credentials,
+  repository: repository,
+  catalog: catalog,
+  diagnosticNoCompaction: diagnosticNoCompaction,
+  ids: ids,
+  dynamicContextProvider: dynamicContextProvider,
+  tools: tools,
+  enabledTools: enabledTools,
+  interactivePolicy: interactivePolicy,
+  storage: repository == null ? createPlatformJsonlStreamStorage() : null,
+  loadBundled: () => rootBundle.loadString('assets/models_fallback.json'),
+  readCached: () async => (await SharedPreferences.getInstance()).getString(
+    'domovoy.provider_catalog.v1',
+  ),
+  writeCached: (value) async {
+    await (await SharedPreferences.getInstance()).setString(
+      'domovoy.provider_catalog.v1',
+      value,
     );
-  }
-  if (interactivePolicy != null && interactivePolicy.id != PolicyId('allow')) {
-    throw ArgumentError.value(
-      interactivePolicy.id.value,
-      'interactivePolicy',
-      'The interactive policy must keep the stable "allow" id so existing '
-          'sessions resolve it without a migration.',
-    );
-  }
-  final durableStore = repository == null
-      ? JsonlAgentSessionStore(storage: createPlatformJsonlStreamStorage())
-      : null;
-  final resolvedRepository = repository ?? durableStore!;
-  final resolvedCatalog = catalog ?? durableStore!;
-  final registry = LlmProviderRegistry();
-  final compatibleProfiles = <String, OpenAiCompatibleProfile>{};
-  final responseProfiles = <String, OpenAiResponsesProfile>{};
-  for (final spec in ApiKeyProviderManifest.entries) {
-    final initial = BuiltInLlmCatalog.models
-        .where((model) => model.providerId.value == spec.id)
-        .toList(growable: false);
-    registry.registerProfile(spec.profile);
-    switch (spec.protocol) {
-      case ApiKeyProviderProtocol.chatCompletions:
-        final profile = OpenAiCompatibleProfile.builtInDynamic(
-          snapshot: spec.profile,
-          models: initial,
-          dialectFor: (modelId) {
-            if (spec.id == 'deepseek' || spec.id == 'moonshotai') {
-              final builtIn = ChatCompletionsDialect.forBuiltInModel(modelId);
-              if (builtIn != ChatCompletionsDialect.generic) return builtIn;
-            }
-            return _dialectForReasoningFormat(spec.reasoningFormat);
-          },
-          sessionAffinityHeader: spec.sessionAffinityHeader,
-        );
-        compatibleProfiles[spec.id] = profile;
-        registry.registerProvider(
-          OpenAiChatCompletionsLlmProvider(
-            profile: profile,
-            client: httpClient,
-            credentials: credentials,
-          ),
-        );
-      case ApiKeyProviderProtocol.responses:
-        final profile = OpenAiResponsesProfile(
-          snapshot: spec.profile,
-          models: initial,
-          allowEmptyModels: true,
-        );
-        responseProfiles[spec.id] = profile;
-        registry.registerProvider(
-          OpenAiResponsesLlmProvider(
-            profile: profile,
-            client: httpClient,
-            credentials: credentials,
-          ),
-        );
-      case ApiKeyProviderProtocol.anthropicMessages:
-      case ApiKeyProviderProtocol.geminiGenerateContent:
-        registry.registerProvider(
-          NativeStreamingLlmProvider(
-            spec: spec,
-            client: httpClient,
-            credentials: credentials,
-          ),
-        );
-    }
-  }
-  registry.replaceModels(BuiltInLlmCatalog.models);
-  final providerModelCatalog = ProviderModelCatalog(
-    client: httpClient,
-    credentials: credentials,
-    publishModels: (models) {
-      registry.replaceModels(models);
-      for (final entry in compatibleProfiles.entries) {
-        entry.value.replaceModels(
-          models
-              .where((model) => model.providerId.value == entry.key)
-              .toList(growable: false),
-        );
-      }
-      for (final entry in responseProfiles.entries) {
-        entry.value.replaceModels(
-          models
-              .where((model) => model.providerId.value == entry.key)
-              .toList(growable: false),
-        );
-      }
-    },
-  );
-  const contextEstimator = Utf8FramingAgentContextEstimator();
-  final compactionTrigger = OpenCodeCompactionTrigger();
-  final modelSwitchFitPolicy = OpenCodeAgentModelSwitchFitPolicy();
-  final historyCompactor = OpenCodeSummaryCompactor(
-    llm: RegistryAgentSummaryLlmInvocation(registry),
-    contextEstimator: contextEstimator,
-  );
-  final interactiveTools = enabledTools.isNotEmpty || interactivePolicy != null;
-  final runtime = InMemoryAgentRuntime(
-    registry: registry,
-    tools: tools ?? AgentToolRegistry(),
-    policies: <String, ToolPermissionPolicy>{
-      'deny': const DenyAllPolicy(),
-      'allow': interactivePolicy ?? const AllowAllPolicy(),
-    },
-    repository: resolvedRepository,
-    router: InMemorySessionRouter(),
-    profile: AgentRuntimeProfile(),
-    contextEstimator: contextEstimator,
-    compactionTrigger: diagnosticNoCompaction ? null : compactionTrigger,
-    modelSwitchFitPolicy: modelSwitchFitPolicy,
-    historyCompactor: diagnosticNoCompaction ? null : historyCompactor,
-    ids: ids ?? AgentIdFactory(namespace: _newRuntimeNamespace()),
-    dynamicContextProvider: dynamicContextProvider,
-  );
-  return ProductionAgentStack(
-    registry: registry,
-    runtime: runtime,
-    promptDefinition: PromptWorkspace.definition(
-      enabledTools: enabledTools,
-      policy: interactiveTools ? PolicyId('allow') : PolicyId('deny'),
-      runLimits: PromptWorkspace.interactiveLimits,
-    ),
-    credentials: credentials,
-    repository: resolvedRepository,
-    catalog: resolvedCatalog,
-    providerModelCatalog: providerModelCatalog,
-  );
-}
+  },
+);
 
 /// Build flavor selected with `--dart-define=DOMOVOY_FLAVOR=aurora`.
 ///
@@ -668,35 +538,6 @@ final class DomovoyMcpComposition {
 
 /// Delivery sink of the automation stack, or null when no durable card store
 /// exists on this platform (the tasks UI then reports delivery unavailable).
-ChatCompletionsDialect _dialectForReasoningFormat(
-  ApiKeyProviderReasoningFormat format,
-) => switch (format) {
-  ApiKeyProviderReasoningFormat.none => ChatCompletionsDialect.generic,
-  ApiKeyProviderReasoningFormat.openAiEffort =>
-    ChatCompletionsDialect.openAiReasoningEffort,
-  ApiKeyProviderReasoningFormat.deepSeekThinking =>
-    ChatCompletionsDialect.catalogDeepSeekThinking,
-  ApiKeyProviderReasoningFormat.zaiThinking =>
-    ChatCompletionsDialect.zaiThinking,
-  ApiKeyProviderReasoningFormat.qwenThinking =>
-    ChatCompletionsDialect.qwenThinking,
-  ApiKeyProviderReasoningFormat.openRouterReasoning =>
-    ChatCompletionsDialect.openRouterReasoning,
-  ApiKeyProviderReasoningFormat.antLingReasoning =>
-    ChatCompletionsDialect.antLingReasoning,
-  ApiKeyProviderReasoningFormat.togetherReasoning =>
-    ChatCompletionsDialect.togetherReasoning,
-};
-
-String _newRuntimeNamespace() {
-  final random = Random.secure();
-  final nonce = List<String>.generate(
-    4,
-    (_) => random.nextInt(1 << 30).toRadixString(36),
-  ).join('-');
-  return 'runtime-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-$nonce';
-}
-
 /// Fail-closed placeholder for the stable `allow` policy id.
 ///
 /// `buildProductionAgentStack` publishes it synchronously, so legacy sessions

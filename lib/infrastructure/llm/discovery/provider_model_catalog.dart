@@ -1,9 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/llm/capabilities.dart';
 import '../../../core/llm/catalog.dart';
@@ -44,11 +42,12 @@ final class ProviderModelCatalog {
   }) : _client = client,
        _credentials = credentials,
        _publishModels = publishModels,
-       _loadBundled = loadBundled ?? _defaultLoadBundled,
-       _readCached = readCached ?? _defaultReadCached,
-       _writeCached = writeCached ?? _defaultWriteCached;
+       _loadBundled =
+           loadBundled ??
+           (() async => throw StateError('Asset loader required')),
+       _readCached = readCached ?? (() async => null),
+       _writeCached = writeCached ?? ((_) async {});
 
-  static const _cacheKey = 'domovoy.provider_catalog.v1';
   static const _maxMetadataBytes = 16 * 1024 * 1024;
   static const _maxProviderBytes = 4 * 1024 * 1024;
 
@@ -574,15 +573,5 @@ final class ProviderModelCatalog {
       throw const FormatException('Catalog request failed');
     }
     return utf8.decode(response.bodyBytes);
-  }
-
-  static Future<String> _defaultLoadBundled() =>
-      rootBundle.loadString('assets/models_fallback.json');
-
-  static Future<String?> _defaultReadCached() async =>
-      (await SharedPreferences.getInstance()).getString(_cacheKey);
-
-  static Future<void> _defaultWriteCached(String value) async {
-    await (await SharedPreferences.getInstance()).setString(_cacheKey, value);
   }
 }

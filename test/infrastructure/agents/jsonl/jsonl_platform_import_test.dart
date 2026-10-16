@@ -21,6 +21,9 @@ void main() {
     final native = File(
       'lib/infrastructure/agents/jsonl/jsonl_stream_storage_io.dart',
     ).readAsStringSync();
+    final filesystem = File(
+      'lib/infrastructure/agents/jsonl/jsonl_filesystem_storage_io.dart',
+    ).readAsStringSync();
     final browser = File(
       'lib/infrastructure/agents/jsonl/jsonl_stream_storage_web.dart',
     ).readAsStringSync();
@@ -32,7 +35,11 @@ void main() {
     expect(shared, contains('if (dart.library.js_interop)'));
     expect(shared, isNot(contains("import 'dart:io'")));
     expect(shared, isNot(contains('shared_preferences')));
-    expect(native, contains("import 'dart:io'"));
+    expect(native, contains('path_provider'));
+    expect(native, contains('jsonl_filesystem_storage_io.dart'));
+    expect(filesystem, contains("import 'dart:io'"));
+    expect(filesystem, isNot(contains('path_provider')));
+    expect(filesystem, isNot(contains('package:flutter')));
     expect(native, isNot(contains('shared_preferences')));
     expect(browser, contains('shared_preferences'));
     expect(browser, isNot(contains("import 'dart:io'")));
