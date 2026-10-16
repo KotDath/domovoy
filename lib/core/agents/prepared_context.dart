@@ -34,6 +34,8 @@ final class AgentPreparedContext {
 
   /// Offer only the current user turn and subsequent tool exchanges. Retained
   /// history, summaries and old provider continuations never cross this seam.
+  /// Automatic compaction is disabled, including on pressure and overflow; an
+  /// overflowing current turn fails without summarizing/mutating old history.
   final bool isolateCurrentRun;
 
   /// Ephemeral output syntax for this run, including isolated repair attempts.

@@ -4694,6 +4694,12 @@ final class _LiveRun implements AgentRun {
     required AgentCompactionReason reason,
     required LlmRequest request,
   }) async {
+    // This run deliberately excludes retained history. Neither pressure nor
+    // overflow may send it to an auxiliary summary model or compact it away.
+    // If the isolated current turn itself overflows, fail without recovery.
+    if (options.preparedContext?.isolateCurrentRun == true) {
+      return _AutomaticCompactionOutcome.skipped;
+    }
     final done = Completer<void>();
     _automaticCompactionDone = done;
     try {

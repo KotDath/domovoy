@@ -7,6 +7,7 @@ import '../../../core/llm/cancellation.dart';
 import '../../../core/projects/ids.dart';
 import '../../../core/projects/project_context.dart';
 import '../../../core/rag/models.dart';
+import 'git_object_verifier_io.dart';
 
 /// No Flutter, path_provider or shell dependency. The caller authorizes roots.
 final class LocalProjectContextService implements ProjectContextService {
@@ -161,7 +162,10 @@ final class LocalProjectContextService implements ProjectContextService {
     }
     final head = await _metadata(root, p.join(git, 'HEAD'));
     final oid = RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$');
-    if (oid.hasMatch(head)) return ProjectGitContext(head: head);
+    if (oid.hasMatch(head)) {
+      await _verifyObjects(root, common, head);
+      return ProjectGitContext(head: head);
+    }
     if (!head.startsWith('ref: refs/heads/')) {
       throw const FormatException('Unsupported Git HEAD');
     }
@@ -189,7 +193,43 @@ final class LocalProjectContextService implements ProjectContextService {
     if (commit == null || !oid.hasMatch(commit)) {
       throw const FormatException('Git branch has no valid commit');
     }
+    await _verifyObjects(root, common, commit);
     return ProjectGitContext(head: commit, branch: ref.substring(11));
+  }
+
+  Future<void> _verifyObjects(String root, String common, String head) async {
+    final config = await _metadata(root, p.join(common, 'config'));
+    var section = '', format = 'sha1';
+    for (final line in const LineSplitter().convert(config)) {
+      final value = line.trim();
+      if (value.startsWith('[') && value.endsWith(']')) {
+        section = value.substring(1, value.length - 1).trim().toLowerCase();
+      } else if (section == 'extensions') {
+        final match = RegExp(
+          r'^objectformat\s*=\s*(\S+)$',
+          caseSensitive: false,
+        ).firstMatch(value);
+        if (match != null) format = match[1]!.toLowerCase();
+      }
+    }
+    if (!{'sha1', 'sha256'}.contains(format) ||
+        head.length != (format == 'sha1' ? 40 : 64)) {
+      throw const FormatException('Unsupported/incoherent Git object format');
+    }
+    final shallow = <String>{};
+    if (await File(p.join(common, 'shallow')).exists()) {
+      final text = await _metadata(root, p.join(common, 'shallow'));
+      for (final oid in const LineSplitter().convert(text)) {
+        if (!RegExp('^[0-9a-f]{${head.length}}\$').hasMatch(oid)) {
+          throw const FormatException('Invalid shallow boundary');
+        }
+        shallow.add(oid);
+      }
+    }
+    await GitObjectVerifier(
+      objects: p.join(common, 'objects'),
+      safePath: (path) => _safe(root, path),
+    ).verify(head, shallow);
   }
 
   /// Uncompressed USTAR only: fixed input/output bounds and no archive links.
