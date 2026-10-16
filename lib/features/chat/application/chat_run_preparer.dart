@@ -23,3 +23,9 @@ abstract interface class ChatRunPreparer {
     CancellationToken cancellation,
   );
 }
+
+/// A host-owned actionable preparation notice safe to show in the chat shell.
+final class ChatPreparationException implements Exception {
+  const ChatPreparationException(this.message);
+  final String message;
+}

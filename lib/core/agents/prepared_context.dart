@@ -12,7 +12,9 @@ final class AgentPreparedContext {
     this.systemPromptOverride,
     this.suppressDynamicContext = false,
     this.disableTools = false,
+    this.allowedToolIds,
     this.isolateCurrentUser = false,
+    this.isolateCurrentRun = false,
     this.responseFormat,
     this.maxRequestBytes,
     this.beforeRequest,
@@ -23,9 +25,16 @@ final class AgentPreparedContext {
   final bool suppressDynamicContext;
   final bool disableTools;
 
+  /// Additional deny-by-default ceiling, checked by the runtime at execution.
+  final Set<String>? allowedToolIds;
+
   /// Send only the latest real user message to the provider. Retained history
   /// and compaction input are unchanged. Requires tools disabled.
   final bool isolateCurrentUser;
+
+  /// Offer only the current user turn and subsequent tool exchanges. Retained
+  /// history, summaries and old provider continuations never cross this seam.
+  final bool isolateCurrentRun;
 
   /// Ephemeral output syntax for this run, including isolated repair attempts.
   final LlmResponseFormat? responseFormat;

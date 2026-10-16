@@ -546,14 +546,15 @@ class _SourceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final chunk = candidate['chunk'] as Map;
+    final overview = candidate['retrieval_kind'] == 'project_readme_overview';
     return ExpansionTile(
       title: Text(
         '${candidate['sent'] == true ? 'Отправлен' : 'Исключён'} · '
-        '${(candidate['cosine'] as num).toStringAsFixed(4)} cosine · ${chunk['source']}'
+        '${overview ? 'README · обзор проекта' : '${(candidate['cosine'] as num).toStringAsFixed(4)} cosine'} · ${chunk['source']}'
         '${candidate['rerank'] == null ? '' : ' · ${(candidate['rerank'] as num).toStringAsFixed(3)} BGE raw logit'}',
       ),
       subtitle: Text(
-        'dense #${candidate['dense_rank']}'
+        '${overview ? 'Навигационный контекст из той же generation' : 'dense #${candidate['dense_rank']}'}'
         '${candidate['rerank_rank'] == null ? '' : ' → rerank #${candidate['rerank_rank']}'}\n'
         '${chunk['section']}\n${candidate['excluded_reason'] ?? 'retrieval provenance'}',
       ),

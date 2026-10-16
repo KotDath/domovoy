@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../../../core/rag/models.dart';
+import '../../../core/projects/project_context.dart';
 import '../application/knowledge_controller.dart';
 import 'knowledge_comparison_page.dart';
 
@@ -25,6 +27,30 @@ class _KnowledgePageState extends State<KnowledgePage> {
     _arxiv.dispose();
     _query.dispose();
     super.dispose();
+  }
+
+  Future<void> _importProjectArchive() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: [
+          const XTypeGroup(
+            label: 'Standalone Git checkout (USTAR)',
+            extensions: ['tar'],
+            mimeTypes: ['application/x-tar'],
+          ),
+        ],
+      );
+      if (file == null || !mounted) return;
+      if (await file.length() > 128 * 1024 * 1024) {
+        throw StateError('Archive exceeds 128 MiB');
+      }
+      final bytes = await file.readAsBytes();
+      if (!mounted) return;
+      await widget.controller.importProjectArchive(bytes);
+    } on Object catch (error) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('$error')));
+    }
   }
 
   @override
@@ -48,6 +74,10 @@ class _KnowledgePageState extends State<KnowledgePage> {
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            Text('Проект: ${c.project}'),
+            const Text(
+              'Для /help выберите README/docs проекта и постройте Structure-индекс.',
+            ),
             Wrap(
               spacing: 12,
               runSpacing: 8,
@@ -58,9 +88,17 @@ class _KnowledgePageState extends State<KnowledgePage> {
                   onChanged: c.busy
                       ? null
                       : (v) => unawaited(c.selectCorpus(v!)),
-                  items: const [
-                    DropdownMenuItem(value: 'domovoy', child: Text('Domovoy')),
-                    DropdownMenuItem(
+                  items: [
+                    if (c.projectContext != null)
+                      const DropdownMenuItem(
+                        value: projectDocumentationCorpus,
+                        child: Text('README/docs проекта'),
+                      ),
+                    const DropdownMenuItem(
+                      value: 'domovoy',
+                      child: Text('Domovoy'),
+                    ),
+                    const DropdownMenuItem(
                       value: 'arxiv',
                       child: Text('arXiv: память'),
                     ),
@@ -78,6 +116,34 @@ class _KnowledgePageState extends State<KnowledgePage> {
             const Text('Индекс и поиск — на устройстве. Эмбеддинги — на ПК.'),
             if (c.model != null)
               Text('${c.model!.label} · ${c.model!.dimension}D'),
+            if (c.projectContext != null)
+              Wrap(
+                spacing: 8,
+                children: [
+                  OutlinedButton(
+                    key: const ValueKey('knowledge.projectArchive'),
+                    onPressed: c.busy
+                        ? null
+                        : () => unawaited(_importProjectArchive()),
+                    child: const Text('Импорт checkout .tar в пустой проект'),
+                  ),
+                  OutlinedButton(
+                    key: const ValueKey('knowledge.projectDocs'),
+                    onPressed: c.busy
+                        ? null
+                        : () => unawaited(
+                            c.corpus == projectDocumentationCorpus
+                                ? c.refreshProjectDocs()
+                                : c.selectCorpus(projectDocumentationCorpus),
+                          ),
+                    child: const Text('Обновить README/docs проекта'),
+                  ),
+                ],
+              ),
+            if (c.corpus == projectDocumentationCorpus)
+              const Text(
+                'Текущие файлы выбранного проекта: README и текстовые docs/doc/documentation. Исключены скрытые файлы, зависимости, кэши и файлы ключей (.pem/.key). Лимит: 1000 файлов / 4 MiB, 2 MiB на файл. При превышении импорт корпуса завершается ошибкой.',
+              ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -92,12 +158,16 @@ class _KnowledgePageState extends State<KnowledgePage> {
                 ),
                 OutlinedButton(
                   key: const ValueKey('knowledge.import'),
-                  onPressed: c.busy ? null : () => unawaited(c.importFiles()),
+                  onPressed: c.busy || c.corpus == projectDocumentationCorpus
+                      ? null
+                      : () => unawaited(c.importFiles()),
                   child: const Text('Импорт файлов'),
                 ),
                 OutlinedButton(
                   key: const ValueKey('knowledge.addText'),
-                  onPressed: c.busy ? null : () => _addText(context),
+                  onPressed: c.busy || c.corpus == projectDocumentationCorpus
+                      ? null
+                      : () => _addText(context),
                   child: const Text('Добавить текст'),
                 ),
               ],
@@ -120,7 +190,7 @@ class _KnowledgePageState extends State<KnowledgePage> {
                 IconButton(
                   key: const ValueKey('knowledge.arxiv'),
                   tooltip: 'Импортировать PDF arXiv',
-                  onPressed: c.busy
+                  onPressed: c.busy || c.corpus == projectDocumentationCorpus
                       ? null
                       : () => unawaited(c.importArxiv(_arxiv.text)),
                   icon: const Icon(Icons.download),

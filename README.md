@@ -73,3 +73,5 @@ flutter analyze
 flutter test
 flutter build apk --debug
 ```
+
+Помощник по локальному checkout: [`/help`, импорт Android и README/docs RAG](docs/developer-assistant.md).

@@ -1,3 +1,5 @@
+import 'package:domovoy/core/projects/project_context.dart';
+import 'package:domovoy/core/projects/project_run_scope.dart';
 import 'dart:async';
 
 import 'package:domovoy/app.dart';
@@ -189,6 +191,8 @@ final class McpCompositionHarness {
   /// restart with the same device files.
   static Future<McpCompositionHarness> start({
     required RoutingLlmProvider provider,
+    ProjectContextService? projectContext,
+    ProjectRunScopes? projectScopes,
     FakeMemoryJsonlStorage? connectionStorage,
     FakeMemoryJsonlStorage? selectionStorage,
     FakeMemoryJsonlStorage? libraryStorage,
@@ -239,6 +243,8 @@ final class McpCompositionHarness {
       runtime: runtime,
       tools: tools,
       policies: policies,
+      projectContext: projectContext,
+      projectScopes: projectScopes,
       registry: runtime.registry,
       sessions: sessions,
       catalog: sessions,

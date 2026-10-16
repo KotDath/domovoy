@@ -54,7 +54,7 @@ final class ProjectWorkspaceRootResolver {
       }
       final support = await getApplicationSupportDirectory();
       final nativePath = p.join(
-        support.path,
+        await support.resolveSymbolicLinks(),
         'project-sandbox-roots-v1',
         projectId.value,
       );
