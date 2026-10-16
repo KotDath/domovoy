@@ -227,6 +227,19 @@ that live gate.
 
 ## Verification
 
+Validate workflow expressions with [actionlint](https://github.com/rhysd/actionlint)
+(from an external installation; it is not a package dependency):
+
+```sh
+actionlint .github/workflows/domovoy-review.yml
+```
+
+This checks GitHub Actions context availability as well as YAML/workflow syntax;
+a generic YAML parser does not establish those semantics. Runner-dependent
+cache paths are initialized by a runner step through `GITHUB_ENV` before cache
+and bootstrap steps. `runner` is unavailable in job-level `env`. The workflow
+still requires an actual PR-triggered Actions run to verify remote integration.
+
 ```sh
 flutter pub get
 dart format .
