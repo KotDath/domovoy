@@ -193,6 +193,12 @@ embedding fingerprint, document/other-source counts, retrieved paths, tool-call
 count, terminal success and exact base/head. It contains no credentials, raw
 environment, reasoning or model-generated prose; missing/partial events are
 reported honestly. Raw event files stay on the ephemeral runner.
+The receipt also retains the last valid RAG preparation stage and completed/total
+counts after cancellation or failure. During execution a separate credential-free
+observer logs only those counts and elapsed/stage seconds every 30 seconds (and
+on a stage change). Counts describe work started, not proof it completed. The CLI
+runs directly without an output pipeline; observer cleanup preserves its exit
+status. No source text, answer, reasoning or environment is logged by the observer.
 
 The trusted base checkout uses full history. PR source is read as inert Git
 objects; there is no PR checkout, build, dependency resolution, test, shell hook

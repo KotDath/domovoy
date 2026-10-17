@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -146,6 +147,61 @@ class ReviewBoundaryTest(unittest.TestCase):
                 ('DELETE', 'issues/comments/8', 'github_api')]:
             self.assertEqual(review.api_operation('repos/a/b/' + route, method), expected)
         self.assertEqual(review.api_operation('fake-secret-route', 'POST'), 'github_api')
+
+    def test_failed_receipt_preserves_only_valid_last_preparation_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root/'context').write_text('{"base_sha":"base","head_sha":"head"}')
+            rows = [
+                {'type': 'rag_progress', 'stage': 'chunking', 'done': 60, 'total': 61},
+                {'type': 'rag_progress', 'stage': 'embedding', 'done': 80, 'total': 814, 'text': 'FAKE_SECRET'},
+                {'type': 'rag_progress', 'stage': 'FAKE_SECRET', 'done': 81, 'total': 814},
+                {'type': 'rag_progress', 'stage': [], 'done': 1, 'total': 2},
+                {'type': 'rag_progress', 'stage': 'embedding', 'done': True, 'total': 814},
+                {'type': 'rag_progress', 'stage': 'embedding', 'done': 815, 'total': 814},
+                {'type': 'rag_progress', 'stage': 'embedding', 'done': 1, 'total': 'FAKE_SECRET'},
+                {'type': 'cancelled'}]
+            (root/'events').write_text('\n'.join(map(json.dumps, rows)))
+            receipt = review.execution_receipt(root/'events', root/'context')
+            self.assertEqual(receipt['last_rag_progress'], {'stage': 'embedding', 'done': 80, 'total': 814})
+            self.assertFalse(receipt['success'])
+            self.assertEqual(receipt['terminal'], 'cancelled')
+            self.assertIsNone(receipt['model'])
+            self.assertNotIn('FAKE_SECRET', json.dumps(receipt))
+
+    def test_live_observer_outputs_only_counts_and_timing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp)/'events'
+            events.write_text(json.dumps({'type': 'rag_progress', 'stage': 'chunking',
+                'done': 3, 'total': 61, 'text': 'FAKE_SECRET', 'reasoning': 'FAKE_SECRET'})+'\n')
+            with subprocess.Popen(['python3', 'tool/headless/github_review.py', 'progress', '--events', str(events)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={'PATH': os.environ['PATH']}) as observer:
+                try:
+                    observer.communicate(timeout=1)
+                    self.fail('Observer unexpectedly exited')
+                except subprocess.TimeoutExpired:
+                    observer.terminate()
+                    out, err = observer.communicate(timeout=5)
+            self.assertEqual(err, b'')
+            row = json.loads(out)
+            self.assertEqual(set(row), {'type', 'elapsed_seconds', 'stage_elapsed_seconds', 'last_rag_progress'})
+            self.assertEqual(row['last_rag_progress'], {'stage': 'chunking', 'done': 3, 'total': 61})
+            self.assertNotIn(b'FAKE_SECRET', out)
+
+    def test_workflow_observer_cleanup_preserves_actual_cli_exit(self):
+        workflow = Path('.github/workflows/domovoy-review.yml').read_text()
+        step = workflow.split('      - name: Run Domovoy production runtime with read-only tools\n', 1)[1].split('      - name:', 1)[0]
+        body = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = Path(tmp)/'headless/bundle/bin/domovoy'
+            cli.parent.mkdir(parents=True)
+            for code in (130, 7, 0):
+                # Benign exit-only stand-in: no source/auth/environment reads.
+                cli.write_text(f'#!/bin/sh\nexit {code}\n')
+                cli.chmod(0o700)
+                result = subprocess.run(['bash', '-e', '-c', body], capture_output=True, timeout=10,
+                    env={'PATH': os.environ['PATH'], 'RUNNER_TEMP': tmp, 'GITHUB_WORKSPACE': os.getcwd()})
+                self.assertEqual(result.returncode, code, result.stderr.decode())
 
     def test_api_errors_expose_only_operation_and_bounded_numeric_status(self):
         secret = b'FAKE_SECRET_NOT_A_CREDENTIAL'

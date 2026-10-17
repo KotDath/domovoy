@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 MARKER = '<!-- domovoy-review:v1 -->'
 SHA = re.compile(r'^[0-9a-f]{40}$')
@@ -344,6 +345,55 @@ def publish(args):
     print(json.dumps({'comment_url': posted['html_url'], 'head': head, 'updated': old is not None}))
 
 
+def safe_rag_progress(row):
+    if (row.get('type') != 'rag_progress' or
+            not isinstance(row.get('stage'), str) or
+            row.get('stage') not in {'chunking', 'embedding'} or
+            type(row.get('done')) is not int or type(row.get('total')) is not int or
+            not 0 <= row['done'] <= row['total'] <= 1_000_000_000):
+        return None
+    return {key: row[key] for key in ('stage', 'done', 'total')}
+
+
+def watch_progress(events, interval=30):
+    # Independent observer: never launches/handles the CLI or changes its exit.
+    started = stage_started = last_report = time.monotonic()
+    latest = None
+    stream = None
+    pending = ''
+    try:
+        while True:
+            if stream is None and Path(events).exists():
+                stream = Path(events).open()
+            if stream is not None:
+                while line := stream.readline():
+                    pending += line
+                    if not pending.endswith('\n'):
+                        break
+                    try:
+                        row = json.loads(pending)
+                        progress = safe_rag_progress(row) if isinstance(row, dict) else None
+                    except ValueError:
+                        progress = None
+                    pending = ''
+                    if progress is not None:
+                        if latest is None or latest['stage'] != progress['stage']:
+                            stage_started = time.monotonic()
+                            last_report = started - interval
+                        latest = progress
+            now = time.monotonic()
+            if now - last_report >= interval:
+                print(json.dumps({'type': 'rag_progress_receipt',
+                    'elapsed_seconds': int(now - started),
+                    'stage_elapsed_seconds': int(now - stage_started) if latest else None,
+                    'last_rag_progress': latest}), flush=True)
+                last_report = now
+            time.sleep(min(interval, 1))
+    finally:
+        if stream is not None:
+            stream.close()
+
+
 def execution_receipt(events, context):
     rows, malformed = [], 0
     for line in Path(events).read_text().splitlines():
@@ -372,6 +422,7 @@ def execution_receipt(events, context):
             'tool_call_count': sum(r.get('type') == 'tool_started' for r in rows),
             'terminal': terminal.get('type', 'missing'),
             'success': terminal.get('type') == 'result' and terminal.get('success') is True,
+            'last_rag_progress': next((p for r in reversed(rows) if (p := safe_rag_progress(r)) is not None), None),
             'malformed_event_rows': malformed}
 
 
@@ -391,9 +442,13 @@ def main():
     p = sub.add_parser('receipt')
     p.add_argument('--events', required=True)
     p.add_argument('--context', required=True)
+    p = sub.add_parser('progress', help='Counts-only observer; does not launch the CLI')
+    p.add_argument('--events', required=True)
     args = parser.parse_args()
     try:
-        if args.command == 'receipt':
+        if args.command == 'progress':
+            watch_progress(args.events)
+        elif args.command == 'receipt':
             print(json.dumps(execution_receipt(args.events, args.context), ensure_ascii=True))
         elif args.command == 'collect': collect(args)
         elif args.command == 'publish': publish(args)
