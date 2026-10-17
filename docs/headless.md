@@ -185,8 +185,22 @@ The coordinator/repository owner must configure:
 - Real gateway bootstrap and cache permissions. The workflow pins/checks the
   Ollama v0.18.2 archive SHA-256 and Qwen model digest, uses the existing pinned
   Python requirements/tokenizers, caches only weights/tokenizers, waits for health,
-  and bounds the job to 45 minutes (agent to 30 minutes). No VPS or reranker
-  runtime is required. Cold CPU setup/indexing can take several minutes.
+  and bounds the job to 75 minutes (agent, including RAG preparation, to 60
+  minutes). No VPS or reranker runtime is required. CPU performance varies
+  between hosted runners; cold setup/indexing can take many minutes.
+
+A CPU-only measurement on four logical AMD EPYC 9V45 CPUs, with Ollama 0.18.2
+and the pinned model, chunked 61 sources into 814 passages in 4.166 seconds.
+Eight representative passages took 9.109 seconds as a batch, 9.387 seconds as
+singletons and 8.972 seconds as a repeat batch; a separate one-passage warmup took 1.238
+seconds. Sample extrapolation estimates 15.2–15.9 minutes for complete embedding,
+excluding chunking, query embedding, cold load and LLM review. This is an estimate,
+not a measured full-index or end-to-end duration. Inference dominated this sample;
+it does not establish the stage or cause of an earlier 30-minute cancellation
+on another runner. The explicit CI agent budget of 60 minutes provides roughly
+four times that extrapolation, with the 75-minute job budget also allowing setup
+and publication. General CLI timeout defaults are unchanged. Actual end-to-end CI
+must still validate the budget; progress counts expose preparation on each run.
 
 A narrow execution receipt in the job log/summary reports the actual model,
 embedding fingerprint, document/other-source counts, retrieved paths, tool-call
