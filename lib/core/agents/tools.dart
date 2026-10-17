@@ -86,6 +86,24 @@ abstract interface class ToolExecutionLiveness {
   void reportProgress({String? detail});
 }
 
+/// Optional host capability for an executor with an irreversible commit point.
+///
+/// After its final cancellation/access checks, the executor must report the
+/// complete immutable outcome synchronously immediately after the side effect,
+/// before any await or fallible cleanup. This acknowledges work already done;
+/// it grants no permission to begin work after cancellation. Report at most once
+/// per invocation. The runtime records the receipt before cancellation can
+/// freeze the transcript; normal completion must not append it a second time.
+/// This form requires a synchronous atomic commit on the runtime's isolate:
+/// cancellation callbacks cannot interleave the side effect and its receipt.
+/// It is NOT safe for an async operation whose side effect can commit before
+/// its future resumes; such an adapter needs a coordinated in-flight drain.
+/// Non-reporting executors retain ordinary cancellable-result behavior.
+abstract interface class ToolExecutionCommitReporter
+    implements ToolExecutionLiveness {
+  void reportCommitted(ToolExecutionResult result);
+}
+
 abstract interface class AgentToolExecutor {
   Future<ToolExecutionResult> execute(
     ToolInvocation invocation, {

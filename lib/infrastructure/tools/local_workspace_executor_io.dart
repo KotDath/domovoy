@@ -17,10 +17,15 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
   LocalWorkspaceToolExecutor({
     required this.resolveRoot,
     this.resolveWritableRoot,
+    this.cleanupTemporary = _cleanupTemporary,
   });
 
   final WorkspaceRootResolver resolveRoot;
   final WorkspaceRootResolver? resolveWritableRoot;
+
+  /// Host IO seam: cleanup may be slow or fail after the file is committed.
+  /// Its outcome can never replace a committed change receipt.
+  final Future<void> Function(Directory) cleanupTemporary;
   Future<void> _mutationTail = Future<void>.value();
 
   @override
@@ -30,6 +35,14 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
     required ToolExecutionLiveness liveness,
   }) async {
     final projectId = invocation.projectId ?? ProjectId.defaultProject;
+    ToolExecutionResult? committed;
+    void acknowledge(ToolExecutionResult receipt) {
+      committed = receipt;
+      if (liveness is ToolExecutionCommitReporter) {
+        liveness.reportCommitted(receipt);
+      }
+    }
+
     try {
       _checkCancellation(cancellation);
       final mutating = {'write', 'edit', 'bash'}.contains(invocation.name);
@@ -58,10 +71,22 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
           liveness,
         ),
         'write' => await _serializeMutation(
-          () => _write(root, invocation.arguments, cancellation, revalidate),
+          () => _write(
+            root,
+            invocation.arguments,
+            cancellation,
+            revalidate,
+            acknowledge,
+          ),
         ),
         'edit' => await _serializeMutation(
-          () => _edit(root, invocation.arguments, cancellation, revalidate),
+          () => _edit(
+            root,
+            invocation.arguments,
+            cancellation,
+            revalidate,
+            acknowledge,
+          ),
         ),
         'bash' => await _bash(
           root,
@@ -72,15 +97,18 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
         _ => throw const FormatException('Unknown local tool.'),
       };
       liveness.reportProgress();
-      return ToolExecutionResult.success(output);
+      return committed ?? ToolExecutionResult.success(output);
     } on _LocalToolError catch (error) {
-      return ToolExecutionResult.failure(error.message);
+      return committed ?? ToolExecutionResult.failure(error.message);
     } on FileSystemException {
-      return ToolExecutionResult.failure('Local workspace access failed.');
+      return committed ??
+          ToolExecutionResult.failure('Local workspace access failed.');
     } on ProcessException {
-      return ToolExecutionResult.failure('Local shell is unavailable.');
+      return committed ??
+          ToolExecutionResult.failure('Local shell is unavailable.');
     } on Object {
-      return ToolExecutionResult.failure('Local tool execution failed.');
+      return committed ??
+          ToolExecutionResult.failure('Local tool execution failed.');
     }
   }
 
@@ -132,6 +160,7 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
     Map<String, Object?> args,
     CancellationToken cancellation,
     Future<void> Function() revalidate,
+    void Function(ToolExecutionResult) acknowledge,
   ) async {
     final path = _stringArg(args, 'path');
     final content = _stringArg(args, 'content', allowEmpty: true);
@@ -154,7 +183,16 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
         'Expected file is missing; no content saved.',
       );
     }
-    return _saveChange(root, path, before, content, cancellation, revalidate);
+    return _saveChange(
+      root,
+      path,
+      before,
+      content,
+      cancellation,
+      revalidate,
+      acknowledge,
+      cleanupTemporary,
+    );
   }
 
   Future<Map<String, Object?>> _edit(
@@ -162,6 +200,7 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
     Map<String, Object?> args,
     CancellationToken cancellation,
     Future<void> Function() revalidate,
+    void Function(ToolExecutionResult) acknowledge,
   ) async {
     final path = _stringArg(args, 'path');
     final target = await _filePath(root, path, requireExisting: true);
@@ -206,17 +245,17 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
       );
     }
     _requireMutationSize(result);
-    return {
-      ...await _saveChange(
-        root,
-        path,
-        source,
-        result,
-        cancellation,
-        revalidate,
-      ),
-      'replacements': replacements.length,
-    };
+    return _saveChange(
+      root,
+      path,
+      source,
+      result,
+      cancellation,
+      revalidate,
+      acknowledge,
+      cleanupTemporary,
+      metadata: {'replacements': replacements.length},
+    );
   }
 
   Future<Map<String, Object?>> _serializeMutation(
@@ -482,7 +521,10 @@ Future<Map<String, Object?>> _saveChange(
   String after,
   CancellationToken cancellation,
   Future<void> Function() revalidate,
-) async {
+  void Function(ToolExecutionResult) acknowledge,
+  Future<void> Function(Directory) cleanupTemporary, {
+  Map<String, Object?> metadata = const {},
+}) async {
   _checkCancellation(cancellation);
   final target = await _filePath(root, path, createParents: true);
   final directory = await Directory(
@@ -490,6 +532,22 @@ Future<Map<String, Object?>> _saveChange(
   ).createTemp('.domovoy-save-');
   final temporary = File(p.join(directory.path, 'content'));
   try {
+    final output = <String, Object?>{
+      ...metadata,
+      'path': path,
+      'bytesWritten': before == after ? 0 : utf8.encode(after).length,
+      'change': {
+        'path': path,
+        'kind': before == after
+            ? 'unchanged'
+            : before == null
+            ? 'created'
+            : 'modified',
+        'before': before,
+        'after': after,
+      },
+    };
+    final receipt = ToolExecutionResult.success(output);
     await temporary.writeAsString(after, flush: true);
     await revalidate();
     await _filePath(root, path, createParents: false);
@@ -524,35 +582,27 @@ Future<Map<String, Object?>> _saveChange(
         'File changed concurrently; no content saved. Read again before editing.',
       );
     }
-    if (before == after) {
-      return {
-        'path': path,
-        'bytesWritten': 0,
-        'change': {
-          'path': path,
-          'kind': 'unchanged',
-          'before': before,
-          'after': after,
-        },
-      };
-    }
+    if (before == after) return output;
     if (before != null) {
       applyPortablePermissionBits(temporary.path, file.statSync().mode);
     }
     temporary.renameSync(target);
-    return {
-      'path': path,
-      'bytesWritten': utf8.encode(after).length,
-      'change': {
-        'path': path,
-        'kind': before == null ? 'created' : 'modified',
-        'before': before,
-        'after': after,
-      },
-    };
+    // No await after the irreversible effect until its exact receipt is in
+    // the runtime transcript. Cancellation during cleanup preserves this save.
+    acknowledge(receipt);
+    return output;
   } finally {
-    if (await directory.exists()) await directory.delete(recursive: true);
+    try {
+      await cleanupTemporary(directory);
+    } on Object {
+      // Best effort, including before commit: preserve the original operation
+      // outcome rather than replacing it with a temporary-cleanup failure.
+    }
   }
+}
+
+Future<void> _cleanupTemporary(Directory directory) async {
+  if (await directory.exists()) await directory.delete(recursive: true);
 }
 
 bool _sameBytes(List<int> a, List<int> b) {

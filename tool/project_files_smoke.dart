@@ -15,6 +15,7 @@ import 'package:domovoy/core/rag/turn.dart';
 import 'package:domovoy/features/chat/application/chat_run_preparer.dart';
 import 'package:domovoy/features/projects/application/project_files_preparer.dart';
 import 'package:domovoy/infrastructure/agents/jsonl/jsonl_filesystem_storage_io.dart';
+import 'package:domovoy/infrastructure/agents/jsonl/jsonl_agent_session_store.dart';
 import 'package:domovoy/infrastructure/projects/context/local_project_context_io.dart';
 import 'package:domovoy/infrastructure/rag/jsonl_rag_repository.dart';
 import 'package:domovoy/infrastructure/rag/model_service_client.dart';
@@ -108,9 +109,7 @@ Future<void> main(List<String> args) async {
       projectDocumentationCorpus,
       index,
     );
-    session = await stack.runtime
-        .agent(stack.promptDefinition)
-        .createSession(projectId: project);
+    session = await createProjectFileProbeSession(stack, project);
     final preparer = ProjectFilesPreparer(
       fallback: _Fallback(),
       projects: context,
@@ -152,6 +151,7 @@ Future<void> main(List<String> args) async {
       cancel.dispose();
     }
     await prepared.onSettled?.call(session.snapshot, terminal);
+    final replay = await verifyProjectFileProbeReplay(storage, session);
     final calls = <String, LlmToolCallPart>{};
     final results = <Map<String, Object?>>[];
     for (final message in session.snapshot.transcript.messages) {
@@ -193,6 +193,7 @@ Future<void> main(List<String> args) async {
     await File(p.join(artifacts.path, 'report.json')).writeAsString(
       const JsonEncoder.withIndent('  ').convert({
         'root': root,
+        'agent_session_replay': replay,
         'goal': input,
         'terminal': terminal.runtimeType.toString(),
         'documentation_sources': docs
@@ -234,4 +235,47 @@ final class _Fallback implements ChatRunPreparer {
     String input,
     CancellationToken cancellation,
   ) async => null;
+}
+
+/// Explicit durable composition shared with the offline persistence regression.
+Future<AgentSession> createProjectFileProbeSession(
+  ProductionAgentStack stack,
+  ProjectId project,
+) => stack.runtime
+    .agent(stack.promptDefinition)
+    .createSession(
+      projectId: project,
+      persistence: SessionPersistence.repository,
+    );
+
+/// A fresh store must replay the exact completed/cancelled transcript. RAG
+/// streams alone are not evidence that an agent session was persisted.
+Future<Map<String, Object?>> verifyProjectFileProbeReplay(
+  JsonlFilesystemStreamStorage storage,
+  AgentSession session,
+) async {
+  final record = await JsonlAgentSessionStore(
+    storage: storage,
+  ).load(session.id);
+  if (record == null ||
+      jsonEncode(record.transcript.toJson()) !=
+          jsonEncode(session.snapshot.transcript.toJson())) {
+    throw StateError(
+      'Agent-session JSONL replay is missing or differs from the actual transcript.',
+    );
+  }
+  final results = record.transcript.messages
+      .expand((m) => m.parts)
+      .whereType<LlmToolResultPart>()
+      .toList();
+  return {
+    'session_id': session.id.value,
+    'persistence': 'repository',
+    'fresh_store_transcript_matches': true,
+    'tool_result_count': results.length,
+    'change_result_count': results.where((r) {
+      final decoded = jsonDecode(r.content);
+      return decoded is Map && decoded['change'] is Map;
+    }).length,
+  };
 }
