@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
+import '../compute/background.dart';
 
 import '../../core/rag/contracts.dart';
 import '../../core/rag/models.dart';

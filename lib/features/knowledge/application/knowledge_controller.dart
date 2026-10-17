@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import '../../../core/projects/ids.dart';
@@ -8,7 +7,7 @@ import '../../../core/projects/project_context.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/llm/cancellation.dart';
-import '../../../core/rag/chunking.dart';
+import '../../../core/rag/index_builder.dart';
 import '../../../core/rag/contracts.dart';
 import '../../../core/rag/models.dart';
 
@@ -274,36 +273,17 @@ final class KnowledgeController extends ChangeNotifier {
     final stopwatch = Stopwatch()..start();
     final info = await models.health(token);
     model = info;
-    final chunks = <RagChunk>[];
-    final chunker = RagChunker(models);
-    for (var i = 0; i < docs.length; i++) {
-      progress =
-          'Разбиение: документ ${i + 1}/${docs.length} · чанков ${chunks.length}';
-      _notify();
-      chunks.addAll(await chunker.split(docs[i], selected, token));
-    }
-    final vectors = <List<double>>[];
-    for (var start = 0; start < chunks.length; start += 8) {
-      checkRagCancellation(token.isCancelled);
-      progress = 'Эмбеддинги: ${vectors.length}/${chunks.length}';
-      _notify();
-      final batch = chunks.sublist(start, min(start + 8, chunks.length));
-      vectors.addAll(
-        await models.embed(batch.map((c) => c.text).toList(), info, token),
-      );
-    }
-    checkRagCancellation(token.isCancelled);
-    final index = RagIndex(
-      fingerprint: info.fingerprint,
-      dimension: info.dimension,
+    final index = await buildRagIndex(
+      models: models,
+      model: info,
+      documents: docs,
       strategy: selected,
-      chunks: List.unmodifiable(chunks),
-      vectors: List.unmodifiable(vectors),
-      documents: List.unmodifiable(docs),
-      elapsedMs: stopwatch.elapsedMilliseconds,
-      generation: ragHash(
-        '${info.fingerprint}|${selected.name}|${DateTime.now().microsecondsSinceEpoch}',
-      ),
+      cancellation: token,
+      revisionScope: 'interactive-${DateTime.now().microsecondsSinceEpoch}',
+      progress: (stage, done, total) {
+        progress = '$stage: $done/$total';
+        _notify();
+      },
     );
     _publishing = true;
     progress = 'Публикация проверенного индекса…';
@@ -314,7 +294,7 @@ final class KnowledgeController extends ChangeNotifier {
     comparisonHits = {};
     comparisonQuery = null;
     progress =
-        '${selected.name}: ${chunks.length} чанков · ${info.dimension}D · '
+        '${selected.name}: ${index.chunks.length} чанков · ${info.dimension}D · '
         '${(stopwatch.elapsedMilliseconds / 1000).toStringAsFixed(1)} с';
   });
 

@@ -47,6 +47,12 @@ human confirms it. See
 [docs/automation-user-guide.md](docs/automation-user-guide.md) for the cron
 syntax, DST policy and the literal 24/7 limitation (the app must be open).
 
+## Headless execution and PR review
+
+Run the same production agent in the Dart VM without a display. See
+[the headless CLI guide](docs/headless.md) for local exec/review commands, vector
+RAG, read-only review tools and GitHub Actions configuration.
+
 ## Linux development
 
 The application stores an optional DeepSeek API-key override with Secret

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../../core/llm/cancellation.dart';
@@ -10,13 +9,19 @@ import '../../core/rag/models.dart';
 import '../../core/rag/retrieval.dart';
 
 final class RagModelServiceClient implements RagModelProvider, RagReranker {
-  RagModelServiceClient(this.client, this.baseUrl) {
+  RagModelServiceClient(
+    this.client,
+    this.baseUrl, {
+    bool allowLoopbackHttp =
+        !const bool.fromEnvironment('dart.vm.product') &&
+        !const bool.fromEnvironment('dart.vm.profile'),
+  }) {
     final local = {'127.0.0.1', 'localhost', '10.0.2.2'}.contains(baseUrl.host);
     if (baseUrl.userInfo.isNotEmpty ||
         baseUrl.hasQuery ||
         baseUrl.hasFragment ||
         (baseUrl.scheme != 'https' &&
-            !(kDebugMode && local && baseUrl.scheme == 'http'))) {
+            !(allowLoopbackHttp && local && baseUrl.scheme == 'http'))) {
       throw ArgumentError('RAG service requires HTTPS or debug loopback HTTP');
     }
   }
