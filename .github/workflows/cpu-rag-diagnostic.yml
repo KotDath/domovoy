@@ -1,0 +1,377 @@
+# Operator-only temporary diagnostic; do not merge into product.
+name: Temporary provider-free CPU RAG diagnostic
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: ['.github/workflows/cpu-rag-diagnostic.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cpu-rag-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  diagnostic:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BENCH_BASE: f4c0a914c8c5da3cdded043093d631a2e97e252a
+      BENCH_HEAD: 503a84d58849f103b3784f750ea07e6a4e81ea83
+    steps:
+      - name: Configure isolated caches
+        run: |
+          printf 'HF_HOME=%s/domovoy-model-cache/huggingface\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OLLAMA_MODELS=%s/domovoy-model-cache/ollama\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Exact trusted production revision (never diagnostic PR source)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: f4c0a914c8c5da3cdded043093d631a2e97e252a
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Flutter tooling
+        uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e
+        with:
+          flutter-version: '3.41.4'
+          channel: stable
+      - name: Reuse exact production model cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/domovoy-model-cache
+          key: domovoy-rag-cpu-v1-${{ runner.os }}-${{ hashFiles('tool/rag_model_service/models.lock.json', 'tool/rag_model_service/requirements.lock', 'tool/headless/bootstrap_rag_ci.sh') }}
+      - name: Exact pinned production CPU service (ephemeral runner only)
+        run: bash tool/headless/bootstrap_rag_ci.sh
+      - name: Freeze inert data from the actual timed-out PR
+        run: |
+          python3 tool/headless/github_review.py bundle --checkout "$GITHUB_WORKSPACE" \
+            --repo "$GITHUB_REPOSITORY" --base "$BENCH_BASE" --head "$BENCH_HEAD" \
+            --out "$RUNNER_TEMP/cpu-pr-input"
+      - name: Materialize trusted operator diagnostic (not PR project code)
+        run: |
+          mkdir -p build
+          cat > build/day32_cpu_diagnostic.dart <<'DART'
+          // External operator-only diagnostic. No LLM/provider imports or project code execution.
+          import 'dart:async';
+          import 'dart:convert';
+          import 'dart:io';
+          import 'dart:math';
+          import 'package:http/http.dart' as http;
+          import 'package:domovoy/core/llm/cancellation.dart';
+          import 'package:domovoy/core/rag/chunking.dart';
+          import 'package:domovoy/core/rag/contracts.dart';
+          import 'package:domovoy/core/rag/models.dart';
+          import 'package:domovoy/infrastructure/headless/project_sources_io.dart';
+          import 'package:domovoy/infrastructure/headless/review_context.dart';
+          import 'package:domovoy/infrastructure/rag/model_service_client.dart';
+
+          void emit(Map<String, Object?> row) => stdout.writeln(jsonEncode(row));
+
+          Future<void> main(List<String> args) async {
+            if (args.length != 2) {
+              emit({
+                'type': 'diagnostic_failed',
+                'kind': 'expected_snapshot_and_context',
+              });
+              exitCode = 2;
+              return;
+            }
+            final clock = Stopwatch()..start();
+            final cancellation = CancellationSource();
+            final client = http.Client();
+            var stage = 'snapshot';
+            var done = 0, total = 0;
+            var timedOut = false;
+            final deadline = Timer(const Duration(minutes: 10), () {
+              timedOut = true;
+              cancellation.cancel();
+              client.close();
+            });
+            final heartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
+              emit({
+                'type': 'progress',
+                'stage': stage,
+                'done': done,
+                'total': total,
+                'elapsed_ms': clock.elapsedMilliseconds,
+              });
+            });
+            final models = TimedModels(
+              RagModelServiceClient(
+                client,
+                Uri.parse('http://127.0.0.1:8765'),
+                allowLoopbackHttp: true,
+              ),
+            );
+            try {
+              final context = ReviewContext.parse(await File(args[1]).readAsString());
+              final snapshot = await scanProjectSources(args[0], cancellation.token);
+              context.verifySources(snapshot);
+              final documents = snapshot.documents
+                  .where((d) => context.ragPaths.contains(d.source))
+                  .toList();
+              if (documents.length != context.ragPaths.length)
+                throw StateError('coverage');
+              final info = await models.health(cancellation.token);
+              emit({
+                'type': 'identity',
+                'base_sha': context.base,
+                'head_sha': context.head,
+                'fingerprint': info.fingerprint,
+                'dimension': info.dimension,
+                'corpus_sources': documents.length,
+                'corpus_utf8_bytes': documents.fold<int>(
+                  0,
+                  (n, d) => n + utf8.encode(d.text).length,
+                ),
+                'scope':
+                    'all frozen review rag_paths; representative embedding sample only',
+              });
+              stage = 'chunking';
+              total = documents.length;
+              final chunkClock = Stopwatch()..start();
+              final chunks = <RagChunk>[];
+              final chunker = RagChunker(models);
+              for (final document in documents) {
+                chunks.addAll(
+                  await chunker.split(
+                    document,
+                    ChunkStrategy.structure,
+                    cancellation.token,
+                  ),
+                );
+                done++;
+              }
+              emit({
+                'type': 'chunking_complete',
+                'documents': done,
+                'chunks': chunks.length,
+                'elapsed_ms': chunkClock.elapsedMilliseconds,
+                'tokenizer_metrics': models.metrics,
+              });
+              if (chunks.length < 8) throw StateError('insufficient_passages');
+              final ordered = [...chunks]
+                ..sort((a, b) {
+                  final compare = a.tokens.compareTo(b.tokens);
+                  return compare != 0 ? compare : a.id.compareTo(b.id);
+                });
+              final sample = [
+                for (var i = 0; i < 8; i++)
+                  ordered[((i + 0.5) * ordered.length / 8).floor()],
+              ];
+              final texts = sample.map((c) => c.text).toList();
+              emit({
+                'type': 'sample',
+                'count': 8,
+                'selection':
+                    'eight token-length quantile midpoints from full production chunks',
+                'tokens': sample.map((c) => c.tokens).toList(),
+                'documentation_count': sample
+                    .where(
+                      (c) => RegExp(
+                        r'\.(md|markdown|mdx|rst|txt)$',
+                        caseSensitive: false,
+                      ).hasMatch(c.source),
+                    )
+                    .length,
+                'not_a_full_index': true,
+              });
+              stage = 'warmup';
+              done = 0;
+              total = 1;
+              final warm = Stopwatch()..start();
+              await models.embed([texts.first], info, cancellation.token);
+              done = 1;
+              emit({'type': 'warmup_complete', 'elapsed_ms': warm.elapsedMilliseconds});
+              List<List<double>>? reference;
+              for (final mode in ['batch8', 'singletons8', 'batch8_repeat']) {
+                stage = mode;
+                done = 0;
+                total = 8;
+                final elapsed = Stopwatch()..start();
+                final vectors = <List<double>>[];
+                if (mode == 'singletons8') {
+                  for (final text in texts) {
+                    vectors.addAll(await models.embed([text], info, cancellation.token));
+                    done++;
+                  }
+                } else {
+                  vectors.addAll(await models.embed(texts, info, cancellation.token));
+                  done = 8;
+                }
+                if (vectors.length != 8) throw StateError('vector_count');
+                var normMin = double.infinity, normMax = 0.0, cosineMin = 1.0;
+                for (var i = 0; i < vectors.length; i++) {
+                  final v = vectors[i];
+                  if (v.length != info.dimension || v.any((n) => !n.isFinite))
+                    throw StateError('vector_contract');
+                  final norm = sqrt(v.fold<double>(0, (sum, n) => sum + n * n));
+                  if ((norm - 1).abs() > 0.00001) throw StateError('normalization');
+                  normMin = min(normMin, norm);
+                  normMax = max(normMax, norm);
+                  if (reference != null) {
+                    var cosine = 0.0;
+                    for (var j = 0; j < v.length; j++) {
+                      cosine += v[j] * reference[i][j];
+                    }
+                    cosineMin = min(cosineMin, cosine);
+                  }
+                }
+                emit({
+                  'type': 'embedding_measurement',
+                  'mode': mode,
+                  'passages': 8,
+                  'elapsed_ms': elapsed.elapsedMilliseconds,
+                  'dimension': info.dimension,
+                  'normalized_norm_min': normMin,
+                  'normalized_norm_max': normMax,
+                  'cosine_min_vs_first_batch': reference == null ? null : cosineMin,
+                  'rough_full_embedding_ms':
+                      elapsed.elapsedMilliseconds * chunks.length / 8,
+                  'estimate_only_excludes_chunking_query_and_cold_load': true,
+                });
+                reference ??= vectors;
+              }
+              final after = await models.health(cancellation.token);
+              if (after.fingerprint != info.fingerprint ||
+                  after.dimension != info.dimension)
+                throw StateError('model_drift');
+              emit({
+                'type': 'diagnostic_complete',
+                'success': true,
+                'elapsed_ms': clock.elapsedMilliseconds,
+                'fingerprint': info.fingerprint,
+                'dimension': info.dimension,
+                'request_metrics': models.metrics,
+                'full_index_embedded': false,
+                'llm_provider_called': false,
+              });
+            } catch (_) {
+              emit({
+                'type': 'diagnostic_failed',
+                'stage': stage,
+                'kind': timedOut ? 'deadline' : 'request_or_contract_error',
+                'elapsed_ms': clock.elapsedMilliseconds,
+                'request_metrics': models.metrics,
+              });
+              exitCode = timedOut ? 124 : 1;
+            } finally {
+              deadline.cancel();
+              heartbeat.cancel();
+              cancellation.cancel();
+              client.close();
+            }
+          }
+
+          final class TimedModels implements RagModelProvider {
+            TimedModels(this.inner);
+            final RagModelProvider inner;
+            final metrics = <String, Map<String, int>>{};
+            Future<T> measure<T>(String kind, Future<T> Function() work) async {
+              final timer = Stopwatch()..start();
+              try {
+                return await work();
+              } finally {
+                final row = metrics.putIfAbsent(
+                  kind,
+                  () => {'requests': 0, 'total_ms': 0, 'max_ms': 0},
+                );
+                row['requests'] = row['requests']! + 1;
+                row['total_ms'] = row['total_ms']! + timer.elapsedMilliseconds;
+                row['max_ms'] = max(row['max_ms']!, timer.elapsedMilliseconds);
+              }
+            }
+
+            @override
+            Future<RagModelInfo> health(CancellationToken c) =>
+                measure('health', () => inner.health(c));
+            @override
+            Future<List<RagToken>> tokenize(
+              String text,
+              CancellationToken c, {
+              bool reranker = false,
+            }) => measure(
+              reranker ? 'reranker_tokenizer' : 'embedding_tokenizer',
+              () => inner.tokenize(text, c, reranker: reranker),
+            );
+            @override
+            Future<List<List<double>>> embed(
+              List<String> texts,
+              RagModelInfo model,
+              CancellationToken c, {
+              bool query = false,
+            }) => measure(
+              'embedding_batch_${texts.length}',
+              () => inner.embed(texts, model, c, query: query),
+            );
+          }
+          DART
+          cat > "$RUNNER_TEMP/runner_metadata.py" <<'PYMETADATA'
+          """Sanitized numeric/runtime identity snapshot. No environment, source, or auth."""
+          import importlib.metadata
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import urllib.request
+
+
+          def scalar(value):
+              return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+
+          def label(value):
+              return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:/+ -]{1,160}', value) else None
+
+
+          def digest(value):
+              return value if isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) else None
+
+
+          def get(url):
+              with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=10) as response:
+                  return json.load(response)
+
+
+          try:
+              health = get('http://127.0.0.1:8765/health')
+              version = get('http://127.0.0.1:11434/api/version')
+              loaded = get('http://127.0.0.1:11434/api/ps')
+              cpu = Path('/proc/cpuinfo').read_text()
+              cpu_model = next((line.split(':', 1)[1].strip() for line in cpu.splitlines() if line.startswith('model name')), None)
+              quota_path = Path('/sys/fs/cgroup/cpu.max')
+              quota = quota_path.read_text().split() if quota_path.exists() else None
+              cpu_stats = {k: int(v) for k, v in (line.split() for line in (Path('/sys/fs/cgroup/cpu.stat').read_text().splitlines() if Path('/sys/fs/cgroup/cpu.stat').exists() else [])) if k in {'usage_usec', 'user_usec', 'system_usec', 'nr_periods', 'nr_throttled', 'throttled_usec'}}
+              embedding = health.get('embedding', {})
+              result = {'type': 'runner_metadata', 'cpu_count': os.cpu_count(),
+                  'cpu_affinity_count': len(os.sched_getaffinity(0)), 'cpu_model': label(cpu_model),
+                  'cgroup_cpu_quota_us': None if quota is None or quota[0] == 'max' else int(quota[0]),
+                  'cgroup_cpu_period_us': int(quota[1]) if quota else None, 'cgroup_cpu_stats': cpu_stats,
+                  'python': label(platform.python_version()), 'machine': label(platform.machine()),
+                  'packages': {p: label(importlib.metadata.version(p)) for p in ('transformers', 'tokenizers', 'httpx', 'numpy')},
+                  'ollama_server_version': label(version.get('version')),
+                  'embedding_model': label(embedding.get('model')), 'embedding_digest': digest(embedding.get('digest')),
+                  'fingerprint': digest(health.get('fingerprint')), 'dimension': scalar(health.get('dimension')),
+                  'tokenizer_fingerprints': {k: digest(health.get('tokenizer_fingerprints', {}).get(k)) for k in ('embedding', 'reranker')},
+                  'loaded_models': [{**{k: scalar(m.get(k)) for k in ('size', 'size_vram', 'context_length')},
+                      'name': label(m.get('name')), 'digest': digest(m.get('digest'))} for m in loaded.get('models', [])]}
+              print(json.dumps(result))
+          except Exception:
+              print('{"type":"runner_metadata_failed","kind":"unavailable_or_invalid"}')
+              raise SystemExit(1)
+          PYMETADATA
+      - name: Compile production-importing diagnostic
+        run: |
+          flutter pub get
+          dart build cli --target build/day32_cpu_diagnostic.dart --output "$RUNNER_TEMP/cpu-diagnostic"
+      - name: Sanitized pre-run runtime and CPU metadata
+        run: '"$RUNNER_TEMP/domovoy-rag-service/venv/bin/python" "$RUNNER_TEMP/runner_metadata.py"'
+      - name: Bounded genuine tokenizer/chunker and batch comparison (no provider)
+        timeout-minutes: 12
+        run: |
+          env -u DEEPSEEK_API_KEY -u OPENROUTER_API_KEY -u GH_TOKEN -u GITHUB_TOKEN \
+            timeout --signal=TERM --kill-after=10s 630s "$RUNNER_TEMP/cpu-diagnostic/bundle/bin/day32_cpu_diagnostic" \
+            "$RUNNER_TEMP/cpu-pr-input/sources" "$RUNNER_TEMP/cpu-pr-input/review.json"
+      - name: Sanitized post-run metadata
+        if: always()
+        run: '"$RUNNER_TEMP/domovoy-rag-service/venv/bin/python" "$RUNNER_TEMP/runner_metadata.py"'
