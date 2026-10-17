@@ -27,3 +27,4 @@ export 'tools.dart';
 export 'token_accounting.dart';
 export 'title.dart';
 export 'transcript.dart';
+export 'workspace_file_tools.dart';

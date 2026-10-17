@@ -80,4 +80,6 @@ flutter test
 flutter build apk --debug
 ```
 
+Файловые цели с реальной записью: [`/files`, переносимый поиск и сохранённые изменения](docs/project-file-assistant.md).
+
 Помощник по локальному checkout: [`/help`, импорт Android и README/docs RAG](docs/developer-assistant.md).

@@ -132,7 +132,7 @@ class _ChatComposerState extends State<ChatComposer> {
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
                 decoration: const InputDecoration(
-                  hintText: 'Что обдумаем вместе?',
+                  hintText: 'Сообщение или /files цель изменений',
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
                   focusedBorder: InputBorder.none,

@@ -19,13 +19,18 @@ LocalWorkspaceTools createLocalWorkspaceTools(ProjectPlatformStack projects) {
   if (Platform.isIOS) {
     return LocalWorkspaceTools(registry: registry, enabled: const []);
   }
+  final roots = ProjectWorkspaceRootResolver(projects);
   final executor = LocalWorkspaceToolExecutor(
-    resolveRoot: ProjectWorkspaceRootResolver(projects).resolve,
+    resolveRoot: roots.resolve,
+    resolveWritableRoot: (id) => roots.resolve(id, write: true),
   );
-  for (final descriptor in PiDefaultTools.descriptors) {
+  for (final descriptor in WorkspaceFileTools.descriptors) {
     registry.register(AgentTool(descriptor: descriptor, executor: executor));
   }
-  return LocalWorkspaceTools(registry: registry, enabled: PiDefaultTools.ids);
+  return LocalWorkspaceTools(
+    registry: registry,
+    enabled: WorkspaceFileTools.ids,
+  );
 }
 
 /// Resolves a project's current local root on each invocation. A saved project
@@ -35,7 +40,7 @@ final class ProjectWorkspaceRootResolver {
 
   final ProjectPlatformStack projects;
 
-  Future<String> resolve(ProjectId projectId) async {
+  Future<String> resolve(ProjectId projectId, {bool write = false}) async {
     final record = await projects.repository.load(projectId);
     if (record == null || !record.isActive) {
       throw const FileSystemException('Project is not active.');
@@ -68,6 +73,13 @@ final class ProjectWorkspaceRootResolver {
       final grantStore = projects.grants;
       if (grantStore is! FileProjectDirectoryGrantStore) {
         throw const FileSystemException('Project grant is unavailable.');
+      }
+      final descriptor = await grantStore.revalidate(root.grantId);
+      if (descriptor.projectId != projectId ||
+          descriptor.role != DirectoryGrantRole.root ||
+          (write &&
+              descriptor.requestedAccess != DirectoryGrantAccess.readWrite)) {
+        throw const FileSystemException('Project root is not writable.');
       }
       final nativePath = grantStore.nativePathFor(root.grantId);
       if (nativePath == null) {

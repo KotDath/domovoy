@@ -2,17 +2,26 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
+import 'package:crypto/crypto.dart';
+import '../projects/context/portable_file_mode_io.dart';
 import '../../core/agents/agents.dart';
 import '../../core/llm/cancellation.dart';
 import '../../core/projects/ids.dart';
 import '../../core/projects/policy.dart';
 
+part 'local_workspace_discovery_io.dart';
+
 typedef WorkspaceRootResolver = Future<String> Function(ProjectId projectId);
 
 final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
-  const LocalWorkspaceToolExecutor({required this.resolveRoot});
+  LocalWorkspaceToolExecutor({
+    required this.resolveRoot,
+    this.resolveWritableRoot,
+  });
 
   final WorkspaceRootResolver resolveRoot;
+  final WorkspaceRootResolver? resolveWritableRoot;
+  Future<void> _mutationTail = Future<void>.value();
 
   @override
   Future<ToolExecutionResult> execute(
@@ -23,12 +32,37 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
     final projectId = invocation.projectId ?? ProjectId.defaultProject;
     try {
       _checkCancellation(cancellation);
-      final root = await resolveRoot(projectId);
+      final mutating = {'write', 'edit', 'bash'}.contains(invocation.name);
+      final root = await (mutating
+          ? resolveWritableRoot ?? resolveRoot
+          : resolveRoot)(projectId);
       _checkCancellation(cancellation);
+      Future<void> revalidate() async {
+        _checkCancellation(cancellation);
+        final current = await (resolveWritableRoot ?? resolveRoot)(projectId);
+        if (p.normalize(current) != p.normalize(root)) {
+          throw const _LocalToolError(
+            'Project root changed; no content saved.',
+          );
+        }
+        _checkCancellation(cancellation);
+      }
+
       final output = switch (invocation.name) {
         'read' => await _read(root, invocation.arguments, cancellation),
-        'write' => await _write(root, invocation.arguments, cancellation),
-        'edit' => await _edit(root, invocation.arguments, cancellation),
+        'ls' || 'find' || 'grep' => await _discover(
+          root,
+          invocation.name,
+          invocation.arguments,
+          cancellation,
+          liveness,
+        ),
+        'write' => await _serializeMutation(
+          () => _write(root, invocation.arguments, cancellation, revalidate),
+        ),
+        'edit' => await _serializeMutation(
+          () => _edit(root, invocation.arguments, cancellation, revalidate),
+        ),
         'bash' => await _bash(
           root,
           invocation.arguments,
@@ -57,7 +91,7 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
   ) async {
     final path = _stringArg(args, 'path');
     final target = await _filePath(root, path, requireExisting: true);
-    final content = await File(target).readAsString();
+    final content = await _readText(target);
     _checkCancellation(cancellation);
     final lines = const LineSplitter().convert(content);
     final offset = _positiveIntArg(args, 'offset') ?? 1;
@@ -84,6 +118,7 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
     return <String, Object?>{
       'path': path,
       'content': selected,
+      'revision': _textRevision(content),
       'offset': offset,
       'totalLines': lines.length,
       'truncated':
@@ -96,22 +131,37 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
     String root,
     Map<String, Object?> args,
     CancellationToken cancellation,
+    Future<void> Function() revalidate,
   ) async {
     final path = _stringArg(args, 'path');
     final content = _stringArg(args, 'content', allowEmpty: true);
+    _requireMutationSize(content);
     final target = await _filePath(root, path, createParents: true);
-    _checkCancellation(cancellation);
-    await File(target).writeAsString(content, flush: true);
-    return <String, Object?>{
-      'path': path,
-      'bytesWritten': utf8.encode(content).length,
-    };
+    final exists = await File(target).exists();
+    final before = exists
+        ? await _readText(target, maxBytes: _maxMutationBytes)
+        : null;
+    if (exists &&
+        args['expectedContent'] != before &&
+        args['expectedRevision'] != _textRevision(before!)) {
+      throw const _LocalToolError(
+        'Overwrite conflict: provide expectedRevision from read, exact expectedContent, or use edit.',
+      );
+    }
+    if (!exists &&
+        (args['expectedContent'] != null || args['expectedRevision'] != null)) {
+      throw const _LocalToolError(
+        'Expected file is missing; no content saved.',
+      );
+    }
+    return _saveChange(root, path, before, content, cancellation, revalidate);
   }
 
   Future<Map<String, Object?>> _edit(
     String root,
     Map<String, Object?> args,
     CancellationToken cancellation,
+    Future<void> Function() revalidate,
   ) async {
     final path = _stringArg(args, 'path');
     final target = await _filePath(root, path, requireExisting: true);
@@ -119,7 +169,13 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
     if (rawEdits is! List || rawEdits.isEmpty) {
       throw const _LocalToolError('Provide at least one edit.');
     }
-    final source = await File(target).readAsString();
+    final source = await _readText(target, maxBytes: _maxMutationBytes);
+    if (args['expectedRevision'] != null &&
+        args['expectedRevision'] != _textRevision(source)) {
+      throw const _LocalToolError(
+        'Edit revision conflict; read the file again.',
+      );
+    }
     final replacements = <_Replacement>[];
     for (final raw in rawEdits) {
       if (raw is! Map<String, Object?>) {
@@ -149,9 +205,32 @@ final class LocalWorkspaceToolExecutor implements AgentToolExecutor {
         replacement.text,
       );
     }
-    _checkCancellation(cancellation);
-    await File(target).writeAsString(result, flush: true);
-    return <String, Object?>{'path': path, 'replacements': replacements.length};
+    _requireMutationSize(result);
+    return {
+      ...await _saveChange(
+        root,
+        path,
+        source,
+        result,
+        cancellation,
+        revalidate,
+      ),
+      'replacements': replacements.length,
+    };
+  }
+
+  Future<Map<String, Object?>> _serializeMutation(
+    Future<Map<String, Object?>> Function() action,
+  ) async {
+    final previous = _mutationTail;
+    final done = Completer<void>();
+    _mutationTail = done.future;
+    await previous;
+    try {
+      return await action();
+    } finally {
+      done.complete();
+    }
   }
 
   Future<Map<String, Object?>> _bash(
@@ -265,6 +344,9 @@ Future<String> _filePath(
   bool createParents = false,
 }) async {
   final parsed = parseRelativeSegments(relative);
+  if (!_allowedWorkspacePath(relative)) {
+    throw const _LocalToolError('Path is excluded from workspace file tools.');
+  }
   if (parsed.denial != null) {
     throw const _LocalToolError('Path must be relative to the project.');
   }
@@ -288,7 +370,8 @@ Future<String> _filePath(
       throw const _LocalToolError('Parent directory is unavailable.');
     }
     if (isLast &&
-        (type == FileSystemEntityType.directory ||
+        (type != FileSystemEntityType.file &&
+                type != FileSystemEntityType.notFound ||
             (requireExisting && type != FileSystemEntityType.file))) {
       throw const _LocalToolError('File is unavailable.');
     }
@@ -348,3 +431,137 @@ final class _LocalToolError {
 
   final String message;
 }
+
+const _maxMutationBytes = 128 * 1024;
+
+void _requireMutationSize(String text) {
+  if (utf8.encode(text).length > _maxMutationBytes) {
+    throw const _LocalToolError(
+      'Change exceeds 128 KiB per file; no file saved.',
+    );
+  }
+}
+
+Future<String> _readText(String target, {int maxBytes = 1024 * 1024}) async {
+  final handle = await File(target).open();
+  try {
+    final bytes = await handle.read(maxBytes + 1);
+    if (bytes.length > maxBytes) {
+      throw const _LocalToolError(
+        'Text file exceeds the operation size limit.',
+      );
+    }
+    if (bytes.contains(0)) {
+      throw const _LocalToolError('Binary file is unsupported.');
+    }
+    try {
+      final decoded = utf8.decode(bytes);
+      // Utf8Decoder discards an initial BOM; keep it as actual file content so
+      // revision guards and unrelated bytes survive an exact edit.
+      final hasBom =
+          bytes.length >= 3 &&
+          bytes[0] == 0xef &&
+          bytes[1] == 0xbb &&
+          bytes[2] == 0xbf;
+      return hasBom ? '\uFEFF$decoded' : decoded;
+    } on FormatException {
+      throw const _LocalToolError('File is not valid UTF-8 text.');
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+/// No awaits between the final conflict/path check and rename: app mutations
+/// are serialized, and external changes observed before commit fail closed.
+/// Dart has no portable filesystem compare-and-swap against hostile OS writers.
+Future<Map<String, Object?>> _saveChange(
+  String root,
+  String path,
+  String? before,
+  String after,
+  CancellationToken cancellation,
+  Future<void> Function() revalidate,
+) async {
+  _checkCancellation(cancellation);
+  final target = await _filePath(root, path, createParents: true);
+  final directory = await Directory(
+    p.dirname(target),
+  ).createTemp('.domovoy-save-');
+  final temporary = File(p.join(directory.path, 'content'));
+  try {
+    await temporary.writeAsString(after, flush: true);
+    await revalidate();
+    await _filePath(root, path, createParents: false);
+    _checkCancellation(cancellation);
+    // Recheck synchronously after all asynchronous grant/path operations.
+    var component = root;
+    if (FileSystemEntity.typeSync(root, followLinks: false) !=
+        FileSystemEntityType.directory) {
+      throw const _LocalToolError('Project root is unavailable.');
+    }
+    for (final segment in parseRelativeSegments(path).segments) {
+      component = p.join(component, segment);
+      final type = FileSystemEntity.typeSync(component, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        throw const _LocalToolError('Symbolic links are not allowed.');
+      }
+    }
+    final file = File(target);
+    List<int>? current;
+    if (file.existsSync()) {
+      final handle = file.openSync();
+      try {
+        current = handle.readSync(_maxMutationBytes + 1);
+      } finally {
+        handle.closeSync();
+      }
+    }
+    if ((before == null && current != null) ||
+        (before != null &&
+            (current == null || !_sameBytes(current, utf8.encode(before))))) {
+      throw const _LocalToolError(
+        'File changed concurrently; no content saved. Read again before editing.',
+      );
+    }
+    if (before == after) {
+      return {
+        'path': path,
+        'bytesWritten': 0,
+        'change': {
+          'path': path,
+          'kind': 'unchanged',
+          'before': before,
+          'after': after,
+        },
+      };
+    }
+    if (before != null) {
+      applyPortablePermissionBits(temporary.path, file.statSync().mode);
+    }
+    temporary.renameSync(target);
+    return {
+      'path': path,
+      'bytesWritten': utf8.encode(after).length,
+      'change': {
+        'path': path,
+        'kind': before == null ? 'created' : 'modified',
+        'before': before,
+        'after': after,
+      },
+    };
+  } finally {
+    if (await directory.exists()) await directory.delete(recursive: true);
+  }
+}
+
+bool _sameBytes(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+String _textRevision(String text) =>
+    sha256.convert(utf8.encode(text)).toString();
