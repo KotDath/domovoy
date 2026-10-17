@@ -3073,6 +3073,7 @@ final class _LiveRun implements AgentRun {
   _PendingAssistantAttempt? _pendingAttempt;
   Duration _runStartedAt = Duration.zero;
   final Set<String> _executedCallIds = <String>{};
+  final Set<String> _committedToolCallIds = <String>{};
   Completer<void>? _stopLock;
   var _closeAfter = false;
   late final ResolvedRunGuards guards;
@@ -3745,12 +3746,14 @@ final class _LiveRun implements AgentRun {
         session.toolAttempts += 1;
         final result = await _handleTool(turnId, call);
         results.add(result);
-        session.appendContextMessage(
-          LlmMessage(
-            role: LlmMessageRole.tool,
-            parts: <LlmContentPart>[result],
-          ),
-        );
+        if (!_committedToolCallIds.contains(call.callId.value)) {
+          session.appendContextMessage(
+            LlmMessage(
+              role: LlmMessageRole.tool,
+              parts: <LlmContentPart>[result],
+            ),
+          );
+        }
         await _checkpoint();
         _resetIdle();
       }
@@ -3936,7 +3939,22 @@ final class _LiveRun implements AgentRun {
     if (denialReason != null) {
       return _denyTool(call.callId, denialReason);
     }
-    final liveness = _RunLiveness(this, call.callId);
+    LlmToolResultPart? committedPart;
+    final liveness = _RunLiveness(this, call.callId, (receipt) {
+      // Trusted executor capability: called synchronously at its commit point,
+      // before cleanup/other awaits. Cancellation then freezes this result too.
+      if (committedPart != null || _stopping || _terminated) return;
+      final part = _toolResult(
+        callId: call.callId,
+        success: receipt.success,
+        content: receipt.transcriptContent,
+      );
+      session.appendContextMessage(
+        LlmMessage(role: LlmMessageRole.tool, parts: [part]),
+      );
+      _committedToolCallIds.add(call.callId.value);
+      committedPart = part;
+    });
     ToolExecutionResult? result;
     var executionAttempted = false;
     var cancelledDuringExecute = false;
@@ -3979,6 +3997,7 @@ final class _LiveRun implements AgentRun {
       );
     }
     if (executorAgentError != null || executorFailed || result == null) {
+      if (committedPart != null) return committedPart!;
       return _toolResult(
         callId: call.callId,
         success: false,
@@ -3990,11 +4009,12 @@ final class _LiveRun implements AgentRun {
         }),
       );
     }
-    return _toolResult(
-      callId: call.callId,
-      success: result.success,
-      content: result.transcriptContent,
-    );
+    return committedPart ??
+        _toolResult(
+          callId: call.callId,
+          success: result.success,
+          content: result.transcriptContent,
+        );
   }
 
   /// Denies a call with a visible reason that reaches the trace and transcript.
@@ -5004,11 +5024,15 @@ AgentException _cancelledException() {
   );
 }
 
-final class _RunLiveness implements ToolExecutionLiveness {
-  _RunLiveness(this.run, this.callId);
+final class _RunLiveness implements ToolExecutionCommitReporter {
+  _RunLiveness(this.run, this.callId, this.onCommitted);
 
   final _LiveRun run;
   final ToolCallId callId;
+  final void Function(ToolExecutionResult) onCommitted;
+
+  @override
+  void reportCommitted(ToolExecutionResult result) => onCommitted(result);
 
   @override
   void reportProgress({String? detail}) {

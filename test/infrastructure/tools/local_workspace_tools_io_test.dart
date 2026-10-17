@@ -49,6 +49,9 @@ void main() {
       'write',
       'edit',
       'bash',
+      'ls',
+      'find',
+      'grep',
     ]);
     for (final id in tools.enabled) {
       expect(tools.registry.contains(id), isTrue);

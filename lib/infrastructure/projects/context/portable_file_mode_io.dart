@@ -14,6 +14,12 @@ void applyPortableFileMode(String path, {required bool executable}) {
     }
     return;
   }
+  applyPortablePermissionBits(path, executable ? 0x1ed : 0x1a4);
+}
+
+/// Preserve existing ordinary Unix permission bits during atomic replacement.
+void applyPortablePermissionBits(String path, int bits) {
+  if (Platform.isWindows) return;
   final chmod = DynamicLibrary.process()
       .lookupFunction<
         Int32 Function(Pointer<Utf8>, Uint32),
@@ -21,7 +27,7 @@ void applyPortableFileMode(String path, {required bool executable}) {
       >('chmod');
   final nativePath = path.toNativeUtf8(allocator: calloc);
   try {
-    if (chmod(nativePath, executable ? 0x1ed : 0x1a4) != 0) {
+    if (chmod(nativePath, bits & 0x1ff) != 0) {
       throw const FileSystemException('Cannot preserve checkout file mode');
     }
   } finally {

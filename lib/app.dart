@@ -13,6 +13,8 @@ import 'package:http/http.dart' as http;
 import 'core/projects/project_run_scope.dart';
 import 'core/projects/project_context.dart';
 import 'features/knowledge/application/project_help_preparer.dart';
+import 'features/projects/application/project_files_preparer.dart';
+import 'features/chat/application/chat_run_preparer.dart';
 import 'infrastructure/projects/context/project_context_factory.dart';
 import 'infrastructure/mcp/servers/project/project_mcp_server.dart';
 import 'core/rag/turn.dart';
@@ -923,20 +925,25 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
       onTurnCompleted: dependencies.memoryInspector?.recordCompletedTurn,
       chatDeliveries: mcp?.chatDeliveryStore,
       runToolContexts: mcp?.runToolContexts,
-      runPreparer:
-          dependencies.projectContext != null &&
-              dependencies.projectScopes != null &&
-              dependencies.ragChat != null
-          ? ProjectHelpPreparer(
-              projects: dependencies.projectContext!,
-              scopes: dependencies.projectScopes!,
-              coordinator: dependencies.ragChat!.coordinator,
-              traces: dependencies.ragChat!.traces,
-              fallback: dependencies.ragChat!,
-              ensureMcpReady: dependencies.initializeMcp,
-              refreshSources: dependencies.ragChat!.refreshProjectSources,
-            )
-          : dependencies.ragChat,
+      runPreparer: ProjectFilesPreparer(
+        projects: dependencies.projectContext,
+        coordinator: dependencies.ragChat?.coordinator,
+        refreshSources: dependencies.ragChat?.refreshProjectSources,
+        fallback:
+            dependencies.projectContext != null &&
+                dependencies.projectScopes != null &&
+                dependencies.ragChat != null
+            ? ProjectHelpPreparer(
+                projects: dependencies.projectContext!,
+                scopes: dependencies.projectScopes!,
+                coordinator: dependencies.ragChat!.coordinator,
+                traces: dependencies.ragChat!.traces,
+                fallback: dependencies.ragChat!,
+                ensureMcpReady: dependencies.initializeMcp,
+                refreshSources: dependencies.ragChat!.refreshProjectSources,
+              )
+            : dependencies.ragChat ?? _NoopChatRunPreparer(),
+      ),
       additionalRunTools: mcp == null
           ? null
           : (snapshot) => <ToolId>[
@@ -1206,4 +1213,13 @@ class _LibrarySection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => LibraryPage(controller: controller);
+}
+
+final class _NoopChatRunPreparer implements ChatRunPreparer {
+  @override
+  Future<ChatPreparedRun?> prepare(
+    AgentSessionSnapshot snapshot,
+    String input,
+    CancellationToken cancellation,
+  ) async => null;
 }

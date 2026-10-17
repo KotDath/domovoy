@@ -38,13 +38,24 @@ abstract final class PiDefaultTools {
     LlmToolDescriptor(
       name: 'write',
       description:
-          'Create or overwrite a file, creating parent directories as needed.',
+          'Create a UTF-8 file. Replacing an existing file requires expectedContent '
+          'or expectedRevision from read. Returns exact saved before/after.',
       parameters: <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
           'path': <String, Object?>{
             'type': 'string',
             'description': 'Path to the file to write.',
+          },
+          'expectedRevision': <String, Object?>{
+            'type': 'string',
+            'description':
+                'Content revision returned by read; rejects concurrent changes.',
+          },
+          'expectedContent': <String, Object?>{
+            'type': 'string',
+            'description':
+                'Required for overwrite: exact complete previous UTF-8 content.',
           },
           'content': <String, Object?>{
             'type': 'string',
@@ -65,6 +76,10 @@ abstract final class PiDefaultTools {
           'path': <String, Object?>{
             'type': 'string',
             'description': 'Path to the file to edit.',
+          },
+          'expectedRevision': <String, Object?>{
+            'type': 'string',
+            'description': 'Content revision from read; rejects stale edits.',
           },
           'edits': <String, Object?>{
             'type': 'array',

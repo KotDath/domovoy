@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../../../core/automation/automation.dart';
@@ -283,6 +285,8 @@ class _ToolPartState extends State<_ToolPart> {
               ),
             ),
           ),
+          if (_savedChange(item) case final change?)
+            _SavedFileChange(change: change),
           if (_expanded)
             Padding(
               padding: DomovoyDimensions.panelInsets,
@@ -554,3 +558,69 @@ String _compactionLabel(ChatCompactionStatus status) => switch (status) {
   ChatCompactionStatus.failed => 'ошибка',
   ChatCompactionStatus.cancelled => 'остановлено',
 };
+
+Map<String, dynamic>? _savedChange(ChatToolItem item) {
+  if (item.status != ChatToolStatus.succeeded ||
+      (item.name != 'write' && item.name != 'edit') ||
+      item.result == null) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(item.result!);
+    if (decoded is! Map || decoded['change'] is! Map<String, dynamic>) {
+      return null;
+    }
+    final change = decoded['change'] as Map<String, dynamic>;
+    if (change['path'] is! String ||
+        change['after'] is! String ||
+        (change['before'] != null && change['before'] is! String) ||
+        !{'created', 'modified', 'unchanged'}.contains(change['kind'])) {
+      return null;
+    }
+    return change;
+  } on FormatException {
+    return null;
+  }
+}
+
+class _SavedFileChange extends StatelessWidget {
+  const _SavedFileChange({required this.change});
+  final Map<String, dynamic> change;
+
+  @override
+  Widget build(BuildContext context) => ExpansionTile(
+    title: Text(
+      '${switch (change['kind']) {
+        'created' => 'Создан',
+        'modified' => 'Изменён',
+        _ => 'Без изменений',
+      }} · ${change['path']}',
+    ),
+    subtitle: const Text('Сохранённый результат · до / после'),
+    children: [
+      for (final (label, text) in [
+        ('До', change['before'] as String?),
+        ('После', change['after'] as String),
+      ])
+        Padding(
+          padding: DomovoyDimensions.panelInsets,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(label, style: Theme.of(context).textTheme.labelMedium),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 320),
+                child: SingleChildScrollView(
+                  primary: false,
+                  child: SelectableText(
+                    text ?? '(Файл отсутствовал)',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+    ],
+  );
+}
