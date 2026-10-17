@@ -88,8 +88,8 @@ jobs:
         run: |
           env -u GH_TOKEN -u GITHUB_TOKEN "$RUNNER_TEMP/headless/bundle/bin/domovoy" review \
             --project "$RUNNER_TEMP/pr-input/sources" --review-context "$RUNNER_TEMP/pr-input/review.json" \
-            --system-prompt-file "$GITHUB_WORKSPACE/prompts/review-v1.md" --rag-url http://127.0.0.1:8765 \
-            --state-dir "$RUNNER_TEMP/domovoy-state" --output-format jsonl --reasoning disabled \
+            --system-prompt-file "$GITHUB_WORKSPACE/prompts/review-v2.md" --rag-url http://127.0.0.1:8765 \
+            --state-dir "$RUNNER_TEMP/domovoy-state" --output-format jsonl --reasoning enabled \
             --output-last-message "$RUNNER_TEMP/review.md" --timeout-seconds 1800 \
             > "$RUNNER_TEMP/review-events.jsonl"
       - name: Safe execution receipt
