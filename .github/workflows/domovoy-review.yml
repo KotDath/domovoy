@@ -1,114 +1,47 @@
-name: Domovoy headless review
-
-# Initial policy trusts same-repository writers to author event workflow YAML.
-# CLI/template/dependencies always come from the exact base, never PR code.
+name: Temporary Domovoy publication capability probe
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-
+    types: [opened, synchronize, reopened]
 permissions:
   contents: read
-  pull-requests: write
   issues: write
-
-concurrency:
-  group: domovoy-review-${{ github.repository }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
+  pull-requests: write
 jobs:
-  review:
+  publication-probe:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      PR_BASE: ${{ github.event.pull_request.base.sha }}
-      PR_HEAD: ${{ github.event.pull_request.head.sha }}
-      PR_REPO: ${{ github.repository }}
+    timeout-minutes: 5
     steps:
-      - name: Explicit fork skip
-        if: github.event.pull_request.head.repo.full_name != github.repository
-        run: echo 'SKIPPED — fork PRs are outside the supported trusted-writer policy.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Check provider credential availability
-        id: credential
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        shell: bash
-        run: |
-          if [[ -z "$DEEPSEEK_API_KEY" ]]; then
-            echo 'ready=false' >> "$GITHUB_OUTPUT"
-            echo 'SKIPPED — DEEPSEEK_API_KEY repository secret is unavailable; no review produced.' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'ready=true' >> "$GITHUB_OUTPUT"
-          fi
-      - name: Configure model cache paths on the runner
-        if: steps.credential.outputs.ready == 'true'
-        run: |
-          printf 'HF_HOME=%s/domovoy-model-cache/huggingface\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          printf 'OLLAMA_MODELS=%s/domovoy-model-cache/ollama\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Checkout trusted base code only
-        if: steps.credential.outputs.ready == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Checkout exact trusted base helper
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
           persist-credentials: false
-      - name: Collect frozen PR as inert text data
-        if: steps.credential.outputs.ready == 'true'
+      - name: Create update verify and remove clearly labelled probe
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          python3 tool/headless/github_review.py collect --repo "$PR_REPO" --number "$PR_NUMBER" \
-            --base "$PR_BASE" --head "$PR_HEAD" --checkout "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/pr-input"
-      - name: Install Flutter tooling for the single root package
-        if: steps.credential.outputs.ready == 'true'
-        uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
-        with:
-          flutter-version: '3.41.4'
-          channel: stable
-      - name: Resolve trusted dependencies and compile headless binary
-        if: steps.credential.outputs.ready == 'true'
-        run: |
-          flutter pub get
-          dart build cli --target bin/domovoy.dart --output "$RUNNER_TEMP/headless"
-          "$RUNNER_TEMP/headless/bundle/bin/domovoy" --help
-      - name: Cache real embedding weights and pinned tokenizers
-        if: steps.credential.outputs.ready == 'true'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ runner.temp }}/domovoy-model-cache
-          key: domovoy-rag-cpu-v1-${{ runner.os }}-${{ hashFiles('tool/rag_model_service/models.lock.json', 'tool/rag_model_service/requirements.lock', 'tool/headless/bootstrap_rag_ci.sh') }}
-      - name: Bootstrap existing gateway with CPU embeddings
-        if: steps.credential.outputs.ready == 'true'
-        run: bash tool/headless/bootstrap_rag_ci.sh
-      - name: Run Domovoy production runtime with read-only tools
-        if: steps.credential.outputs.ready == 'true'
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: |
-          env -u GH_TOKEN -u GITHUB_TOKEN "$RUNNER_TEMP/headless/bundle/bin/domovoy" review \
-            --project "$RUNNER_TEMP/pr-input/sources" --review-context "$RUNNER_TEMP/pr-input/review.json" \
-            --system-prompt-file "$GITHUB_WORKSPACE/prompts/review-v1.md" --rag-url http://127.0.0.1:8765 \
-            --state-dir "$RUNNER_TEMP/domovoy-state" --output-format jsonl --reasoning disabled \
-            --output-last-message "$RUNNER_TEMP/review.md" --timeout-seconds 1800 \
-            > "$RUNNER_TEMP/review-events.jsonl"
-      - name: Safe execution receipt
-        if: always() && steps.credential.outputs.ready == 'true'
-        run: |
-          if [[ -f "$RUNNER_TEMP/review-events.jsonl" && -f "$RUNNER_TEMP/pr-input/review.json" ]]; then
-            python3 tool/headless/github_review.py receipt --events "$RUNNER_TEMP/review-events.jsonl" \
-              --context "$RUNNER_TEMP/pr-input/review.json" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'No CLI execution receipt available; inspect prior failed step.' | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Publish or update current-head review comment
-        if: steps.credential.outputs.ready == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 tool/headless/github_review.py publish --repo "$PR_REPO" --number "$PR_NUMBER" \
-            --context "$RUNNER_TEMP/pr-input/review.json" --result "$RUNNER_TEMP/review.md" \
-            --events "$RUNNER_TEMP/review-events.jsonl" >> "$GITHUB_STEP_SUMMARY"
-      - name: Explicit failure status
-        if: failure()
-        run: echo 'FAILED — no successful current-head review is claimed. Inspect the failing step; provider/RAG errors are not findings.' >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PYPROBE'
+          import importlib.util, json, os
+          spec = importlib.util.spec_from_file_location('review_helper', 'tool/headless/github_review.py')
+          helper = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(helper)
+          repo, number = os.environ['PR_REPO'], int(os.environ['PR_NUMBER'])
+          helper.metadata(repo, number)
+          body = 'Domovoy publication capability probe. This is not an AI review; it will be removed immediately.'
+          posted = helper.api(f'repos/{repo}/issues/{number}/comments', method='POST', payload={'body': body})
+          comment_id = posted['id']
+          try:
+              assert posted['user']['login'] == 'github-actions[bot]'
+              endpoint = f'repos/{repo}/issues/comments/{comment_id}'
+              updated = helper.api(endpoint, method='PATCH', payload={'body': body + ' Update verified.'})
+              actual = helper.api(endpoint)
+              assert updated['id'] == comment_id == actual['id']
+              assert actual['body'] == body + ' Update verified.'
+              print(json.dumps({'probe': 'create-update-get', 'success': True, 'comment_id': comment_id, 'author': actual['user']['login']}))
+          finally:
+              helper.run(['gh', 'api', '--method', 'DELETE', f'repos/{repo}/issues/comments/{comment_id}'], github=True)
+              print(json.dumps({'probe': 'cleanup', 'comment_id': comment_id, 'deleted': True}))
+          PYPROBE
