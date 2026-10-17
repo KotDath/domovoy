@@ -18,7 +18,7 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -86,11 +86,15 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
+          env -u DEEPSEEK_API_KEY -u GH_TOKEN -u GITHUB_TOKEN python3 tool/headless/github_review.py progress \
+            --events "$RUNNER_TEMP/review-events.jsonl" &
+          review_progress_pid=$!
+          trap 'review_exit=$?; kill "$review_progress_pid" 2>/dev/null || true; wait "$review_progress_pid" 2>/dev/null || true; exit "$review_exit"' EXIT
           env -u GH_TOKEN -u GITHUB_TOKEN "$RUNNER_TEMP/headless/bundle/bin/domovoy" review \
             --project "$RUNNER_TEMP/pr-input/sources" --review-context "$RUNNER_TEMP/pr-input/review.json" \
             --system-prompt-file "$GITHUB_WORKSPACE/prompts/review-v2.md" --rag-url http://127.0.0.1:8765 \
             --state-dir "$RUNNER_TEMP/domovoy-state" --output-format jsonl --reasoning enabled \
-            --output-last-message "$RUNNER_TEMP/review.md" --timeout-seconds 1800 \
+            --output-last-message "$RUNNER_TEMP/review.md" --timeout-seconds 3600 \
             > "$RUNNER_TEMP/review-events.jsonl"
       - name: Safe execution receipt
         if: always() && steps.credential.outputs.ready == 'true'
