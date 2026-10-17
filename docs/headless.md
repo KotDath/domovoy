@@ -49,7 +49,7 @@ the user's normal OS access and should run only in an authorized local workspace
 models need no asset file. Dynamic models require `--catalog-file` pointing at
 the trusted checkout's `assets/models_fallback.json`; that loader and an external
 state-directory catalog cache feed the production catalog refresh. `--reasoning enabled|disabled` controls the production generation setting
-(default enabled; CI uses disabled to keep review latency bounded). The CLI
+(default enabled; CI explicitly enables reasoning for review quality). The CLI
 never fabricates capabilities for an unknown model. Keep that file outside the
 model-visible snapshot when reviewing PR data.
 
@@ -89,8 +89,16 @@ executing PR files. It validates complete changed-file coverage, exports regular
 UTF-8 source files into a fresh inert snapshot and loads project `AGENTS.md`
 rules from the trusted base SHA. It uses a full three-dot diff (merge-base to
 head), records both requested SHAs and the resolved merge-base, and expands
-renames into delete/add paths. The generic versioned prompt contains no project
-architecture rules or expected findings.
+renames into delete/add paths. Model input presents metadata separately from the
+complete literal unified diff, preserving its line boundaries and untrusted-data
+scope; the whole-input byte limit still applies. The generic versioned prompt contains no project
+architecture rules or expected findings. The current `review-v2.md` template
+requires explicit old/new diff orientation, head-file tool verification and
+branch/dataflow checks against contracts and counterexamples. It treats PR prose
+as unverified claims and asks for evidence, uncertainty and a concise final review.
+`review-v1.md` remains available for reproducibility. Reasoning and these checks
+improve the review process; a successful execution still does not prove the
+model's conclusions correct. Human review remains necessary.
 
 ```sh
 BASE=$(git rev-parse HEAD~1)
@@ -99,8 +107,8 @@ python3 tool/headless/github_review.py bundle --checkout "$PWD" \
   --repo owner/repository --base "$BASE" --head "$HEAD_SHA" --out /tmp/pr-input-unique
 /tmp/domovoy-cli/bundle/bin/domovoy review --project /tmp/pr-input-unique/sources \
   --review-context /tmp/pr-input-unique/review.json \
-  --system-prompt-file "$PWD/prompts/review-v1.md" --rag-url http://127.0.0.1:8765 \
-  --state-dir /tmp/pr-state-unique --output-format jsonl \
+  --system-prompt-file "$PWD/prompts/review-v2.md" --rag-url http://127.0.0.1:8765 \
+  --state-dir /tmp/pr-state-unique --output-format jsonl --reasoning enabled \
   --output-last-message /tmp/pr-review-unique.md > /tmp/pr-events-unique.jsonl
 ```
 

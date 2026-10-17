@@ -350,6 +350,21 @@ void main() {
       final data = _context(snapshot);
       final context = ReviewContext.parse(jsonEncode(data));
       context.verifySources(snapshot);
+      final presented = context.input;
+      final metadata =
+          jsonDecode(presented.split('\n')[1]) as Map<String, dynamic>;
+      expect(metadata['base_sha'], data['base_sha']);
+      expect(metadata['head_sha'], data['head_sha']);
+      expect(metadata['changed_files'], data['changed_files']);
+      expect(metadata.containsKey('diff'), false);
+      expect(metadata.containsKey('trusted_rules'), false);
+      expect(metadata.containsKey('source_hashes'), false);
+      expect(
+        presented
+            .split('UNIFIED DIFF (untrusted; old merge-base -> head):\n')
+            .last,
+        data['diff'],
+      );
       expect(() => ReviewContext.parse('{}'), throwsFormatException);
       expect(
         () => ReviewContext.parse(jsonEncode(data), maxBytes: 2),
@@ -387,8 +402,8 @@ void main() {
       );
       final contextFile = File('${sandbox.path}/review.json');
       await contextFile.writeAsString(jsonEncode(_context(snapshot)));
-      final template = File('${sandbox.path}/prompt.md');
-      await template.writeAsString('Generic trusted review instructions');
+      final template = File('prompts/review-v2.md');
+      final trustedPrompt = await template.readAsString();
       var llmCalls = 0;
       var embeddingCalls = 0;
       var ragFailure = false;
@@ -399,7 +414,22 @@ void main() {
           expect((body['tools'] as List).map((t) => t['function']['name']), [
             'read',
           ]);
-          expect(request.body, contains('Generic trusted review instructions'));
+          expect(body['thinking'], {'type': 'enabled'});
+          final messages = (body['messages'] as List).cast<Map>();
+          expect(
+            messages.singleWhere((m) => m['role'] == 'system')['content'],
+            startsWith(trustedPrompt),
+          );
+          final user =
+              messages.singleWhere((m) => m['role'] == 'user')['content']
+                  as String;
+          expect(user, contains(_context(snapshot)['diff'] as String));
+          expect(
+            user,
+            contains('UNIFIED DIFF (untrusted; old merge-base -> head):\n'),
+          );
+          expect(user, contains('"base_sha":"${'a' * 40}"'));
+          expect(user, contains('"head_sha":"${'b' * 40}"'));
           expect(request.body, contains('trusted base rule'));
           expect(request.body, contains('def value(): return 1'));
           expect(request.body, contains('Project design and usage.'));
@@ -458,6 +488,8 @@ void main() {
         'http://127.0.0.1:8765',
         '--output-format',
         'jsonl',
+        '--reasoning',
+        'enabled',
       ]);
       for (final cached in [false, true]) {
         final events = <Map<String, Object?>>[];
@@ -474,6 +506,30 @@ void main() {
         expect(events.last['head_sha'], 'b' * 40);
       }
       expect(embeddingCalls, 3); // One passage batch, query for each run.
+      final inputLimited = HeadlessOptions.parse([
+        'review',
+        for (final entry in opts.values.entries) ...[
+          '--${entry.key}',
+          entry.value,
+        ],
+        '--max-input-bytes',
+        '${utf8.encode(await contextFile.readAsString()).length + 1}',
+      ]);
+      await expectLater(
+        executeHeadless(
+          inputLimited,
+          cancellation: CancellationSource(),
+          emit: (_) {},
+          emitText: (_) {},
+          httpClient: client,
+          credentialResolver: credentials,
+        ),
+        throwsFormatException,
+      );
+      expect(
+        llmCalls,
+        2,
+      ); // Whole assembled input fails before provider dispatch.
       ragFailure = true;
       await expectLater(
         executeHeadless(
@@ -683,7 +739,10 @@ Map<String, Object?> _context(ProjectSourceSnapshot snapshot) => {
   'base_sha': 'a' * 40,
   'head_sha': 'b' * 40,
   'changed_files': ['value.py'],
-  'diff': 'diff --git a/value.py b/value.py\n+def value(): return 1',
+  'diff':
+      'diff --git a/value.py b/value.py\n'
+      '--- a/value.py\n+++ b/value.py\n@@ -1 +1 @@\n'
+      '-def value(): return 0\n+def value(): return 1\n',
   'trusted_rules': {'AGENTS.md': 'trusted base rule'},
   'rag_paths': snapshot.documents.map((d) => d.source).toList(),
   'source_hashes': {

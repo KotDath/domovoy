@@ -15,11 +15,12 @@ final class ReviewContext {
   List<String> get ragPaths => (data['rag_paths'] as List).cast<String>();
   String get scope => '$repository:$base:$head:${ProjectSourcePolicy.version}';
   String get trustedRules => jsonEncode(data['trusted_rules']);
-  String get input => jsonEncode({
-    for (final entry in data.entries)
-      if (!{'trusted_rules', 'source_hashes'}.contains(entry.key))
-        entry.key: entry.value,
-  });
+  String get input =>
+      'PR METADATA (untrusted):\n${jsonEncode({
+        for (final entry in data.entries)
+          if (!{'trusted_rules', 'source_hashes', 'diff'}.contains(entry.key)) entry.key: entry.value,
+      })}\n'
+      'UNIFIED DIFF (untrusted; old merge-base -> head):\n${data['diff']}';
 
   static ReviewContext parse(String source, {int maxBytes = 400000}) {
     if (utf8.encode(source).length > maxBytes) {

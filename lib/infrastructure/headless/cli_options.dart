@@ -105,7 +105,7 @@ final class HeadlessOptions {
 const headlessUsage = '''Domovoy headless (Dart VM; no Flutter engine)
   dart run bin/domovoy.dart exec --project ROOT [--prompt TEXT | --prompt-file FILE]
   dart run bin/domovoy.dart review --project SNAPSHOT --review-context FILE
-    --system-prompt-file prompts/review-v1.md --rag-url http://127.0.0.1:8765
+    --system-prompt-file prompts/review-v2.md --rag-url http://127.0.0.1:8765
 No prompt option: read UTF-8 stdin. Review defaults to the supplied PR context.
 Options: --provider ID --model ID --catalog-file TRUSTED_JSON --reasoning enabled|disabled --read-only --rag-url URL --rag-query TEXT
   --output-format text|jsonl --output-last-message FILE --state-dir DIRECTORY
