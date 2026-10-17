@@ -165,8 +165,11 @@ The coordinator/repository owner must configure:
   candidate-branch demonstration described below.
 - Repository secret `DEEPSEEK_API_KEY`, usable for real provider requests. Missing
   credentials produce an explicit SKIPPED summary, never a completed review.
-- The automatic `GITHUB_TOKEN` with contents read, pull-requests read and issues
-  write. The workflow pins actions by SHA and disables persisted Git credentials.
+- The automatic `GITHUB_TOKEN` with contents read, pull-requests write and issues
+  write for PR timeline comment creation/update. GitHub's [REST documentation](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment)
+  lists either write permission, but [GitHub's tracked permission discrepancy](https://github.com/github/rest-api-description/issues/6994)
+  reports PR comments requiring pull-requests write alongside issues write.
+  The workflow pins actions by SHA and disables persisted Git credentials.
   Repository/organization policy must permit bot issue comments and these scopes.
 - Ubuntu 24.04 x64 hosted runner, network access to Flutter releases, pub.dev,
   GitHub/Ollama release and weight downloads, Hugging Face pinned tokenizers and
@@ -191,6 +194,10 @@ a GH_TOKEN/GITHUB_TOKEN environment credential is required for local gh commands
 Tokens are passed only to deterministic gh steps, never to the model, snapshot,
 JSONL trace or tool shell. Provider credentials are present only for credential
 availability and the model run. Model/tool access cannot read CI directories.
+API failures report only an allowlisted operation (for example `comment_create`)
+and numeric HTTP status when available, otherwise `unknown`. Raw diagnostics,
+headers, response bodies and commands are never echoed. An unknown status does
+not establish a permissions failure; inspect repository policy before retrying.
 
 For local authenticated collection/publication, supply `GH_TOKEN` through a
 secure environment (do not print it). Run:
