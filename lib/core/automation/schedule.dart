@@ -116,10 +116,9 @@ final class OneShotSchedule extends AutomationSchedule {
   @override
   void validate(AutomationTimeZones zones) {}
 
-  /// A one-shot instant is eligible only when it is strictly in the future.
   @override
   DateTime? nextAfter(DateTime afterUtc, AutomationTimeZones zones) =>
-      atUtc.isAfter(afterUtc) ? atUtc : null;
+      atUtc.isAfter(afterUtc) ? null : atUtc;
 
   @override
   List<DateTime> nextOccurrences({
