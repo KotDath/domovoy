@@ -70,7 +70,34 @@ def permits(path):
         '.gitignore', '.gitattributes', '.editorconfig', '.dockerignore', '.prettierrc', '.eslintrc', '.tool-versions'}
 
 
-def run(args, *, cwd=None, body=None, github=False):
+API_OPERATIONS = {'pr_read', 'files_read', 'comments_read', 'comment_create',
+                  'comment_update', 'github_api'}
+
+
+def api_operation(endpoint, method):
+    # Classify trusted routes without reflecting any endpoint or request bytes.
+    route = endpoint.split('?', 1)[0]
+    for verb, pattern, operation in (
+            ('GET', r'repos/[^/]+/[^/]+/pulls/\d+', 'pr_read'),
+            ('GET', r'repos/[^/]+/[^/]+/pulls/\d+/files', 'files_read'),
+            ('GET', r'repos/[^/]+/[^/]+/issues/\d+/comments', 'comments_read'),
+            ('POST', r'repos/[^/]+/[^/]+/issues/\d+/comments', 'comment_create'),
+            ('PATCH', r'repos/[^/]+/[^/]+/issues/comments/\d+', 'comment_update')):
+        if method == verb and re.fullmatch(pattern, route):
+            return operation
+    return 'github_api'
+
+
+def api_failure(operation, stderr=b''):
+    operation = operation if operation in API_OPERATIONS else 'github_api'
+    # gh's diagnostic suffix is (HTTP NNN). Only bounded numeric metadata may
+    # cross this boundary; never reflect its message, headers, body or command.
+    status = re.search(rb'\(HTTP ([1-5][0-9]{2})\)', stderr[-8192:])
+    status = int(status[1]) if status else 'unknown'
+    return RuntimeError(f'GitHub API failed (operation={operation}, http_status={status})')
+
+
+def run(args, *, cwd=None, body=None, github=False, operation='github_api'):
     # Provider/CI credentials do not reach Git or other subprocesses.
     env = {k: os.environ[k] for k in ('PATH', 'SYSTEMROOT', 'SSL_CERT_FILE') if k in os.environ}
     env['GIT_CONFIG_NOSYSTEM'] = '1'
@@ -83,10 +110,17 @@ def run(args, *, cwd=None, body=None, github=False):
             env['GH_TOKEN'] = token
     with tempfile.TemporaryDirectory(prefix='domovoy-gh-config-') as config:
         env['GH_CONFIG_DIR'] = config
-        result = subprocess.run(args, cwd=cwd, env=env, input=body, capture_output=True, timeout=120)
+        try:
+            result = subprocess.run(args, cwd=cwd, env=env, input=body, capture_output=True, timeout=120)
+        except (subprocess.TimeoutExpired, OSError):
+            if github:
+                raise api_failure(operation) from None
+            raise RuntimeError('Git subprocess could not complete') from None
     if result.returncode:
         # Never echo raw stderr/commands: gh diagnostics can contain auth data.
-        raise RuntimeError(f'{args[0]} operation failed (exit {result.returncode})')
+        if github:
+            raise api_failure(operation, result.stderr)
+        raise RuntimeError('Git operation failed')
     return result.stdout
 
 
@@ -101,7 +135,13 @@ def api(endpoint, *, method='GET', payload=None, pages=False):
         args += ['--paginate', '--slurp']
     if payload is not None:
         args += ['--input', '-']
-    return json.loads(run(args, body=None if payload is None else json.dumps(payload).encode(), github=True))
+    operation = api_operation(endpoint, method)
+    output = run(args, body=None if payload is None else json.dumps(payload).encode(),
+                 github=True, operation=operation)
+    try:
+        return json.loads(output)
+    except (ValueError, UnicodeDecodeError):
+        raise api_failure(operation) from None
 
 
 def metadata(repo, number):

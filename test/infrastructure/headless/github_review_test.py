@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -134,6 +135,61 @@ class ReviewBoundaryTest(unittest.TestCase):
                 env = mock.call_args.kwargs['env']
                 self.assertEqual(env['GH_TOKEN'], 'test-gh')
                 self.assertNotIn('DEEPSEEK_API_KEY', env)
+
+    def test_api_operation_classification_never_reflects_routes(self):
+        for method, route, expected in [
+                ('GET', 'pulls/3', 'pr_read'),
+                ('GET', 'pulls/3/files?per_page=100', 'files_read'),
+                ('GET', 'issues/3/comments?per_page=100', 'comments_read'),
+                ('POST', 'issues/3/comments', 'comment_create'),
+                ('PATCH', 'issues/comments/8', 'comment_update'),
+                ('DELETE', 'issues/comments/8', 'github_api')]:
+            self.assertEqual(review.api_operation('repos/a/b/' + route, method), expected)
+        self.assertEqual(review.api_operation('fake-secret-route', 'POST'), 'github_api')
+
+    def test_api_errors_expose_only_operation_and_bounded_numeric_status(self):
+        secret = b'FAKE_SECRET_NOT_A_CREDENTIAL'
+        for status in (401, 403, 422, 500):
+            failure = SimpleNamespace(returncode=1, stdout=secret,
+                stderr=b'gh: ' + secret + b' https://example.invalid/' + secret +
+                b' Authorization: Bearer ' + secret + f' (HTTP {status})'.encode())
+            with patch.object(subprocess, 'run', return_value=failure):
+                with self.assertRaises(RuntimeError) as raised:
+                    review.api('repos/a/b/issues/3/comments', method='POST', payload={'body': secret.decode()})
+            self.assertEqual(str(raised.exception),
+                f'GitHub API failed (operation=comment_create, http_status={status})')
+        for stderr in (secret, b'(HTTP 999)', b'(HTTP 403)' + b'x'*8192):
+            self.assertEqual(str(review.api_failure('untrusted-' + secret.decode(), stderr)),
+                'GitHub API failed (operation=github_api, http_status=unknown)')
+
+    def test_api_transport_and_invalid_json_errors_do_not_echo_bytes(self):
+        secret = 'FAKE_SECRET_NOT_A_CREDENTIAL'
+        failures = [subprocess.TimeoutExpired(['gh', secret], 120, output=secret, stderr=secret),
+                    OSError(secret)]
+        for failure in failures:
+            with patch.object(subprocess, 'run', side_effect=failure):
+                with self.assertRaises(RuntimeError) as raised:
+                    review.api('repos/a/b/issues/comments/8', method='PATCH', payload={'body': secret})
+            self.assertEqual(str(raised.exception),
+                'GitHub API failed (operation=comment_update, http_status=unknown)')
+        with patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=secret.encode())):
+            with self.assertRaises(RuntimeError) as raised:
+                review.api('repos/a/b/pulls/3')
+        self.assertEqual(str(raised.exception),
+            'GitHub API failed (operation=pr_read, http_status=unknown)')
+
+    def test_cli_api_failure_output_does_not_reflect_secret_error_bytes(self):
+        error = io.StringIO()
+        args = ['github_review.py', 'collect', '--repo', 'a/b', '--number', '3',
+                '--base', 'a'*40, '--head', 'b'*40, '--checkout', '/unused', '--out', '/unused']
+        failure = SimpleNamespace(returncode=1, stdout=b'FAKE_RESPONSE_SECRET',
+                                  stderr=b'FAKE_ERROR_SECRET (HTTP 403)')
+        with patch('sys.argv', args), patch('sys.stderr', error), \
+                patch.dict(os.environ, {'GH_TOKEN': 'FAKE_TOKEN_SECRET'}), \
+                patch.object(subprocess, 'run', return_value=failure):
+            self.assertEqual(review.main(), 1)
+        self.assertEqual(error.getvalue(),
+            'Review boundary failed: GitHub API failed (operation=pr_read, http_status=403)\n')
 
 
 if __name__ == '__main__':
