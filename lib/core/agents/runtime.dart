@@ -3538,14 +3538,16 @@ final class _LiveRun implements AgentRun {
               sawModelDelta = true;
               reasoning.write(text);
               _resetIdle();
-              if (options.finalAnswerGate == null) {
+              if (options.finalAnswerGate == null &&
+                  options.preparedContext?.beforeFinalAnswer == null) {
                 _emit(AgentReasoningDelta(text));
               }
             case LlmTextDelta(:final text):
               sawModelDelta = true;
               answer.write(text);
               _resetIdle();
-              if (options.finalAnswerGate == null) {
+              if (options.finalAnswerGate == null &&
+                  options.preparedContext?.beforeFinalAnswer == null) {
                 _emit(AgentAnswerDelta(text));
               }
             case LlmToolCallDelta():
@@ -3621,6 +3623,21 @@ final class _LiveRun implements AgentRun {
       }
       var acceptedText = answer.toString();
       final gate = options.finalAnswerGate;
+      final precondition = options.preparedContext?.beforeFinalAnswer;
+      if (calls.isEmpty && precondition != null) {
+        await _awaitUnlessCancelled(
+          precondition(
+            AgentFinalAnswerDraft(
+              text: acceptedText,
+              request: request.snapshot(),
+              finishReason: finish,
+              repairAttempt: false,
+            ),
+            cancelSource.token,
+          ),
+        );
+        _throwIfCancelled();
+      }
       if (gate != null) {
         if (calls.isNotEmpty) {
           throwAgent(
@@ -3672,6 +3689,14 @@ final class _LiveRun implements AgentRun {
         acceptedText = decision.text;
         completedTurnState = null;
         _emit(AgentAnswerDelta(acceptedText));
+      }
+      if (precondition != null && gate == null) {
+        // Tool-request turns have not passed the final precondition; only
+        // their protocol-valid intermediate prose is being released here.
+        if (reasoning.isNotEmpty) {
+          _emit(AgentReasoningDelta(reasoning.toString()));
+        }
+        if (acceptedText.isNotEmpty) _emit(AgentAnswerDelta(acceptedText));
       }
       final assistantParts = <LlmContentPart>[
         if (gate == null && reasoning.isNotEmpty)

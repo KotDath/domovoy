@@ -2,6 +2,7 @@ import '../llm/cancellation.dart';
 import '../llm/generation.dart';
 import '../llm/request.dart';
 import 'dynamic_context.dart';
+import 'final_answer_gate.dart';
 
 /// App-owned immutable context prepared once before admitting a run. Never
 /// enters the retained transcript or compaction input. The observer settles
@@ -18,6 +19,7 @@ final class AgentPreparedContext {
     this.responseFormat,
     this.maxRequestBytes,
     this.beforeRequest,
+    this.beforeFinalAnswer,
   });
 
   final AgentDynamicContext? contribution;
@@ -49,4 +51,17 @@ final class AgentPreparedContext {
     CancellationToken cancellation,
   )?
   beforeRequest;
+
+  /// Optional non-rewriting precondition for a tool-free final candidate.
+  /// Unlike [AgentFinalAnswerGate], this preserves the ordinary tool loop.
+  /// Text/reasoning are buffered until this turn's protocol and precondition
+  /// pass. Tool-turn prose is released at its commit boundary; this does not
+  /// claim semantic validation of intermediate prose. A failure never admits
+  /// the rejected final draft to the transcript, but usage/tools remain.
+  /// The runtime races this await with run cancellation; no repair is issued.
+  final Future<void> Function(
+    AgentFinalAnswerDraft draft,
+    CancellationToken cancellation,
+  )?
+  beforeFinalAnswer;
 }

@@ -44,6 +44,7 @@ class WorkspaceShell extends StatefulWidget {
     this.onOpenTasks,
     this.onOpenLibrary,
     this.onOpenKnowledge,
+    this.onOpenSupport,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -88,6 +89,7 @@ class WorkspaceShell extends StatefulWidget {
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
   final VoidCallback? onOpenKnowledge;
+  final VoidCallback? onOpenSupport;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -138,6 +140,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       onOpenTasks: widget.onOpenTasks,
       onOpenLibrary: widget.onOpenLibrary,
       onOpenKnowledge: widget.onOpenKnowledge,
+      onOpenSupport: widget.onOpenSupport,
       onOpenMcpConnections: widget.onOpenMcpConnections,
     );
     return CallbackShortcuts(

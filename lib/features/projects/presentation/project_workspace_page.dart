@@ -21,6 +21,7 @@ class ProjectWorkspacePage extends StatelessWidget {
     this.onOpenTasks,
     this.onOpenLibrary,
     this.onOpenKnowledge,
+    this.onOpenSupport,
     this.ragChat,
     this.onOpenMcpConnections,
     super.key,
@@ -37,6 +38,7 @@ class ProjectWorkspacePage extends StatelessWidget {
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
   final VoidCallback? onOpenKnowledge;
+  final VoidCallback? onOpenSupport;
   final RagChatController? ragChat;
   final VoidCallback? onOpenMcpConnections;
 
@@ -55,6 +57,7 @@ class ProjectWorkspacePage extends StatelessWidget {
       onOpenTasks: onOpenTasks,
       onOpenLibrary: onOpenLibrary,
       onOpenKnowledge: onOpenKnowledge,
+      onOpenSupport: onOpenSupport,
       ragChat: ragChat,
       onOpenMcpConnections: onOpenMcpConnections,
     );

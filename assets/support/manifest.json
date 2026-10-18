@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "packageVersion": "1.0.0+1",
+  "revision": "domovoy-support-2026-10-18-v1",
+  "documents": [
+    {
+      "asset": "assets/support/keys-and-models.md",
+      "sha256": "668a3a03184a471c06a4b19fdfd6d54a0208a4fe57c60e437b4a3708d99cfdb1",
+      "source": "domovoy://manual/keys-and-models",
+      "provenance": [
+        "lib/features/settings/presentation/provider_api_keys_dialog.dart",
+        "lib/features/settings/",
+        "lib/infrastructure/llm/discovery/"
+      ]
+    },
+    {
+      "asset": "assets/support/knowledge.md",
+      "sha256": "a597f12a7edd350809cf57373d8a1bde3efd569ff585adffe2cc48b28a0a76f7",
+      "source": "domovoy://manual/knowledge",
+      "provenance": [
+        "lib/features/knowledge/",
+        "lib/core/rag/",
+        "lib/features/support/application/support_run_preparer.dart"
+      ]
+    },
+    {
+      "asset": "assets/support/mcp.md",
+      "sha256": "6f74444aa67ce9c88088f5023f840ed02105ef8b700253fa76369cac1340615c",
+      "source": "domovoy://manual/mcp",
+      "provenance": [
+        "lib/features/mcp/",
+        "lib/infrastructure/mcp/sdk/mcp_platform_policy.dart",
+        "lib/infrastructure/support/support_mcp_server.dart"
+      ]
+    },
+    {
+      "asset": "assets/support/memory.md",
+      "sha256": "9001ad2530f7a951bd2e66926b4b2f365735600d17e187e30648078db1fe9cf9",
+      "source": "domovoy://manual/memory",
+      "provenance": [
+        "lib/features/memory/",
+        "lib/features/profile/",
+        "lib/infrastructure/support/support_mcp_server.dart"
+      ]
+    },
+    {
+      "asset": "assets/support/projects.md",
+      "sha256": "c25eb52a4f5d5d12c6da5d1c19d4fc24a5857139ea811d29dfe5d1c7a5c8bbcf",
+      "source": "domovoy://manual/projects",
+      "provenance": [
+        "lib/features/projects/",
+        "lib/features/knowledge/application/project_help_preparer.dart",
+        "lib/features/projects/application/project_files_preparer.dart"
+      ]
+    },
+    {
+      "asset": "assets/support/tasks-and-tickets.md",
+      "sha256": "1b01d8c27d8774d42c7a64900db386aa9d065b4bcbd22296f98183e67769495b",
+      "source": "domovoy://manual/tasks-and-tickets",
+      "provenance": [
+        "lib/features/tasks/",
+        "lib/features/support/"
+      ]
+    }
+  ]
+}

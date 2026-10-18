@@ -4,6 +4,7 @@ import '../../../core/agents/agents.dart';
 import '../../../core/automation/automation.dart';
 import '../../../core/llm/llm.dart';
 import '../../../core/projects/ids.dart';
+import '../../../core/support/support.dart';
 import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 import '../domain/chat_deletion_intent.dart';
 import 'chat_stream_pacing.dart';
@@ -29,6 +30,7 @@ final class ChatWorkspaceController {
     this.runToolContexts,
     this.additionalRunTools,
     this.runPreparer,
+    this.supportMode = false,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
     AgentClock? clock,
@@ -67,6 +69,7 @@ final class ChatWorkspaceController {
   final List<ToolId> Function(AgentSessionSnapshot snapshot)?
   additionalRunTools;
   final ChatRunPreparer? runPreparer;
+  final bool supportMode;
   CancellationSource? _preparing;
 
   final ChatStreamPacingPolicy pacingPolicy;
@@ -173,6 +176,16 @@ final class ChatWorkspaceController {
     AgentSessionId? id,
     ProjectId? projectId,
   }) {
+    if (supportMode || (id != null && isSupportSession(id))) {
+      return Future.value(
+        ChatCommandResult.failed(
+          ChatWorkspaceError(
+            kind: AgentErrorKind.configuration,
+            message: 'Создайте обращение в разделе поддержки.',
+          ),
+        ),
+      );
+    }
     final rejection = _rejectMutation();
     if (rejection != null) {
       return Future<ChatCommandResult>.value(rejection);
@@ -264,6 +277,14 @@ final class ChatWorkspaceController {
     int generation, {
     required bool closeCurrent,
   }) async {
+    if (isSupportSession(id) != supportMode) {
+      return ChatCommandResult.failed(
+        ChatWorkspaceError(
+          kind: AgentErrorKind.configuration,
+          message: 'Обращения открываются только в разделе поддержки.',
+        ),
+      );
+    }
     if (closeCurrent) {
       final closeResult = await _closeCurrent(generation);
       if (!closeResult.isSuccess) {

@@ -1,4 +1,14 @@
 import 'dart:async';
+import 'core/support/support.dart';
+import 'features/support/application/support_catalog.dart';
+import 'features/support/application/support_controller.dart';
+import 'features/support/application/support_run_preparer.dart';
+import 'features/support/application/support_service.dart';
+import 'features/support/presentation/support_page.dart';
+import 'infrastructure/support/jsonl_support_repository.dart';
+import 'infrastructure/support/support_mcp_server.dart';
+import 'infrastructure/support/support_storage.dart';
+import 'infrastructure/support/support_manual.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -238,6 +248,8 @@ final class DomovoyMcpComposition {
     required McpCompositionInputs inputs,
     ProjectContextService? projectContext,
     ProjectRunScopes? projectScopes,
+    SupportRepository? supportRepository,
+    SupportRunScopes? supportScopes,
   }) {
     final diagnostics = inputs.diagnostics;
     final capabilities =
@@ -268,6 +280,7 @@ final class DomovoyMcpComposition {
       'library',
       'automation',
       'project',
+      'support',
     };
     final connectionRepository = AppOwnedMcpConnectionRepository(
       userStore: inputs.connectionStorage == null
@@ -301,6 +314,17 @@ final class DomovoyMcpComposition {
     localServers.register(digestFactory);
     final builtInFailures = <String, String>{};
     final startedBuiltIns = <String>{'arxiv', 'digest'};
+    if (supportRepository != null && supportScopes != null) {
+      localServers.register(
+        SupportMcpServerFactory(
+          tickets: supportRepository,
+          sessions: sessions,
+          scopes: supportScopes,
+        ),
+      );
+      policies['support'] = SupportToolPolicy(supportScopes);
+      startedBuiltIns.add('support');
+    }
     if (projectContext != null && projectScopes != null) {
       localServers.register(
         ProjectMcpServerFactory(
@@ -365,7 +389,7 @@ final class DomovoyMcpComposition {
     // --- Agent bridge + permissions -------------------------------------
     final bridge = McpAgentToolBridge(
       host: host,
-      digestScopeConnectionIds: const <String>{'digest', 'project'},
+      digestScopeConnectionIds: const <String>{'digest', 'project', 'support'},
       libraryRunIdConnectionIds: const <String>{'library'},
     );
     bridge.attachTo(tools);
@@ -490,7 +514,14 @@ final class DomovoyMcpComposition {
   Future<void> _initialize() async {
     for (final id in builtInConnectionIds) {
       try {
-        await localServers.start(id);
+        await localServers.start(
+          id,
+          preference: id == 'support'
+              ? (localServers.supportsLoopbackHttp
+                    ? McpLocalTransportPreference.http
+                    : McpLocalTransportPreference.stream)
+              : null,
+        );
         connectionRepository.register(localServers.connectionConfig(id));
       } on McpException catch (error) {
         _builtInFailures[id] = error.error.message;
@@ -578,6 +609,8 @@ final class DomovoyDependencies {
     this.ragChat,
     this.projectContext,
     this.projectScopes,
+    this.supportService,
+    this.supportPreparer,
   }) : modelSettingsStore =
            modelSettingsStore ?? InMemoryDeepSeekModelSettingsStore(),
        _httpClient = httpClient;
@@ -675,17 +708,24 @@ final class DomovoyDependencies {
                   defaultTargetPlatform == TargetPlatform.windows ||
                   defaultTargetPlatform == TargetPlatform.macOS),
         );
+    final supportStorage = createSupportStorage();
+    final supportRepository = supportStorage == null
+        ? null
+        : JsonlSupportRepository(supportStorage);
+    final supportScopes = SupportRunScopes();
     final mcp = DomovoyMcpComposition.build(
       runtime: stack.runtime,
       tools: stack.runtime.tools,
       policies: stack.runtime.policies,
       registry: stack.registry,
       sessions: stack.repository,
-      catalog: stack.catalog,
+      catalog: SupportSessionCatalog(stack.catalog),
       piToolIds: <String>{for (final id in localTools.enabled) id.value},
       inputs: resolvedMcpInputs,
       projectContext: projectContext,
       projectScopes: projectScopes,
+      supportRepository: supportRepository,
+      supportScopes: supportScopes,
     );
     final profileController = ProfileController(
       profiles: profileRepository,
@@ -738,12 +778,28 @@ final class DomovoyDependencies {
     final ragRepository = ragStorage == null
         ? null
         : JsonlRagRepository(ragStorage);
+    final supportRagStorage = createSupportRagStorage();
+    final supportPreparer =
+        supportRepository == null || supportRagStorage == null
+        ? null
+        : SupportRunPreparer(
+            tickets: supportRepository,
+            scopes: supportScopes,
+            repository: JsonlRagRepository(supportRagStorage),
+            models: ragModels,
+            traces: JsonlRagTraceRepository(supportRagStorage),
+            loadManual: BundledSupportManual.load,
+            ensureMcpReady: mcp.initialize,
+            mcpReady: () => supportToolIds.every(
+              (id) => mcp.host.snapshot.catalog.lookup(id) != null,
+            ),
+          );
     return DomovoyDependencies(
       runtime: stack.runtime,
       registry: stack.registry,
       promptDefinition: stack.promptDefinition,
       repository: stack.repository,
-      catalog: stack.catalog,
+      catalog: SupportSessionCatalog(stack.catalog),
       providerModelCatalog: stack.providerModelCatalog,
       providerCredentialStore: providerCredentialStore,
       environmentReader: environment.read,
@@ -758,6 +814,16 @@ final class DomovoyDependencies {
       mcp: mcp,
       projectContext: projectContext,
       projectScopes: projectScopes,
+      supportService: supportRepository == null
+          ? null
+          : SupportService(
+              tickets: supportRepository,
+              sessions: stack.repository,
+              catalog: stack.catalog,
+              runtime: stack.runtime,
+              definition: supportDefinition(stack.promptDefinition.model),
+            ),
+      supportPreparer: supportPreparer,
       knowledge: ragStorage == null
           ? null
           : KnowledgeController(
@@ -820,6 +886,8 @@ final class DomovoyDependencies {
   final RagChatController? ragChat;
   final ProjectContextService? projectContext;
   final ProjectRunScopes? projectScopes;
+  final SupportService? supportService;
+  final SupportRunPreparer? supportPreparer;
   final VoidCallback? disposeCallback;
   final http.Client? _httpClient;
   Future<void>? _closeFuture;
@@ -843,6 +911,7 @@ final class DomovoyDependencies {
     try {
       knowledge?.dispose();
       ragChat?.dispose();
+      supportPreparer?.dispose();
       memoryInspector?.dispose();
       profileController?.dispose();
     } on Object catch (error) {
@@ -900,6 +969,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
   final _navigatorKey = GlobalKey<NavigatorState>();
   late final ChatWorkspaceController _chatController;
   ProjectWorkspaceController? _projectController;
+  SupportController? _supportController;
   var _themeMode = ThemeMode.system;
 
   @override
@@ -981,6 +1051,52 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
         grants: projectStack.grants,
       );
     }
+    final support = dependencies.supportService;
+    final preparer = dependencies.supportPreparer;
+    if (support != null && preparer != null) {
+      final chat = ChatWorkspaceController(
+        runtime: dependencies.runtime,
+        definition: support.definition,
+        catalog: SupportSessionCatalog(support.catalog, support: true),
+        repository: dependencies.repository,
+        registry: dependencies.registry,
+        providerModelCatalog: dependencies.providerModelCatalog,
+        runPreparer: preparer,
+        supportMode: true,
+      );
+      _supportController = SupportController(
+        service: support,
+        chat: chat,
+        preparer: preparer,
+        initialSelection: () =>
+            _chatController.state.selectedSession?.selection ??
+            AgentSessionSelection.fromDefinition(dependencies.promptDefinition),
+        captureSnapshot: (model) => SupportSnapshot(
+          observedAt: DateTime.now().microsecondsSinceEpoch,
+          platform: kIsWeb
+              ? 'web'
+              : isAuroraBuildFlavor
+              ? 'aurora'
+              : defaultTargetPlatform.name,
+          version:
+              '${preparer.packageVersion} (версия пакета; runtime build неизвестен)',
+          provider: model.providerId.value,
+          model: model.modelId.value,
+          mcp:
+              dependencies.mcp == null ||
+                  dependencies.mcp!.host.snapshot.connections.isEmpty
+              ? 'Неизвестно'
+              : dependencies.mcp!.host.snapshot.connections
+                    .map(
+                      (s) =>
+                          '${s.id.value}: ${s.phase.name} (${s.updatedAt?.toIso8601String() ?? 'время неизвестно'})',
+                    )
+                    .join('; '),
+          rag:
+              '${preparer.progress}; последняя модель: ${preparer.fingerprint ?? 'не проверена'}; наблюдение модели: ${preparer.modelObservedAt?.toIso8601String() ?? 'не было'}',
+        ),
+      );
+    }
   }
 
   @override
@@ -989,6 +1105,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
     unawaited(
       (_projectController?.dispose() ?? Future<void>.value())
           .then((_) => _chatController.dispose())
+          .then((_) => _supportController?.close())
           .then((_) => widget.dependencies.close())
           .catchError((Object error, StackTrace stackTrace) {
             return;
@@ -1040,6 +1157,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               onOpenTasks: _openTasks,
               onOpenLibrary: _openLibrary,
               onOpenKnowledge: _openKnowledge,
+              onOpenSupport: _openSupport,
               ragChat: widget.dependencies.ragChat,
               onOpenMcpConnections: _openMcpConnections,
             )
@@ -1055,6 +1173,7 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
               onOpenTasks: _openTasks,
               onOpenLibrary: _openLibrary,
               onOpenKnowledge: _openKnowledge,
+              onOpenSupport: _openSupport,
               ragChat: widget.dependencies.ragChat,
               onOpenMcpConnections: _openMcpConnections,
             ),
@@ -1088,6 +1207,17 @@ class _DomovoyAppState extends State<DomovoyApp> with WidgetsBindingObserver {
         if (mounted) _pushSection(KnowledgePage(controller: knowledge));
       });
     };
+  }
+
+  VoidCallback? get _openSupport {
+    final support = _supportController;
+    if (support == null) return null;
+    return () => _pushSection(
+      SupportPage(
+        controller: support,
+        projectId: _projectController?.state.selectedProjectId,
+      ),
+    );
   }
 
   VoidCallback? get _openLibrary {

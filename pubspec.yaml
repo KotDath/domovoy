@@ -67,6 +67,7 @@ flutter:
     - assets/models_fallback.json
     - assets/rag_demo/
     - assets/rag_demo/docs/
+    - assets/support/
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

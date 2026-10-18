@@ -48,6 +48,7 @@ class ChatWorkspacePage extends StatefulWidget {
     this.onOpenTasks,
     this.onOpenLibrary,
     this.onOpenKnowledge,
+    this.onOpenSupport,
     this.ragChat,
     this.onOpenMcpConnections,
     super.key,
@@ -69,6 +70,7 @@ class ChatWorkspacePage extends StatefulWidget {
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
   final VoidCallback? onOpenKnowledge;
+  final VoidCallback? onOpenSupport;
   final RagChatController? ragChat;
   final VoidCallback? onOpenMcpConnections;
 
@@ -269,6 +271,7 @@ class _ChatWorkspacePageState extends State<ChatWorkspacePage> {
       onOpenTasks: widget.onOpenTasks,
       onOpenLibrary: widget.onOpenLibrary,
       onOpenKnowledge: widget.onOpenKnowledge,
+      onOpenSupport: widget.onOpenSupport,
       onOpenMcpConnections: widget.onOpenMcpConnections,
     );
   }

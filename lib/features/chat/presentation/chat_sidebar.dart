@@ -25,6 +25,7 @@ class ChatSidebar extends StatelessWidget {
     this.onOpenTasks,
     this.onOpenLibrary,
     this.onOpenKnowledge,
+    this.onOpenSupport,
     this.onOpenMcpConnections,
     super.key,
   });
@@ -49,6 +50,7 @@ class ChatSidebar extends StatelessWidget {
   final VoidCallback? onOpenTasks;
   final VoidCallback? onOpenLibrary;
   final VoidCallback? onOpenKnowledge;
+  final VoidCallback? onOpenSupport;
   final VoidCallback? onOpenMcpConnections;
 
   @override
@@ -215,6 +217,12 @@ class ChatSidebar extends StatelessWidget {
                       ],
                     ),
                   ),
+                ),
+              if (onOpenSupport != null)
+                TextButton.icon(
+                  onPressed: onOpenSupport,
+                  icon: const Icon(Icons.support_agent),
+                  label: const Text('Поддержка'),
                 ),
               if (onOpenKnowledge != null)
                 DomovoyQuietButton(

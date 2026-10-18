@@ -53,6 +53,32 @@ Run the same production agent in the Dart VM without a display. See
 [the headless CLI guide](docs/headless.md) for local exec/review commands, vector
 RAG, read-only review tools and GitHub Actions configuration.
 
+## User support
+
+Open **Поддержка** in the sidebar, create a subject and description, and review
+the visible technical snapshot before saving. A project is optional. Send the
+question in the ticket's chat; expand tool calls and **Источники руководства**
+to inspect the context and retrieved documentation. Change the status yourself;
+**Открыто** reopens a resolved ticket after confirmation. Tickets and their
+linked dialogues persist locally across application restarts.
+
+Support needs a configured model provider and the existing
+[embedding gateway](tool/rag_model_service/README.md). Debug Android builds use
+the same gateway connection described there; release builds require its HTTPS
+configuration. The first question builds a separate manual index with progress
+and cancellation. Unavailable embeddings or MCP produce a visible failure;
+the app does not substitute a prepared answer. Consultations have only two
+read-only support MCP tools, without project files, shell, global memory or
+settings access. The app starts this MCP server automatically over native
+loopback Streamable HTTP (with the existing stream fallback elsewhere).
+
+The authoritative [manual and FAQ](assets/support/) are bundled directly from
+that directory. After editing them, run `python3 tool/support_manifest.py`;
+`python3 tool/support_manifest.py --check` verifies hashes, provenance and package
+version. Runtime checks integrity and invalidates the support index on content
+or embedding-model changes. Sources show retrieval provenance, not a guarantee
+of semantic correctness. Never put API keys or private files in an appeal.
+
 ## Linux development
 
 The application stores an optional DeepSeek API-key override with Secret
