@@ -715,7 +715,10 @@ final class ChatWorkspaceController {
     StreamSubscription<AgentSessionSelectionEvent>? subscription;
     final eventsDone = Completer<void>();
     try {
-      final operation = session.changeSelectionOperation(selection);
+      final operation = session.changeSelectionOperation(
+        selection,
+        allowCompaction: !supportMode,
+      );
       _activeSelection = operation;
       _activeSelectionDone = eventsDone;
       subscription = operation.events.listen(
@@ -758,7 +761,14 @@ final class ChatWorkspaceController {
             _chatOperationFor(result.activeOperation),
           );
         case AgentSessionSelectionStatus.error:
-          final error = _sanitizeWorkspaceError(AgentException(result.error!));
+          final error =
+              supportMode && result.error!.kind == AgentErrorKind.compaction
+              ? const ChatWorkspaceError(
+                  kind: AgentErrorKind.compaction,
+                  message:
+                      'Смена модели требует сжатия истории, недоступного в поддержке. Выберите модель с большим контекстом.',
+                )
+              : _sanitizeWorkspaceError(AgentException(result.error!));
           if (result.error!.kind == AgentErrorKind.cancelled) {
             _emit(
               _state.copyWith(selectedSession: session.snapshot, error: null),

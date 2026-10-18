@@ -60,6 +60,14 @@ final class JsonlSupportRepository implements SupportRepository {
         ].join('\n')}\n',
       ),
     );
+    // Publication is already acknowledged. GC must not turn a durable save
+    // into a false failure. The storage serializes cleanup with publication
+    // and preserves the active generation; the repository serializes mutations.
+    try {
+      await storage.cleanup('support');
+    } on Object {
+      // A later successful mutation retries obsolete-generation cleanup.
+    }
     // Re-read on every operation: an uncertain failed publish cannot poison
     // an in-memory cache or falsely advance the owner's/ticket's revision.
   }

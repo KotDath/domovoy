@@ -83,9 +83,12 @@ abstract interface class AgentSession {
     AgentSessionSelection selection,
   );
 
+  /// When [allowCompaction] is false, reject a model switch that would need
+  /// history summarization before any auxiliary dispatch or transcript rewrite.
   AgentSessionSelectionOperation changeSelectionOperation(
-    AgentSessionSelection selection,
-  );
+    AgentSessionSelection selection, {
+    bool allowCompaction = true,
+  });
 
   AgentCompactionOperation compact();
 
@@ -1147,8 +1150,9 @@ final class _LiveSession implements AgentSession {
 
   @override
   AgentSessionSelectionOperation changeSelectionOperation(
-    AgentSessionSelection requested,
-  ) {
+    AgentSessionSelection requested, {
+    bool allowCompaction = true,
+  }) {
     AgentSessionSelectionResult? immediate;
     try {
       runtime._ensureOpen();
@@ -1191,6 +1195,7 @@ final class _LiveSession implements AgentSession {
       session: this,
       id: AgentSelectionOperationId(runtime.ids.next('selection')),
       requested: requested,
+      allowCompaction: allowCompaction,
     );
     _activeSelectionOperation = operation;
     operation.start();
@@ -2212,6 +2217,7 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
     required this.session,
     required this.id,
     required this.requested,
+    required this.allowCompaction,
   }) : previous = session.selection,
        cancelSource = CancellationSource(),
        _result = Completer<AgentSessionSelectionResult>();
@@ -2223,6 +2229,7 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
 
   final AgentSessionSelection previous;
   final AgentSessionSelection requested;
+  final bool allowCompaction;
   final CancellationSource cancelSource;
   final Completer<AgentSessionSelectionResult> _result;
   final Completer<void> _unwound = Completer<void>();
@@ -2365,6 +2372,15 @@ final class _LiveSelectionOperation implements AgentSessionSelectionOperation {
         return;
       }
 
+      // Restricted callers may retain history for display without permitting
+      // that history to enter an auxiliary summary request or be rewritten.
+      if (!allowCompaction) {
+        throwAgent(
+          AgentErrorKind.compaction,
+          'Смена модели требует сжатия истории, недоступного в этом режиме. '
+          'Выберите модель с большим контекстом.',
+        );
+      }
       final compactor = session.runtime.historyCompactor;
       if (compactor == null) {
         throwAgent(

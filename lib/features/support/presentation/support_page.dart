@@ -252,113 +252,143 @@ class SupportTicketPage extends StatelessWidget {
           body: SafeArea(
             child: Column(
               children: [
-                Flexible(
-                  flex: 0,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxHeight: MediaQuery.sizeOf(context).height * .32,
-                    ),
-                    child: SingleChildScrollView(
-                      child: Column(
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            child: Row(
+                Expanded(
+                  child: LayoutBuilder(
+                    // Measure only the space left above the composer after
+                    // Scaffold applies keyboard insets. Metadata can scroll
+                    // while the timeline keeps part of that remaining space.
+                    builder: (context, constraints) => Column(
+                      children: [
+                        ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxHeight: constraints.maxHeight * .85,
+                          ),
+                          child: SingleChildScrollView(
+                            key: const ValueKey('support-details-scroll'),
+                            child: Column(
                               children: [
-                                Expanded(child: Text(ticket.status.label)),
-                                PopupMenuButton<SupportStatus>(
-                                  tooltip: 'Изменить статус',
-                                  enabled: !c.locked,
-                                  onSelected: (status) =>
-                                      _status(context, status),
-                                  itemBuilder: (_) => SupportStatus.values
-                                      .map(
-                                        (s) => PopupMenuItem(
-                                          value: s,
-                                          child: Text(s.label),
-                                        ),
-                                      )
-                                      .toList(),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(ticket.status.label),
+                                      ),
+                                      PopupMenuButton<SupportStatus>(
+                                        tooltip: 'Изменить статус',
+                                        enabled: !c.locked,
+                                        onSelected: (status) =>
+                                            _status(context, status),
+                                        itemBuilder: (_) => SupportStatus.values
+                                            .map(
+                                              (s) => PopupMenuItem(
+                                                value: s,
+                                                child: Text(s.label),
+                                              ),
+                                            )
+                                            .toList(),
+                                      ),
+                                    ],
+                                  ),
                                 ),
+                                ExpansionTile(
+                                  title: const Text(
+                                    'Описание и технический снимок',
+                                  ),
+                                  children: [
+                                    Padding(
+                                      padding: const EdgeInsets.all(12),
+                                      child: SelectableText(ticket.description),
+                                    ),
+                                    SupportSnapshotCard(
+                                      snapshot: ticket.snapshot,
+                                    ),
+                                    TextButton(
+                                      onPressed: c.locked
+                                          ? null
+                                          : c.refreshSnapshot,
+                                      child: const Text('Обновить снимок'),
+                                    ),
+                                  ],
+                                ),
+                                ExpansionTile(
+                                  key: const ValueKey('support-sources'),
+                                  title: const Text('Источники руководства'),
+                                  subtitle: const Text(
+                                    'Извлечённые фрагменты; проверяйте выводы ассистента',
+                                  ),
+                                  children: [
+                                    if (c.sources.isEmpty)
+                                      const ListTile(
+                                        title: Text(
+                                          'Источники появятся после подготовки вопроса',
+                                        ),
+                                      ),
+                                    for (final trace in c.sources.reversed)
+                                      ExpansionTile(
+                                        title: Text(
+                                          trace['query'] as String? ?? 'Вопрос',
+                                        ),
+                                        subtitle: Text(
+                                          '${trace['protocol']} · ${trace['fingerprint']}',
+                                        ),
+                                        children: [
+                                          for (final candidate
+                                              in (trace['candidates']
+                                                      as List? ??
+                                                  []))
+                                            if ((candidate as Map)['sent'] ==
+                                                true)
+                                              Padding(
+                                                padding: const EdgeInsets.all(
+                                                  12,
+                                                ),
+                                                child: SelectableText(
+                                                  '${candidate['chunk']['source']}\n${candidate['chunk']['section']}\nРевизия: ${candidate['chunk']['revision']}\n${candidate['chunk']['text']}',
+                                                ),
+                                              ),
+                                        ],
+                                      ),
+                                  ],
+                                ),
+                                if (c.error != null) Text(c.error!),
+                                if (c.preparer.busy)
+                                  LinearProgressIndicator(
+                                    semanticsLabel: c.preparer.progress,
+                                  ),
+                                if (c.preparer.busy || c.preparer.error != null)
+                                  Padding(
+                                    padding: const EdgeInsets.all(8),
+                                    child: Text(
+                                      c.preparer.error ?? c.preparer.progress,
+                                    ),
+                                  ),
+                                if (ticket.status == SupportStatus.resolved)
+                                  const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: Text(
+                                      'Для продолжения выберите статус «Открыто».',
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
-                          ExpansionTile(
-                            title: const Text('Описание и технический снимок'),
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: SelectableText(ticket.description),
-                              ),
-                              SupportSnapshotCard(snapshot: ticket.snapshot),
-                              TextButton(
-                                onPressed: c.locked ? null : c.refreshSnapshot,
-                                child: const Text('Обновить снимок'),
-                              ),
-                            ],
-                          ),
-                          ExpansionTile(
-                            key: const ValueKey('support-sources'),
-                            title: const Text('Источники руководства'),
-                            subtitle: const Text(
-                              'Извлечённые фрагменты; проверяйте выводы ассистента',
+                        ),
+                        Expanded(
+                          child: ChatTimeline(
+                            projection: const ChatTimelineProjector().project(
+                              snapshot: session,
+                              liveRun: state.liveRun,
+                              workspaceError: state.error,
                             ),
-                            children: [
-                              if (c.sources.isEmpty)
-                                const ListTile(
-                                  title: Text(
-                                    'Источники появятся после подготовки вопроса',
-                                  ),
-                                ),
-                              for (final trace in c.sources.reversed)
-                                ExpansionTile(
-                                  title: Text(
-                                    trace['query'] as String? ?? 'Вопрос',
-                                  ),
-                                  subtitle: Text(
-                                    '${trace['protocol']} · ${trace['fingerprint']}',
-                                  ),
-                                  children: [
-                                    for (final candidate
-                                        in (trace['candidates'] as List? ?? []))
-                                      if ((candidate as Map)['sent'] == true)
-                                        Padding(
-                                          padding: const EdgeInsets.all(12),
-                                          child: SelectableText(
-                                            '${candidate['chunk']['source']}\n${candidate['chunk']['section']}\nРевизия: ${candidate['chunk']['revision']}\n${candidate['chunk']['text']}',
-                                          ),
-                                        ),
-                                  ],
-                                ),
-                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-                if (c.error != null) Text(c.error!),
-                if (c.preparer.busy)
-                  LinearProgressIndicator(semanticsLabel: c.preparer.progress),
-                if (c.preparer.busy || c.preparer.error != null)
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Text(c.preparer.error ?? c.preparer.progress),
-                  ),
-                Expanded(
-                  child: ChatTimeline(
-                    projection: const ChatTimelineProjector().project(
-                      snapshot: session,
-                      liveRun: state.liveRun,
-                      workspaceError: state.error,
-                    ),
-                  ),
-                ),
-                if (ticket.status == SupportStatus.resolved)
-                  const Padding(
-                    padding: EdgeInsets.all(12),
-                    child: Text('Для продолжения выберите статус «Открыто».'),
-                  ),
                 Padding(
                   padding: const EdgeInsets.all(8),
                   child: ChatComposer(

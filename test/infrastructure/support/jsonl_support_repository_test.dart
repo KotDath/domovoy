@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:domovoy/core/agents/agents.dart';
 import 'package:domovoy/core/support/support.dart';
@@ -58,6 +59,136 @@ void main() {
       );
     },
   );
+
+  test(
+    'native generations stay bounded across 100 updates and fresh replay',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('support-gc-');
+      addTearDown(() => directory.delete(recursive: true));
+      JsonlFilesystemStreamStorage storage() => JsonlFilesystemStreamStorage(
+        applicationSupportDirectoryResolver: () async => directory,
+        namespaceDirectoryName: 'support-gc-test',
+      );
+      final repo = JsonlSupportRepository(storage());
+      var ticket = _ticket(await repo.owner());
+      await repo.save(ticket, expectedRevision: null);
+      final activeSizes = <int>[];
+      for (var n = 0; n < 100; n++) {
+        final next = ticket.update(
+          status: n.isEven ? SupportStatus.resolved : SupportStatus.open,
+        );
+        await repo.save(next, expectedRevision: ticket.revision);
+        ticket = next;
+        final generations = await _generations(directory);
+        expect(generations, hasLength(1));
+        if ([0, 9, 99].contains(n)) {
+          activeSizes.add(await generations.single.length());
+        }
+      }
+      final fresh = JsonlSupportRepository(storage());
+      expect((await fresh.load(ticket.id))!.toJson(), ticket.toJson());
+      expect(await fresh.owner(), ticket.ownerId);
+      expect(await _generations(directory), hasLength(1));
+      // These observed fixture sizes are not a production performance guarantee.
+      // ignore: avoid_print
+      print('support GC: generations=1 sizesAfter1_10_100=$activeSizes');
+    },
+  );
+
+  test(
+    'postcommit cleanup finishes before a queued ticket mutation publishes',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'support-gc-serial-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      var pause = false;
+      var publications = 0;
+      final storage = JsonlFilesystemStreamStorage(
+        applicationSupportDirectoryResolver: () async => directory,
+        namespaceDirectoryName: 'support-gc-serial-test',
+        stageHook: (stage, _) async {
+          if (stage == JsonlFilesystemStage.beforePointerPublication) {
+            publications++;
+          }
+          if (pause && stage == JsonlFilesystemStage.beforeCleanup) {
+            if (!entered.isCompleted) entered.complete();
+            await release.future;
+          }
+        },
+      );
+      final repo = JsonlSupportRepository(storage);
+      final ticket = _ticket(await repo.owner());
+      await repo.save(ticket, expectedRevision: null);
+      pause = true;
+      final next = ticket.update(status: SupportStatus.resolved);
+      final first = repo.save(next, expectedRevision: ticket.revision);
+      await entered.future;
+      final last = next.update(status: SupportStatus.open);
+      final second = repo.save(last, expectedRevision: next.revision);
+      await Future<void>.delayed(Duration.zero);
+      expect(publications, 3);
+      release.complete();
+      await Future.wait([first, second]);
+      expect(publications, 4);
+      final fresh = JsonlSupportRepository(
+        JsonlFilesystemStreamStorage(
+          applicationSupportDirectoryResolver: () async => directory,
+          namespaceDirectoryName: 'support-gc-serial-test',
+        ),
+      );
+      expect((await fresh.load(ticket.id))!.toJson(), last.toJson());
+      expect(await _generations(directory), hasLength(1));
+    },
+  );
+
+  for (final failure in JsonlFilesystemStage.values) {
+    test(
+      'native $failure failure preserves active journal and retry recovery',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'support-gc-failure-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        var fail = false;
+        JsonlFilesystemStreamStorage storage({bool inject = false}) =>
+            JsonlFilesystemStreamStorage(
+              applicationSupportDirectoryResolver: () async => directory,
+              namespaceDirectoryName: 'support-gc-failure-test',
+              stageHook: (stage, _) {
+                if (inject && fail && stage == failure) {
+                  throw StateError('injected storage failure');
+                }
+              },
+            );
+        final repo = JsonlSupportRepository(storage(inject: true));
+        var ticket = _ticket(await repo.owner());
+        await repo.save(ticket, expectedRevision: null);
+        final next = ticket.update(status: SupportStatus.resolved);
+        fail = true;
+        if (failure == JsonlFilesystemStage.beforeCleanup) {
+          // GC failure follows acknowledgment and must not fail this operation.
+          await repo.save(next, expectedRevision: ticket.revision);
+          ticket = next;
+          expect(await _generations(directory), hasLength(2));
+        } else {
+          await expectLater(
+            repo.save(next, expectedRevision: ticket.revision),
+            throwsStateError,
+          );
+        }
+        final fresh = JsonlSupportRepository(storage());
+        expect((await fresh.load(ticket.id))!.toJson(), ticket.toJson());
+        fail = false;
+        final retry = ticket.update(status: SupportStatus.awaitingVerification);
+        await repo.save(retry, expectedRevision: ticket.revision);
+        expect((await fresh.load(ticket.id))!.toJson(), retry.toJson());
+        expect(await _generations(directory), hasLength(1));
+      },
+    );
+  }
 
   test(
     'pending linkage survives failed ready publication and recovers exactly one session',
@@ -210,3 +341,28 @@ final class _FailingStorage implements JsonlGuardedStreamStorage {
     await delegate.publishGuarded(key, contents, beforeCommit: beforeCommit);
   }
 }
+
+SupportTicket _ticket(String owner) {
+  final id = newSupportId();
+  return SupportTicket(
+    id: id,
+    ownerId: owner,
+    subject: 'General question',
+    description: 'x' * 6000,
+    sessionId: AgentSessionId('$supportSessionPrefix$id'),
+    createdAt: 1,
+    updatedAt: 1,
+    snapshot: supportSnapshot,
+  );
+}
+
+Future<List<File>> _generations(Directory directory) => directory
+    .list(recursive: true)
+    .where(
+      (entry) =>
+          entry is File &&
+          entry.path.contains('generation-') &&
+          entry.path.endsWith('.jsonl'),
+    )
+    .cast<File>()
+    .toList();
