@@ -23,6 +23,7 @@ class ChatComposer extends StatefulWidget {
     required this.running,
     required this.enabled,
     this.initialDraft,
+    this.wrapControls = false,
     this.providerCatalog,
     this.onRefreshModels,
     this.tokenProjection,
@@ -41,6 +42,7 @@ class ChatComposer extends StatefulWidget {
   final bool running;
   final bool enabled;
   final String? initialDraft;
+  final bool wrapControls;
   final ProviderCatalogSnapshot? providerCatalog;
   final Future<ProviderCatalogSnapshot?> Function()? onRefreshModels;
   final ChatTokenProjection? tokenProjection;
@@ -102,6 +104,68 @@ class _ChatComposerState extends State<ChatComposer> {
         widget.selectedModel ??
         modelForSelection(widget.providerGroups, widget.selection);
     final canEdit = widget.enabled && !widget.running && !_submitting;
+    final controls = <Widget>[
+      DomovoyQuietButton(
+        key: const ValueKey('composer-context-plus'),
+        minSize: const Size.square(DomovoyDimensions.toolTarget),
+        onPressed: _openTokens,
+        tooltip: 'Показать контекст',
+        child: const Text('＋'),
+      ),
+      if (!widget.wrapControls) const Spacer(),
+      ChatContextChip(
+        projection: widget.tokenProjection,
+        model: model,
+        onPressed: _openTokens,
+      ),
+      ChatModelSelector(
+        groups: widget.providerGroups,
+        selection: widget.selection,
+        enabled: canEdit,
+        onSelected: _changeSelection,
+        catalog: widget.providerCatalog,
+        onRefreshModels: widget.onRefreshModels,
+        onManageProviders: widget.onOpenProviders,
+      ),
+      if (model != null)
+        ChatReasoningSelector(
+          model: model,
+          selection: widget.selection,
+          enabled: canEdit,
+          onSelected: (choice) => _changeSelection(
+            AgentSessionSelection(
+              model: widget.selection.model,
+              reasoningMode: choice.mode,
+              reasoningEffort: choice.effort,
+            ),
+          ),
+        ),
+      Semantics(
+        button: true,
+        enabled: widget.running ? !_stopping : _canSubmit,
+        label: widget.running ? 'Остановить ответ' : 'Отправить сообщение',
+        child: DomovoyQuietButton(
+          key: ValueKey(widget.running ? 'chat-stop' : 'chat-send'),
+          minSize: const Size.square(DomovoyDimensions.toolTarget),
+          tone: DomovoyButtonTone.accent,
+          onPressed: widget.running
+              ? _stopping
+                    ? null
+                    : _stop
+              : _canSubmit
+              ? _submit
+              : null,
+          tooltip: widget.running ? 'Остановить ответ' : 'Отправить сообщение',
+          child: widget.running
+              ? Icon(
+                  Icons.stop_rounded,
+                  size: DomovoyDimensions.iconSmall,
+                  color: tokens.accent,
+                )
+              : DomovoyIcon(DomovoyIconKind.send, color: tokens.accent),
+        ),
+      ),
+    ];
     return Semantics(
       textField: true,
       enabled: canEdit,
@@ -144,77 +208,13 @@ class _ChatComposerState extends State<ChatComposer> {
               ),
             ),
             const SizedBox(height: DomovoyDimensions.space3),
-            Row(
-              children: [
-                DomovoyQuietButton(
-                  key: const ValueKey('composer-context-plus'),
-                  minSize: const Size.square(DomovoyDimensions.toolTarget),
-                  onPressed: _openTokens,
-                  tooltip: 'Показать контекст',
-                  child: const Text('＋'),
-                ),
-                const Spacer(),
-                ChatContextChip(
-                  projection: widget.tokenProjection,
-                  model: model,
-                  onPressed: _openTokens,
-                ),
-                ChatModelSelector(
-                  groups: widget.providerGroups,
-                  selection: widget.selection,
-                  enabled: canEdit,
-                  onSelected: _changeSelection,
-                  catalog: widget.providerCatalog,
-                  onRefreshModels: widget.onRefreshModels,
-                  onManageProviders: widget.onOpenProviders,
-                ),
-                if (model != null)
-                  ChatReasoningSelector(
-                    model: model,
-                    selection: widget.selection,
-                    enabled: canEdit,
-                    onSelected: (choice) => _changeSelection(
-                      AgentSessionSelection(
-                        model: widget.selection.model,
-                        reasoningMode: choice.mode,
-                        reasoningEffort: choice.effort,
-                      ),
-                    ),
-                  ),
-                Semantics(
-                  button: true,
-                  enabled: widget.running ? !_stopping : _canSubmit,
-                  label: widget.running
-                      ? 'Остановить ответ'
-                      : 'Отправить сообщение',
-                  child: DomovoyQuietButton(
-                    key: ValueKey(widget.running ? 'chat-stop' : 'chat-send'),
-                    minSize: const Size.square(DomovoyDimensions.toolTarget),
-                    tone: DomovoyButtonTone.accent,
-                    onPressed: widget.running
-                        ? _stopping
-                              ? null
-                              : _stop
-                        : _canSubmit
-                        ? _submit
-                        : null,
-                    tooltip: widget.running
-                        ? 'Остановить ответ'
-                        : 'Отправить сообщение',
-                    child: widget.running
-                        ? Icon(
-                            Icons.stop_rounded,
-                            size: DomovoyDimensions.iconSmall,
-                            color: tokens.accent,
-                          )
-                        : DomovoyIcon(
-                            DomovoyIconKind.send,
-                            color: tokens.accent,
-                          ),
-                  ),
-                ),
-              ],
-            ),
+            widget.wrapControls
+                ? Wrap(
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: controls,
+                  )
+                : Row(children: controls),
             if (model == null)
               Padding(
                 padding: const EdgeInsets.only(top: DomovoyDimensions.space2),

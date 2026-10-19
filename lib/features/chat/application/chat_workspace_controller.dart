@@ -4,6 +4,7 @@ import '../../../core/agents/agents.dart';
 import '../../../core/automation/automation.dart';
 import '../../../core/llm/llm.dart';
 import '../../../core/projects/ids.dart';
+import '../../../core/support/support.dart';
 import '../../../infrastructure/llm/discovery/provider_model_catalog.dart';
 import '../domain/chat_deletion_intent.dart';
 import 'chat_stream_pacing.dart';
@@ -29,6 +30,7 @@ final class ChatWorkspaceController {
     this.runToolContexts,
     this.additionalRunTools,
     this.runPreparer,
+    this.supportMode = false,
     this.pacingPolicy = const ChatStreamPacingPolicy(),
     this.scheduler = const TimerChatStreamScheduler(),
     AgentClock? clock,
@@ -67,6 +69,7 @@ final class ChatWorkspaceController {
   final List<ToolId> Function(AgentSessionSnapshot snapshot)?
   additionalRunTools;
   final ChatRunPreparer? runPreparer;
+  final bool supportMode;
   CancellationSource? _preparing;
 
   final ChatStreamPacingPolicy pacingPolicy;
@@ -173,6 +176,16 @@ final class ChatWorkspaceController {
     AgentSessionId? id,
     ProjectId? projectId,
   }) {
+    if (supportMode || (id != null && isSupportSession(id))) {
+      return Future.value(
+        ChatCommandResult.failed(
+          ChatWorkspaceError(
+            kind: AgentErrorKind.configuration,
+            message: 'Создайте обращение в разделе поддержки.',
+          ),
+        ),
+      );
+    }
     final rejection = _rejectMutation();
     if (rejection != null) {
       return Future<ChatCommandResult>.value(rejection);
@@ -264,6 +277,14 @@ final class ChatWorkspaceController {
     int generation, {
     required bool closeCurrent,
   }) async {
+    if (isSupportSession(id) != supportMode) {
+      return ChatCommandResult.failed(
+        ChatWorkspaceError(
+          kind: AgentErrorKind.configuration,
+          message: 'Обращения открываются только в разделе поддержки.',
+        ),
+      );
+    }
     if (closeCurrent) {
       final closeResult = await _closeCurrent(generation);
       if (!closeResult.isSuccess) {
@@ -694,7 +715,10 @@ final class ChatWorkspaceController {
     StreamSubscription<AgentSessionSelectionEvent>? subscription;
     final eventsDone = Completer<void>();
     try {
-      final operation = session.changeSelectionOperation(selection);
+      final operation = session.changeSelectionOperation(
+        selection,
+        allowCompaction: !supportMode,
+      );
       _activeSelection = operation;
       _activeSelectionDone = eventsDone;
       subscription = operation.events.listen(
@@ -737,7 +761,14 @@ final class ChatWorkspaceController {
             _chatOperationFor(result.activeOperation),
           );
         case AgentSessionSelectionStatus.error:
-          final error = _sanitizeWorkspaceError(AgentException(result.error!));
+          final error =
+              supportMode && result.error!.kind == AgentErrorKind.compaction
+              ? const ChatWorkspaceError(
+                  kind: AgentErrorKind.compaction,
+                  message:
+                      'Смена модели требует сжатия истории, недоступного в поддержке. Выберите модель с большим контекстом.',
+                )
+              : _sanitizeWorkspaceError(AgentException(result.error!));
           if (result.error!.kind == AgentErrorKind.cancelled) {
             _emit(
               _state.copyWith(selectedSession: session.snapshot, error: null),
