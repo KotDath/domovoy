@@ -2,7 +2,8 @@
 
 Run from the repository root. Python 3.12 and Ollama are required. The Flutter
 app stores documents/indexes on-device; this service only tokenizes and computes
-vectors. All package/tokenizer revisions are pinned. No API key is used here.
+vectors. Package/tokenizer revisions are pinned. The default local Ollama
+backend needs no API key. CI selects the remote backend described below.
 
 ```sh
 uv venv --python python3.12 ~/.local/share/domovoy-rag/venv
@@ -31,6 +32,49 @@ reranker backend described below.
 `requirements.lock` includes transitive dependencies; environments, HF caches,
 Ollama weights and downloaded third-party PDFs stay outside Git. Service binds
 to loopback and disables proxy environment inheritance and request access logs.
+
+## Hugging Face remote embeddings (CI)
+
+Set `RAG_EMBEDDING_BACKEND=hf-deepinfra` and supply `HF_TOKEN` securely through
+the process environment. The token needs **Make calls to Inference Providers**
+and sufficient inference credit/billing access. The fixed route is
+`https://router.huggingface.co/deepinfra/v1/openai/embeddings` with model
+`Qwen/Qwen3-Embedding-0.6B`. This uses HF routed billing; a separate DeepInfra
+key is not required. Public Hub access alone does not grant inference permission.
+Provider availability and prices can change; consult [HF feature extraction](https://huggingface.co/docs/inference-providers/en/tasks/feature-extraction)
+and the [model provider mapping](https://huggingface.co/api/models/Qwen/Qwen3-Embedding-0.6B?expand=inferenceProviderMapping).
+
+The gateway still uses the pinned local tokenizer and the same query-only
+instruction, input bounds and 1024-dimensional normalized vectors. It validates
+the complete response count, row indices and finite nonzero vectors, reorders by
+index and rejects incompatible responses. It has a bounded 60-second HTTP
+timeout, disables redirects/proxy inheritance, reports only sanitized status
+codes, and never falls back to CPU after a provider error. Documents/queries are
+sent to Hugging Face/DeepInfra; do not use this backend for material that must
+stay local. Tokenization stays local and embedding weights are not downloaded.
+
+Hosted weights are **provider-managed and unpinned**: HF model/revision metadata
+does not prove which weight revision the provider actually serves. The remote
+fingerprint explicitly records that policy, provider/route, protocol, pinned
+tokenizer, dimension and templates. It differs from local Ollama and invalidates
+local indexes. Do not mix their vectors or claim exact hosted-weight
+reproducibility. CI uses a fresh index per run; a long-lived remote index must be
+rebuilt after a provider/model change, including an announced in-place update.
+
+`tool/headless/bootstrap_rag_ci.sh` defaults to this backend on ephemeral CI
+runners. It starts only the tokenizer/gateway process, then sends **one fixed
+public passage** to check token permission/billing/provider compatibility before
+indexing the corpus. A successful health response alone is not remote inference
+proof. Explicit `RAG_EMBEDDING_BACKEND=ollama` retains the pinned CPU bootstrap
+for deliberate use. Do not run CI bootstrap over existing local services.
+
+Offline protocol checks (use the gateway's Python environment):
+
+```sh
+~/.local/share/domovoy-rag/venv/bin/python -B -m unittest discover -s test/infrastructure/rag -p '*_test.py'
+```
+
+These use controlled HTTP responses, not live embedding-quality evidence.
 
 ## Day-23 BGE backend
 

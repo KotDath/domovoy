@@ -16,6 +16,8 @@ app = FastAPI(title="Domovoy local inference", version="1")
 ollama_url = "http://127.0.0.1:11434"
 embedding_model = "qwen3-embedding:0.6b"
 query_instruction = "Instruct: Given a question, retrieve relevant passages that answer the question\nQuery: "
+hf_model = "Qwen/Qwen3-Embedding-0.6B"
+hf_endpoint = "https://router.huggingface.co/deepinfra/v1/openai/embeddings"
 config_path = Path(__file__).with_name("models.lock.json")
 config = json.loads(config_path.read_text())
 inference_lock = Lock()
@@ -34,6 +36,20 @@ def digest(value):
 
 
 def embedding_config():
+    backend = os.environ.get("RAG_EMBEDDING_BACKEND", "ollama")
+    if backend == "hf-deepinfra":
+        if not os.environ.get("HF_TOKEN", "").strip():
+            raise HTTPException(503, "hf_token_missing")
+        return {
+            "model": hf_model, "backend": "hf-deepinfra",
+            "endpoint": hf_endpoint, "weights_revision": "provider-managed-unpinned",
+            "tokenizer": config["embedding"], "dimension": 1024,
+            "normalized": True, "query_template": query_instruction,
+            "passage_template": "", "pooling": "last_token",
+            "protocol": "openai-embeddings-float-v1",
+        }
+    if backend != "ollama":
+        raise HTTPException(503, "unknown_embedding_backend")
     with httpx.Client(timeout=10, trust_env=False) as client:
         tags = client.get(f"{ollama_url}/api/tags").raise_for_status().json()
     model = next((m for m in tags["models"] if m["name"] == embedding_model), None)
@@ -89,6 +105,50 @@ class EmbedInput(BaseModel):
     inputs: list[EmbedItem] = Field(min_length=1, max_length=8)
 
 
+def hf_embeddings(texts):
+    """Fixed HF router/provider/model; never forward tokens to arbitrary URLs.
+
+    Remote weights are provider-managed, not the pinned local Ollama digest.
+    The distinct fingerprint prevents reuse of local-backend indexes.
+    """
+    try:
+        with httpx.Client(timeout=httpx.Timeout(60, connect=10), trust_env=False,
+                          follow_redirects=False) as client:
+            response = client.post(hf_endpoint, headers={
+                "Authorization": "Bearer " + os.environ["HF_TOKEN"].strip(),
+            }, json={"model": hf_model, "input": texts, "encoding_format": "float"})
+    except (httpx.HTTPError, KeyError):
+        raise HTTPException(503, "hf_embedding_connection_failed") from None
+    if response.status_code != 200:
+        # Never expose upstream bodies/headers/URLs, which may echo credentials
+        # or source text. Do not silently fall back to local CPU inference.
+        raise HTTPException(502, {"code": "hf_embedding_http_error",
+                                  "status": response.status_code})
+    try:
+        if len(response.content) > 2_000_000:
+            raise ValueError()
+        data = response.json()
+        if data.get("model", hf_model) != hf_model:
+            raise ValueError()
+        rows = data["data"]
+        if not isinstance(rows, list) or len(rows) != len(texts):
+            raise ValueError()
+        vectors = [None] * len(texts)
+        for row in rows:
+            index = row["index"]
+            if (type(index) is not int or not 0 <= index < len(texts)
+                    or vectors[index] is not None):
+                raise ValueError()
+            vector = row["embedding"]
+            if (not isinstance(vector, list) or len(vector) != 1024
+                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in vector)):
+                raise ValueError()
+            vectors[index] = vector
+        return vectors
+    except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+        raise HTTPException(502, "invalid_hf_embedding_response") from None
+
+
 @app.post("/v1/embeddings")
 def embeddings(body: EmbedInput):
     model = embedding_config()
@@ -108,23 +168,26 @@ def embeddings(body: EmbedInput):
             raise HTTPException(422, "input_too_long")
         texts.append(text)
         counts.append(count)
-    try:
-        with inference_lock, httpx.Client(timeout=180, trust_env=False) as client:
-            response = client.post(f"{ollama_url}/api/embed", json={
-                "model": embedding_model, "input": texts, "truncate": False,
-                "options": {"num_ctx": 8192}, "keep_alive": "30m",
-            }).raise_for_status().json()
-    except httpx.HTTPError as error:
-        raise HTTPException(503, "embedding_inference_failed") from error
-    vectors = response.get("embeddings", [])
+    if model.get("backend") == "hf-deepinfra":
+        vectors = hf_embeddings(texts)
+    else:
+        try:
+            with inference_lock, httpx.Client(timeout=180, trust_env=False) as client:
+                response = client.post(f"{ollama_url}/api/embed", json={
+                    "model": embedding_model, "input": texts, "truncate": False,
+                    "options": {"num_ctx": 8192}, "keep_alive": "30m",
+                }).raise_for_status().json()
+        except httpx.HTTPError as error:
+            raise HTTPException(503, "embedding_inference_failed") from error
+        vectors = response.get("embeddings", [])
     if len(vectors) != len(body.inputs):
         raise HTTPException(502, "invalid_embedding_count")
     outputs = []
     for item, vector, count in zip(body.inputs, vectors, counts):
         if len(vector) != 1024 or not all(math.isfinite(v) for v in vector):
             raise HTTPException(502, "invalid_embedding_vector")
-        norm = math.sqrt(sum(v*v for v in vector))
-        if norm <= 0:
+        norm = math.hypot(*vector)
+        if not math.isfinite(norm) or norm <= 0:
             raise HTTPException(502, "zero_embedding")
         outputs.append({"id": item.id, "vector": [v/norm for v in vector],
                         "input_tokens": count})
