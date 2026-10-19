@@ -69,7 +69,7 @@ if backend=='neuraldeep':
     req=urllib.request.Request('http://127.0.0.1:8765/v1/embeddings',
                               data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
     try:
-        with urllib.request.urlopen(req,timeout=75) as response: probe=json.load(response)
+        with urllib.request.urlopen(req,timeout=180) as response: probe=json.load(response)
     except urllib.error.HTTPError as error:
         upstream=None
         try:

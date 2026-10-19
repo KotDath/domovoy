@@ -191,8 +191,11 @@ The coordinator/repository owner must configure:
   `https://api.neuraldeep.ru/v1/embeddings`, model `qwen3-embedding-4b`.
   The pinned Qwen3-Embedding-4B tokenizer/chunking stay on the runner; passage and
   query embeddings run remotely and produce **2560-dimensional** vectors.
-  There is no automatic provider selection or CPU fallback. Access/quota/rate
-  and malformed response failures fail explicitly. The cache contains only
+  There is no automatic provider selection or CPU fallback. A process-local
+  scheduler spaces all remote attempts by at least 2.5 seconds (24 RPM). HTTP 429
+  gets up to three retries with backoff and `Retry-After`, within a 120-second
+  scheduling budget; persistent quota/rate errors fail explicitly. Other access
+  and malformed response failures are not retried. The cache contains only
   tokenizers; each review index is fresh. Job/agent limits remain 75/60 minutes.
   See [gateway setup and hosted revision limits](../tool/rag_model_service/README.md#neuraldeep-remote-embeddings-ci).
 

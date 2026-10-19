@@ -32,7 +32,16 @@ class NeuralDeepGatewayTest(unittest.TestCase):
         self.env = patch.dict(os.environ, {'RAG_EMBEDDING_BACKEND': 'neuraldeep',
                                           'NDT_KEY': 'NOT_A_REAL_TOKEN'})
         self.env.start()
+        self.now = 1000.0
+        gateway.neuraldeep_next_request_at = 0.0
+        for name, implementation in (("monotonic", lambda: self.now), ("sleep", self.advance)):
+            clock = patch.object(gateway, name, implementation)
+            clock.start()
+            self.addCleanup(clock.stop)
         self.addCleanup(self.env.stop)
+
+    def advance(self, seconds):
+        self.now += seconds
 
     def body(self):
         return gateway.EmbedInput(expected_model_fingerprint=gateway.digest(gateway.embedding_config()),
@@ -116,6 +125,12 @@ class NeuralDeepGatewayTest(unittest.TestCase):
                 self.assertEqual(result.status_code, 200)
                 self.assertEqual(result.json()['fingerprint'], health.json()['fingerprint'])
                 self.assertEqual([r['id'] for r in result.json()['outputs']], ['document', 'question'])
+                post.side_effect = [httpx.Response(429, headers={'Retry-After': '1'},
+                    text='NOT_A_REAL_TOKEN private text'), post.return_value]
+                recovered = client.post('/v1/embeddings', json=request)
+                self.assertEqual(recovered.status_code, 200)
+                self.assertEqual(recovered.json(), result.json())
+                post.side_effect = None
                 post.return_value = httpx.Response(402, text='NOT_A_REAL_TOKEN private text')
                 failure = client.post('/v1/embeddings', json=request)
                 self.assertEqual(failure.status_code, 502)

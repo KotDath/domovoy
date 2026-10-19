@@ -55,8 +55,18 @@ The same query-only `Instruct: ...\nQuery: ...` prefix is applied; passages have
 no prefix. Input is conservatively capped at 8192 tokens, below the provider's
 advertised 16k context. The gateway validates response count, row indices,
 dimension and finite nonzero values, reorders by index and normalizes vectors.
-HTTP timeout is 60 seconds; redirects/proxy inheritance are disabled. Errors
-expose only sanitized status codes, with no CPU fallback. Source text and query
+All NeuralDeep attempts share a process-local serial scheduler with at least
+2.5 seconds between request starts (at most 24 requests/minute, below the
+observed free-tier 30 RPM limit). Only HTTP 429 is retried: at most four attempts
+for the identical batch, with 5/10/20-second backoff and any longer `Retry-After`
+delay (seconds or HTTP date). Scheduling/retries have a 120-second budget;
+a server delay outside it fails explicitly rather than retrying early. Network
+timeouts are at most 60 seconds per attempt and limited by the remaining budget;
+redirects/proxy inheritance are disabled. Auth/payment/other HTTP errors are not
+retried. Errors expose only sanitized status codes, with no CPU fallback.
+Separate gateway processes using the same key do not share the scheduler and
+can still exhaust a common RPM/session/week quota; persistent 429 fails the run.
+Source text and query
 text leave the runner for NeuralDeep; use local Ollama for material that must
 remain local. Embedding weights are not downloaded in CI.
 

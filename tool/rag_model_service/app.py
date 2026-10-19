@@ -3,9 +3,11 @@ import hashlib
 import json
 import math
 import os
+from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
+from time import monotonic, sleep, time as wall_time
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -21,6 +23,13 @@ neuraldeep_endpoint = "https://api.neuraldeep.ru/v1/embeddings"
 config_path = Path(__file__).with_name("models.lock.json")
 config = json.loads(config_path.read_text())
 inference_lock = Lock()
+# One gateway serializes all attempts (including retries) below the free-tier
+# 30 RPM limit. Other processes sharing the key can still cause HTTP 429.
+neuraldeep_request_lock = Lock()
+neuraldeep_next_request_at = 0.0
+neuraldeep_request_interval = 2.5
+neuraldeep_request_budget = 120.0
+neuraldeep_max_attempts = 4
 
 
 def tokenizer_entry(kind="embedding"):
@@ -119,20 +128,67 @@ class EmbedInput(BaseModel):
     inputs: list[EmbedItem] = Field(min_length=1, max_length=8)
 
 
+def neuraldeep_retry_after(value):
+    """Parse only Retry-After timing; never reflect an upstream header/body."""
+    if not isinstance(value, str) or len(value) > 128:
+        return 0.0
+    value = value.strip()
+    if value and all('0' <= c <= '9' for c in value):
+        # Large delays are rejected by the request budget, not shortened.
+        return float(int(value))
+    try:
+        return max(0.0, parsedate_to_datetime(value).timestamp() - wall_time())
+    except (ValueError, TypeError, OverflowError, OSError):
+        return 0.0
+
+
+def neuraldeep_request(texts):
+    global neuraldeep_next_request_at
+    deadline = monotonic() + neuraldeep_request_budget
+    if not neuraldeep_request_lock.acquire(timeout=neuraldeep_request_budget):
+        raise HTTPException(503, "neuraldeep_embedding_busy")
+    try:
+        response = None
+        for attempt in range(neuraldeep_max_attempts):
+            remaining = deadline - monotonic()
+            wait = max(0.0, neuraldeep_next_request_at - monotonic())
+            if remaining <= wait:
+                break
+            if wait:
+                sleep(wait)
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            with httpx.Client(timeout=httpx.Timeout(min(60, remaining), connect=min(10, remaining)),
+                              trust_env=False, follow_redirects=False) as client:
+                neuraldeep_next_request_at = monotonic() + neuraldeep_request_interval
+                response = client.post(neuraldeep_endpoint, headers={
+                    "Authorization": "Bearer " + os.environ["NDT_KEY"].strip(),
+                }, json={"model": neuraldeep_model, "input": texts})
+            if response.status_code != 429:
+                return response
+            # Honor a longer server delay. Never cap it then retry too early;
+            # if it cannot fit the budget, fail explicitly instead.
+            delay = max(5.0 * 2**attempt,
+                        neuraldeep_retry_after(response.headers.get("Retry-After")))
+            neuraldeep_next_request_at = max(neuraldeep_next_request_at,
+                                             monotonic() + delay)
+        if response is not None:
+            return response
+        raise HTTPException(503, "neuraldeep_embedding_busy")
+    except (httpx.HTTPError, KeyError):
+        raise HTTPException(503, "neuraldeep_embedding_connection_failed") from None
+    finally:
+        neuraldeep_request_lock.release()
+
+
 def neuraldeep_embeddings(texts):
     """Fixed NeuralDeep endpoint/model; never forward tokens to arbitrary URLs.
 
     Remote weights are provider-managed, not the pinned local Ollama digest.
     The distinct fingerprint prevents reuse of local-backend indexes.
     """
-    try:
-        with httpx.Client(timeout=httpx.Timeout(60, connect=10), trust_env=False,
-                          follow_redirects=False) as client:
-            response = client.post(neuraldeep_endpoint, headers={
-                "Authorization": "Bearer " + os.environ["NDT_KEY"].strip(),
-            }, json={"model": neuraldeep_model, "input": texts})
-    except (httpx.HTTPError, KeyError):
-        raise HTTPException(503, "neuraldeep_embedding_connection_failed") from None
+    response = neuraldeep_request(texts)
     if response.status_code != 200:
         # Never expose upstream bodies/headers/URLs, which may echo credentials
         # or source text. Do not silently fall back to local CPU inference.
