@@ -16,20 +16,21 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 spec = importlib.util.spec_from_file_location(
-    'hf_gateway', Path(__file__).parents[3] / 'tool/rag_model_service/app.py')
+    'neuraldeep_gateway', Path(__file__).parents[3] / 'tool/rag_model_service/app.py')
 gateway = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gateway)
 
 
 class Tokenizer:
     def __call__(self, text, **kwargs):
-        return {'input_ids': list(range(len(text)))}
+        return {'input_ids': list(range(len(text))),
+                'offset_mapping': [(i, i+1) for i in range(len(text))]}
 
 
-class HfGatewayTest(unittest.TestCase):
+class NeuralDeepGatewayTest(unittest.TestCase):
     def setUp(self):
-        self.env = patch.dict(os.environ, {'RAG_EMBEDDING_BACKEND': 'hf-deepinfra',
-                                          'HF_TOKEN': 'NOT_A_REAL_TOKEN'})
+        self.env = patch.dict(os.environ, {'RAG_EMBEDDING_BACKEND': 'neuraldeep',
+                                          'NDT_KEY': 'NOT_A_REAL_TOKEN'})
         self.env.start()
         self.addCleanup(self.env.stop)
 
@@ -50,17 +51,17 @@ class HfGatewayTest(unittest.TestCase):
         return result, client, transport.__enter__.return_value.post
 
     def test_order_query_prompt_normalization_and_fixed_remote_route(self):
-        data = {'model': gateway.hf_model, 'data': [
-            {'index': 1, 'embedding': [0, 3] + [0] * 1022},
-            {'index': 0, 'embedding': [4, 0] + [0] * 1022}]}
+        data = {'model': gateway.neuraldeep_model, 'data': [
+            {'index': 1, 'embedding': [0, 3] + [0] * 2558},
+            {'index': 0, 'embedding': [4, 0] + [0] * 2558}]}
         result, client, post = self.run_embeddings(self.response(data))
         self.assertEqual([o['id'] for o in result['outputs']], ['document', 'question'])
         self.assertEqual(result['outputs'][0]['vector'][:2], [1, 0])
         self.assertEqual(result['outputs'][1]['vector'][:2], [0, 1])
         self.assertFalse(result['truncated'])
         args, kwargs = post.call_args
-        self.assertEqual(args, (gateway.hf_endpoint,))
-        self.assertEqual(kwargs['json'], {'model': gateway.hf_model, 'encoding_format': 'float',
+        self.assertEqual(args, (gateway.neuraldeep_endpoint,))
+        self.assertEqual(kwargs['json'], {'model': gateway.neuraldeep_model,
             'input': ['Document', gateway.query_instruction + 'Question']})
         self.assertEqual(kwargs['headers'], {'Authorization': 'Bearer NOT_A_REAL_TOKEN'})
         self.assertFalse(client.call_args.kwargs['trust_env'])
@@ -73,9 +74,32 @@ class HfGatewayTest(unittest.TestCase):
              patch.object(gateway.httpx, 'Client') as client:
             health = gateway.health()
         client.assert_not_called()
+        self.assertEqual(health['dimension'], 2560)
+        self.assertEqual(health['embedding']['tokenizer'], gateway.config['embedding_neuraldeep'])
+        self.assertEqual(health['tokenizer_fingerprints']['embedding'],
+                         gateway.digest(gateway.config['embedding_neuraldeep']))
         self.assertEqual(health['embedding']['weights_revision'], 'provider-managed-unpinned')
         self.assertNotEqual(health['fingerprint'], 'df2af910c83efd01d39f7ba4012e24bdc1ba98281ad65efff841fd025148279d')
         self.assertNotIn('NOT_A_REAL_TOKEN', json.dumps(health))
+
+    def test_tokenizer_is_pinned_to_backend_and_cache_cannot_reuse_other_model(self):
+        gateway.load_tokenizer.cache_clear()
+        self.addCleanup(gateway.load_tokenizer.cache_clear)
+        with patch.object(gateway.AutoTokenizer, 'from_pretrained', return_value=Tokenizer()) as load:
+            gateway.tokenizer()
+            with patch.dict(os.environ, {'RAG_EMBEDDING_BACKEND': 'ollama'}):
+                gateway.tokenizer()
+            gateway.tokenizer()
+            tokenized = gateway.tokenize(gateway.TokenizeInput(text='abc'))
+        self.assertEqual(load.call_count, 2)
+        for call, entry in zip(load.call_args_list,
+                               [gateway.config['embedding_neuraldeep'], gateway.config['embedding']]):
+            self.assertEqual(call.args, (entry['repository'],))
+            self.assertEqual(call.kwargs['revision'], entry['revision'])
+            self.assertTrue(call.kwargs['local_files_only'])
+            self.assertFalse(call.kwargs['trust_remote_code'])
+        self.assertEqual(tokenized['tokenizer_fingerprint'], gateway.digest(gateway.config['embedding_neuraldeep']))
+        self.assertEqual(tokenized['offsets'], [(0, 1), (1, 2), (2, 3)])
 
     def test_actual_asgi_routes_return_protocol_and_redacted_provider_failure(self):
         with TestClient(gateway.app) as client, \
@@ -86,7 +110,7 @@ class HfGatewayTest(unittest.TestCase):
             transport = MagicMock()
             post = transport.__enter__.return_value.post
             post.return_value = self.response({'data': [
-                {'index': 0, 'embedding': [1] * 1024}, {'index': 1, 'embedding': [1] * 1024}]})
+                {'index': 0, 'embedding': [1] * 2560}, {'index': 1, 'embedding': [1] * 2560}]})
             with patch.object(gateway.httpx, 'Client', return_value=transport):
                 result = client.post('/v1/embeddings', json=request)
                 self.assertEqual(result.status_code, 200)
@@ -95,27 +119,28 @@ class HfGatewayTest(unittest.TestCase):
                 post.return_value = httpx.Response(402, text='NOT_A_REAL_TOKEN private text')
                 failure = client.post('/v1/embeddings', json=request)
                 self.assertEqual(failure.status_code, 502)
-                self.assertEqual(failure.json(), {'detail': {'code': 'hf_embedding_http_error', 'status': 402}})
+                self.assertEqual(failure.json(), {'detail': {'code': 'neuraldeep_embedding_http_error', 'status': 402}})
                 self.assertNotIn('NOT_A_REAL_TOKEN', failure.text)
 
     def test_upstream_auth_credit_rate_redirect_and_server_errors_are_redacted(self):
         for status in (301, 401, 402, 403, 429, 503):
             with self.subTest(status=status), self.assertRaises(HTTPException) as raised:
                 self.run_embeddings(httpx.Response(status, text='NOT_A_REAL_TOKEN private source text'))
-            self.assertEqual(raised.exception.detail, {'code': 'hf_embedding_http_error', 'status': status})
+            self.assertEqual(raised.exception.detail, {'code': 'neuraldeep_embedding_http_error', 'status': status})
             self.assertNotIn('NOT_A_REAL_TOKEN', str(raised.exception))
 
     def test_bad_model_indices_vectors_json_and_empty_vectors_fail_closed(self):
-        good = {'model': gateway.hf_model, 'data': [
-            {'index': 0, 'embedding': [1] * 1024}, {'index': 1, 'embedding': [1] * 1024}]}
+        good = {'model': gateway.neuraldeep_model, 'data': [
+            {'index': 0, 'embedding': [1] * 2560}, {'index': 1, 'embedding': [1] * 2560}]}
         bad = [{'model': 'different', 'data': good['data']}, {'data': []},
                {'data': good['data'][:1]}, {'data': [good['data'][0]] * 2},
-               {'data': [{'index': True, 'embedding': [1] * 1024}, good['data'][1]]},
-               {'data': [{'index': 2, 'embedding': [1] * 1024}, good['data'][1]]},
+               {'data': [{'index': True, 'embedding': [1] * 2560}, good['data'][1]]},
+               {'data': [{'index': 2, 'embedding': [1] * 2560}, good['data'][1]]},
                {'data': [{'index': 0, 'embedding': [1]}, good['data'][1]]},
-               {'data': [{'index': 0, 'embedding': [True] * 1024}, good['data'][1]]},
-               {'data': [{'index': 0, 'embedding': [0] * 1024}, good['data'][1]]},
-               {'data': [{'index': 0, 'embedding': ['1'] * 1024}, good['data'][1]]},
+               {'data': [{'index': 0, 'embedding': [1] * 1024}, good['data'][1]]},
+               {'data': [{'index': 0, 'embedding': [True] * 2560}, good['data'][1]]},
+               {'data': [{'index': 0, 'embedding': [0] * 2560}, good['data'][1]]},
+               {'data': [{'index': 0, 'embedding': ['1'] * 2560}, good['data'][1]]},
                []]
         for data in bad:
             with self.subTest(data_type=type(data).__name__), self.assertRaises(HTTPException):
@@ -135,7 +160,7 @@ class HfGatewayTest(unittest.TestCase):
                  self.assertRaises(HTTPException):
                 gateway.embeddings(body)
             client.assert_not_called()
-        for config in ({'HF_TOKEN': ''}, {'RAG_EMBEDDING_BACKEND': 'unknown'}):
+        for config in ({'NDT_KEY': ''}, {'RAG_EMBEDDING_BACKEND': 'unknown'}):
             with patch.dict(os.environ, config), self.assertRaises(HTTPException):
                 gateway.embedding_config()
 
@@ -144,16 +169,16 @@ class HfGatewayTest(unittest.TestCase):
         client.__enter__.return_value.post.side_effect = httpx.ConnectError('NOT_A_REAL_TOKEN')
         with patch.object(gateway.httpx, 'Client', return_value=client), \
              self.assertRaises(HTTPException) as raised:
-            gateway.hf_embeddings(['test'])
-        self.assertEqual(raised.exception.detail, 'hf_embedding_connection_failed')
+            gateway.neuraldeep_embeddings(['test'])
+        self.assertEqual(raised.exception.detail, 'neuraldeep_embedding_connection_failed')
         # Bypass JSON serialization to exercise the numeric validator itself.
         for number in (math.nan, math.inf, 10**400):
             response = MagicMock(status_code=200, content=b'{}')
-            response.json.return_value = {'data': [{'index': 0, 'embedding': [number] * 1024}]}
+            response.json.return_value = {'data': [{'index': 0, 'embedding': [number] * 2560}]}
             client.__enter__.return_value.post.side_effect = None
             client.__enter__.return_value.post.return_value = response
             with patch.object(gateway.httpx, 'Client', return_value=client), self.assertRaises(HTTPException):
-                gateway.hf_embeddings(['test'])
+                gateway.neuraldeep_embeddings(['test'])
 
     def test_default_ollama_backend_retains_original_fingerprint(self):
         transport = MagicMock()
@@ -167,10 +192,10 @@ class HfGatewayTest(unittest.TestCase):
 
     def test_exact_bootstrap_preflight_checks_remote_access_before_corpus(self):
         script = Path('tool/headless/bootstrap_rag_ci.sh').read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
-        health = {'ready': True, 'dimension': 1024, 'fingerprint': 'HF-TEST',
+        health = {'ready': True, 'dimension': 2560, 'fingerprint': 'NDT-TEST',
                   'embedding': gateway.embedding_config()}
-        probe = {'fingerprint': 'HF-TEST', 'dimension': 1024,
-                 'outputs': [{'id': 'startup', 'vector': [1] * 1024}]}
+        probe = {'fingerprint': 'NDT-TEST', 'dimension': 2560,
+                 'outputs': [{'id': 'startup', 'vector': [1] * 2560}]}
         with patch.object(urllib.request, 'urlopen', side_effect=[
                 io.BytesIO(json.dumps(health).encode()), io.BytesIO(json.dumps(probe).encode())]) as request, \
              contextlib.redirect_stdout(io.StringIO()) as output:
@@ -182,7 +207,7 @@ class HfGatewayTest(unittest.TestCase):
         self.assertNotIn('Authorization', actual.headers)
         self.assertIn('startup probe passed', output.getvalue())
         error = urllib.error.HTTPError('local', 502, '', {}, io.BytesIO(json.dumps({
-            'detail': {'code': 'hf_embedding_http_error', 'status': 403,
+            'detail': {'code': 'neuraldeep_embedding_http_error', 'status': 403,
                        'body': 'NOT_A_REAL_TOKEN'}}).encode()))
         with patch.object(urllib.request, 'urlopen', side_effect=[io.BytesIO(json.dumps(health).encode()), error]), \
              contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:

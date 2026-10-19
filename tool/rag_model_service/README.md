@@ -33,48 +33,55 @@ reranker backend described below.
 Ollama weights and downloaded third-party PDFs stay outside Git. Service binds
 to loopback and disables proxy environment inheritance and request access logs.
 
-## Hugging Face remote embeddings (CI)
+## NeuralDeep remote embeddings (CI)
 
-Set `RAG_EMBEDDING_BACKEND=hf-deepinfra` and supply `HF_TOKEN` securely through
-the process environment. The token needs **Make calls to Inference Providers**
-and sufficient inference credit/billing access. The fixed route is
-`https://router.huggingface.co/deepinfra/v1/openai/embeddings` with model
-`Qwen/Qwen3-Embedding-0.6B`. This uses HF routed billing; a separate DeepInfra
-key is not required. Public Hub access alone does not grant inference permission.
-Provider availability and prices can change; consult [HF feature extraction](https://huggingface.co/docs/inference-providers/en/tasks/feature-extraction)
-and the [model provider mapping](https://huggingface.co/api/models/Qwen/Qwen3-Embedding-0.6B?expand=inferenceProviderMapping).
+Set `RAG_EMBEDDING_BACKEND=neuraldeep` and supply `NDT_KEY` securely through the
+process environment. The fixed endpoint is `https://api.neuraldeep.ru/v1/embeddings`,
+model `qwen3-embedding-4b`, with **2560-dimensional** normalized output. Requests
+use OpenAI-compatible batches of up to eight texts. No HF inference token is
+needed. Provider access, quotas and billing follow the NeuralDeep account.
+See [provider documentation](https://neuraldeep.ru/docs#vector) and the
+[model card](https://neuraldeep.ru/models/qwen3-embedding-4b).
 
-The gateway still uses the pinned local tokenizer and the same query-only
-instruction, input bounds and 1024-dimensional normalized vectors. It validates
-the complete response count, row indices and finite nonzero vectors, reorders by
-index and rejects incompatible responses. It has a bounded 60-second HTTP
-timeout, disables redirects/proxy inheritance, reports only sanitized status
-codes, and never falls back to CPU after a provider error. Documents/queries are
-sent to Hugging Face/DeepInfra; do not use this backend for material that must
-stay local. Tokenization stays local and embedding weights are not downloaded.
+The embedding tokenizer is `Qwen/Qwen3-Embedding-4B` at the exact revision in
+`models.lock.json.embedding_neuraldeep`; the BGE tokenizer remains pinned for
+chunk limits. Preparation selects only these two tokenizers in NeuralDeep mode.
+Local Ollama still defaults to its original 0.6B tokenizer and fingerprint.
+The gateway's tokenizer cache is keyed by repository/revision, so switching
+backends cannot reuse another model's tokenizer. Public tokenizer downloads do
+not receive `NDT_KEY` or `HF_TOKEN`.
 
-Hosted weights are **provider-managed and unpinned**: HF model/revision metadata
-does not prove which weight revision the provider actually serves. The remote
-fingerprint explicitly records that policy, provider/route, protocol, pinned
-tokenizer, dimension and templates. It differs from local Ollama and invalidates
-local indexes. Do not mix their vectors or claim exact hosted-weight
-reproducibility. CI uses a fresh index per run; a long-lived remote index must be
-rebuilt after a provider/model change, including an announced in-place update.
+The same query-only `Instruct: ...\nQuery: ...` prefix is applied; passages have
+no prefix. Input is conservatively capped at 8192 tokens, below the provider's
+advertised 16k context. The gateway validates response count, row indices,
+dimension and finite nonzero values, reorders by index and normalizes vectors.
+HTTP timeout is 60 seconds; redirects/proxy inheritance are disabled. Errors
+expose only sanitized status codes, with no CPU fallback. Source text and query
+text leave the runner for NeuralDeep; use local Ollama for material that must
+remain local. Embedding weights are not downloaded in CI.
 
-`tool/headless/bootstrap_rag_ci.sh` defaults to this backend on ephemeral CI
-runners. It starts only the tokenizer/gateway process, then sends **one fixed
-public passage** to check token permission/billing/provider compatibility before
-indexing the corpus. A successful health response alone is not remote inference
-proof. Explicit `RAG_EMBEDDING_BACKEND=ollama` retains the pinned CPU bootstrap
-for deliberate use. Do not run CI bootstrap over existing local services.
+Hosted weights are **provider-managed and unpinned**: a pinned tokenizer does
+not prove the revision of remotely served weights. The fingerprint explicitly
+records this policy, provider/endpoint/model, protocol, tokenizer, dimension and
+templates. It differs from both local Ollama and the previous HF backend. Never
+mix 1024D and 2560D vectors. CI uses a fresh index per run; a long-lived remote
+index must be rebuilt after provider/model changes, including in-place updates.
 
-Offline protocol checks (use the gateway's Python environment):
+`tool/headless/bootstrap_rag_ci.sh` defaults to NeuralDeep on ephemeral CI
+runners. When a future workflow is actually run, it starts the tokenizer/gateway
+and sends **one fixed public passage** to validate remote access before indexing.
+A successful health response alone is not inference proof. Explicit
+`RAG_EMBEDDING_BACKEND=ollama` retains the pinned CPU bootstrap for deliberate
+use. Do not run CI bootstrap over existing local services.
+
+Offline protocol checks (no actual provider calls):
 
 ```sh
 ~/.local/share/domovoy-rag/venv/bin/python -B -m unittest discover -s test/infrastructure/rag -p '*_test.py'
 ```
 
-These use controlled HTTP responses, not live embedding-quality evidence.
+These use controlled HTTP responses; they do not certify full-PR runtime or
+retrieval quality. The earlier single/batch provider smoke is separate evidence.
 
 ## Day-23 BGE backend
 

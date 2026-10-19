@@ -3,6 +3,10 @@
     "repository": "Qwen/Qwen3-Embedding-0.6B",
     "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
   },
+  "embedding_neuraldeep": {
+    "repository": "Qwen/Qwen3-Embedding-4B",
+    "revision": "5cf2132abc99cad020ac570b19d031efec650f2b"
+  },
   "reranker": {
     "repository": "BAAI/bge-reranker-v2-m3",
     "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"

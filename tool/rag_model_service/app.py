@@ -16,19 +16,33 @@ app = FastAPI(title="Domovoy local inference", version="1")
 ollama_url = "http://127.0.0.1:11434"
 embedding_model = "qwen3-embedding:0.6b"
 query_instruction = "Instruct: Given a question, retrieve relevant passages that answer the question\nQuery: "
-hf_model = "Qwen/Qwen3-Embedding-0.6B"
-hf_endpoint = "https://router.huggingface.co/deepinfra/v1/openai/embeddings"
+neuraldeep_model = "qwen3-embedding-4b"
+neuraldeep_endpoint = "https://api.neuraldeep.ru/v1/embeddings"
 config_path = Path(__file__).with_name("models.lock.json")
 config = json.loads(config_path.read_text())
 inference_lock = Lock()
 
 
-@lru_cache(maxsize=2)
-def tokenizer(kind="embedding"):
-    entry = config[kind]
+def tokenizer_entry(kind="embedding"):
+    if kind == "embedding":
+        backend = os.environ.get("RAG_EMBEDDING_BACKEND", "ollama")
+        if backend == "neuraldeep":
+            return config["embedding_neuraldeep"]
+        if backend != "ollama":
+            raise HTTPException(503, "unknown_embedding_backend")
+    return config[kind]
+
+
+@lru_cache(maxsize=3)
+def load_tokenizer(repository, revision):
     return AutoTokenizer.from_pretrained(
-        entry["repository"], revision=entry["revision"], trust_remote_code=False, local_files_only=True
+        repository, revision=revision, trust_remote_code=False, local_files_only=True
     )
+
+
+def tokenizer(kind="embedding"):
+    entry = tokenizer_entry(kind)
+    return load_tokenizer(entry["repository"], entry["revision"])
 
 
 def digest(value):
@@ -37,13 +51,13 @@ def digest(value):
 
 def embedding_config():
     backend = os.environ.get("RAG_EMBEDDING_BACKEND", "ollama")
-    if backend == "hf-deepinfra":
-        if not os.environ.get("HF_TOKEN", "").strip():
-            raise HTTPException(503, "hf_token_missing")
+    if backend == "neuraldeep":
+        if not os.environ.get("NDT_KEY", "").strip():
+            raise HTTPException(503, "ndt_key_missing")
         return {
-            "model": hf_model, "backend": "hf-deepinfra",
-            "endpoint": hf_endpoint, "weights_revision": "provider-managed-unpinned",
-            "tokenizer": config["embedding"], "dimension": 1024,
+            "model": neuraldeep_model, "backend": "neuraldeep",
+            "endpoint": neuraldeep_endpoint, "weights_revision": "provider-managed-unpinned",
+            "tokenizer": config["embedding_neuraldeep"], "dimension": 2560,
             "normalized": True, "query_template": query_instruction,
             "passage_template": "", "pooling": "last_token",
             "protocol": "openai-embeddings-float-v1",
@@ -71,10 +85,10 @@ def health():
     except (httpx.HTTPError, OSError) as error:
         raise HTTPException(503, "embedding_service_unavailable") from error
     return {"ready": True, "embedding": model,
-            "fingerprint": digest(model), "dimension": 1024,
+            "fingerprint": digest(model), "dimension": model["dimension"],
             "max_input_tokens": 8192, "offset_unit": "codepoint",
             "capabilities": ["tokenize", "embeddings"],
-            "tokenizer_fingerprints": {kind: digest(config[kind]) for kind in ("embedding", "reranker")},
+            "tokenizer_fingerprints": {kind: digest(tokenizer_entry(kind)) for kind in ("embedding", "reranker")},
             "reranker_pair_limit": 8192, "reranker_query_limit": 1024}
 
 
@@ -91,7 +105,7 @@ def tokenize(body: TokenizeInput):
                                    return_offsets_mapping=True, truncation=False)
     return {"offset_unit": "codepoint", "offsets": encoded["offset_mapping"],
             "count": len(encoded["input_ids"]),
-            "tokenizer_fingerprint": digest(config[body.kind])}
+            "tokenizer_fingerprint": digest(tokenizer_entry(body.kind))}
 
 
 class EmbedItem(BaseModel):
@@ -105,8 +119,8 @@ class EmbedInput(BaseModel):
     inputs: list[EmbedItem] = Field(min_length=1, max_length=8)
 
 
-def hf_embeddings(texts):
-    """Fixed HF router/provider/model; never forward tokens to arbitrary URLs.
+def neuraldeep_embeddings(texts):
+    """Fixed NeuralDeep endpoint/model; never forward tokens to arbitrary URLs.
 
     Remote weights are provider-managed, not the pinned local Ollama digest.
     The distinct fingerprint prevents reuse of local-backend indexes.
@@ -114,21 +128,21 @@ def hf_embeddings(texts):
     try:
         with httpx.Client(timeout=httpx.Timeout(60, connect=10), trust_env=False,
                           follow_redirects=False) as client:
-            response = client.post(hf_endpoint, headers={
-                "Authorization": "Bearer " + os.environ["HF_TOKEN"].strip(),
-            }, json={"model": hf_model, "input": texts, "encoding_format": "float"})
+            response = client.post(neuraldeep_endpoint, headers={
+                "Authorization": "Bearer " + os.environ["NDT_KEY"].strip(),
+            }, json={"model": neuraldeep_model, "input": texts})
     except (httpx.HTTPError, KeyError):
-        raise HTTPException(503, "hf_embedding_connection_failed") from None
+        raise HTTPException(503, "neuraldeep_embedding_connection_failed") from None
     if response.status_code != 200:
         # Never expose upstream bodies/headers/URLs, which may echo credentials
         # or source text. Do not silently fall back to local CPU inference.
-        raise HTTPException(502, {"code": "hf_embedding_http_error",
+        raise HTTPException(502, {"code": "neuraldeep_embedding_http_error",
                                   "status": response.status_code})
     try:
         if len(response.content) > 2_000_000:
             raise ValueError()
         data = response.json()
-        if data.get("model", hf_model) != hf_model:
+        if data.get("model", neuraldeep_model) != neuraldeep_model:
             raise ValueError()
         rows = data["data"]
         if not isinstance(rows, list) or len(rows) != len(texts):
@@ -140,13 +154,13 @@ def hf_embeddings(texts):
                     or vectors[index] is not None):
                 raise ValueError()
             vector = row["embedding"]
-            if (not isinstance(vector, list) or len(vector) != 1024
+            if (not isinstance(vector, list) or len(vector) != 2560
                     or any(type(v) not in (int, float) or not math.isfinite(v) for v in vector)):
                 raise ValueError()
             vectors[index] = vector
         return vectors
     except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
-        raise HTTPException(502, "invalid_hf_embedding_response") from None
+        raise HTTPException(502, "invalid_neuraldeep_embedding_response") from None
 
 
 @app.post("/v1/embeddings")
@@ -168,8 +182,8 @@ def embeddings(body: EmbedInput):
             raise HTTPException(422, "input_too_long")
         texts.append(text)
         counts.append(count)
-    if model.get("backend") == "hf-deepinfra":
-        vectors = hf_embeddings(texts)
+    if model.get("backend") == "neuraldeep":
+        vectors = neuraldeep_embeddings(texts)
     else:
         try:
             with inference_lock, httpx.Client(timeout=180, trust_env=False) as client:
@@ -184,7 +198,7 @@ def embeddings(body: EmbedInput):
         raise HTTPException(502, "invalid_embedding_count")
     outputs = []
     for item, vector, count in zip(body.inputs, vectors, counts):
-        if len(vector) != 1024 or not all(math.isfinite(v) for v in vector):
+        if len(vector) != model["dimension"] or not all(math.isfinite(v) for v in vector):
             raise HTTPException(502, "invalid_embedding_vector")
         norm = math.hypot(*vector)
         if not math.isfinite(norm) or norm <= 0:
@@ -194,7 +208,7 @@ def embeddings(body: EmbedInput):
     # A tag can be replaced while inference is running; never attach stale metadata.
     if digest(embedding_config()) != fingerprint:
         raise HTTPException(409, "embedding_fingerprint_changed")
-    return {"fingerprint": fingerprint, "dimension": 1024,
+    return {"fingerprint": fingerprint, "dimension": model["dimension"],
             "normalized": True, "truncated": False, "outputs": outputs}
 
 

@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import runpy
 import shutil
@@ -35,6 +36,20 @@ class R1Regressions(unittest.TestCase):
                          [(lock[k]['repository'], lock[k]['revision']) for k in ('embedding', 'reranker')])
         self.assertEqual(len(calls), 2)
         self.assertIn('tokenizer*', calls[0]['allow_patterns'])
+
+    def test_neuraldeep_prepares_4b_tokenizer_without_changing_local_default(self):
+        lock = json.loads(Path('tool/rag_model_service/models.lock.json').read_text())
+        calls = []
+        hub = types.ModuleType('huggingface_hub')
+        hub.snapshot_download = lambda **kw: calls.append(kw)
+        with patch.dict(sys.modules, {'huggingface_hub': hub}), \
+             patch.dict(os.environ, {'RAG_EMBEDDING_BACKEND': 'neuraldeep'}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            runpy.run_path('tool/rag_model_service/prepare_tokenizers.py', run_name='__main__')
+        self.assertEqual([(c['repo_id'], c['revision']) for c in calls],
+            [(lock[k]['repository'], lock[k]['revision']) for k in ('embedding_neuraldeep', 'reranker')])
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn('model.safetensors', calls[0]['allow_patterns'])
 
     def test_concrete_store_predicates_align_with_day31_at_any_depth(self):
         review = module('review_policy', 'tool/headless/github_review.py')

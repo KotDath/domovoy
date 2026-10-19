@@ -77,7 +77,7 @@ all are configurable. Resource limits are explicit, not silent truncation.
 
 First start the [existing inference gateway](../tool/rag_model_service/README.md),
 with its pinned Qwen3-Embedding-0.6B and tokenizer revisions. Review uses actual
-1024D vectors and the existing M1 dense retrieval coordinator. CPU CI omits
+1024D vectors and the existing M1 dense retrieval coordinator. CI omits
 optional BGE reranking; both tokenizers remain real and pinned for chunk limits. Preparation explicitly
 loads only the embedding/reranker lock entries; runtime identities remain in the
 lockfile. App loopback HTTP remains debug-only (profile/release deny by default);
@@ -173,11 +173,11 @@ The coordinator/repository owner must configure:
   candidate-branch demonstration described below.
 - Repository secret `DEEPSEEK_API_KEY`, usable for real provider requests. Missing
   credentials produce an explicit SKIPPED summary, never a completed review.
-- Repository secret `HF_TOKEN` with **Make calls to Inference Providers** and
-  available inference credit/billing. Add it in Settings → Secrets and variables
-  → Actions → Repository secrets. It is separate from the DeepSeek credential.
-  Missing either secret explicitly skips review; invalid HF access fails the
-  bootstrap's one-public-passage probe before full indexing.
+- Repository secret `NDT_KEY` for NeuralDeep embeddings, with available access
+  and quota/balance. Add it in Settings → Secrets and variables → Actions →
+  Repository secrets. It is separate from `DEEPSEEK_API_KEY`; no HF inference
+  token is needed. Missing either secret explicitly skips review. Invalid NDT
+  access fails the one-public-passage startup probe before full indexing.
 - The automatic `GITHUB_TOKEN` with contents read, pull-requests write and issues
   write for PR timeline comment creation/update. GitHub's [REST documentation](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment)
   lists either write permission, but [GitHub's tracked permission discrepancy](https://github.com/github/rest-api-description/issues/6994)
@@ -185,26 +185,27 @@ The coordinator/repository owner must configure:
   The workflow pins actions by SHA and disables persisted Git credentials.
   Repository/organization policy must permit bot issue comments and these scopes.
 - Ubuntu 24.04 x64 hosted runner, network access to Flutter releases, pub.dev,
-  GitHub, Hugging Face pinned tokenizers/Router and DeepSeek. No local embedding
-  weights, GPU, Ollama process or VPS are required by the current CI path.
-- The loopback gateway uses `RAG_EMBEDDING_BACKEND=hf-deepinfra`: HF Router →
-  DeepInfra → `Qwen/Qwen3-Embedding-0.6B`. Pinned tokenization/chunking stay on
-  the runner; document/query embeddings run remotely. There is no automatic
-  provider selection or CPU fallback. Requests fail explicitly on access,
-  credit/rate/provider errors. Cache contains only pinned tokenizers; each review
-  index is fresh. The job remains bounded to 75 minutes and the agent (including
-  RAG preparation) to 60 minutes; speed depends on network/provider capacity.
-  See [gateway setup and hosted revision limits](../tool/rag_model_service/README.md#hugging-face-remote-embeddings-ci).
+  GitHub, public Hugging Face tokenizer snapshots, NeuralDeep and DeepSeek. CI
+  downloads no embedding weights and needs no local GPU/Ollama process or VPS.
+- The loopback gateway uses `RAG_EMBEDDING_BACKEND=neuraldeep` and
+  `https://api.neuraldeep.ru/v1/embeddings`, model `qwen3-embedding-4b`.
+  The pinned Qwen3-Embedding-4B tokenizer/chunking stay on the runner; passage and
+  query embeddings run remotely and produce **2560-dimensional** vectors.
+  There is no automatic provider selection or CPU fallback. Access/quota/rate
+  and malformed response failures fail explicitly. The cache contains only
+  tokenizers; each review index is fresh. Job/agent limits remain 75/60 minutes.
+  See [gateway setup and hosted revision limits](../tool/rag_model_service/README.md#neuraldeep-remote-embeddings-ci).
 
-The model/provider mapping was checked when this path was introduced: Qwen's
-DeepInfra feature-extraction route was live, while its `hf-inference` route was
-not healthy. A model's presence on the Hub does not guarantee API availability.
 The hosted weight revision is provider-managed, **not pinned** by our tokenizer
-revision. A distinct remote fingerprint prevents mixing vectors with the local
-Ollama backend. Source code/document/query text is transmitted to HF/DeepInfra;
-only the gateway holds `HF_TOKEN`. The review agent and progress observer have
-that variable explicitly removed. DeepSeek remains the review model with
-reasoning enabled. Changing the embedding backend does not change its identity.
+revision. A distinct NeuralDeep fingerprint includes endpoint/model, tokenizer,
+protocol, templates and dimension; old 1024D Ollama/HF vectors cannot be reused.
+The gateway conservatively bounds inputs at 8192 tokens, within the provider's
+advertised 16k context. Source/document/query text is sent to NeuralDeep.
+Only the gateway inherits `NDT_KEY`; the review agent and observer explicitly
+remove it (and any old `HF_TOKEN`). DeepSeek remains the review model with
+reasoning enabled. Before indexing, CI checks remote access with one fixed
+public passage. This is implemented but must not be confused with an actual
+successful full-PR CI run; provider latency and quota must be measured separately.
 
 Historical CPU-only measurement (prior CI backend, not an HF timing claim):
 on four logical AMD EPYC 9V45 CPUs, with Ollama 0.18.2
@@ -239,7 +240,7 @@ with the exact local diff. Its isolated config directory is ephemeral and empty;
 a GH_TOKEN/GITHUB_TOKEN environment credential is required for local gh commands.
 Tokens are passed only to deterministic gh steps, never to the model, snapshot,
 JSONL trace or tool shell. The DeepSeek credential is present only for credential
-availability and the model run. The HF credential is present for availability
+availability and the model run. The NeuralDeep credential is present for availability
 and gateway bootstrap; the background gateway inherits it, not the review agent.
 Model/tool access cannot read CI directories.
 API failures report only an allowlisted operation (for example `comment_create`)

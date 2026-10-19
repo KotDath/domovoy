@@ -126,18 +126,18 @@ class ReviewBoundaryTest(unittest.TestCase):
             self.assertEqual(receipt['malformed_event_rows'], 1)
 
     def test_subprocess_environment_strips_credentials(self):
-        with patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'test-provider', 'GH_TOKEN': 'test-gh', 'HF_TOKEN': 'test-hf'}):
+        with patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'test-provider', 'GH_TOKEN': 'test-gh', 'NDT_KEY': 'test-ndt'}):
             with patch.object(subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'{}')) as mock:
                 review.run(['git', 'status'])
                 env = mock.call_args.kwargs['env']
                 self.assertNotIn('GH_TOKEN', env)
                 self.assertNotIn('DEEPSEEK_API_KEY', env)
-                self.assertNotIn('HF_TOKEN', env)
+                self.assertNotIn('NDT_KEY', env)
                 review.run(['gh', 'api', 'user'], github=True)
                 env = mock.call_args.kwargs['env']
                 self.assertEqual(env['GH_TOKEN'], 'test-gh')
                 self.assertNotIn('DEEPSEEK_API_KEY', env)
-                self.assertNotIn('HF_TOKEN', env)
+                self.assertNotIn('NDT_KEY', env)
 
     def test_api_operation_classification_never_reflects_routes(self):
         for method, route, expected in [
@@ -200,14 +200,14 @@ class ReviewBoundaryTest(unittest.TestCase):
             for code in (130, 7, 0):
                 # Benign exit-only stand-in: no source/auth/environment reads.
                 cli.write_text('#!/bin/sh\n'
-                    '[ "${HF_TOKEN+x}" != x ] || exit 41\n'
+                    '[ "${NDT_KEY+x}" != x ] || exit 41\n'
                     '[ "${GH_TOKEN+x}" != x ] || exit 42\n'
                     '[ "${GITHUB_TOKEN+x}" != x ] || exit 43\n'
                     f'exit {code}\n')
                 cli.chmod(0o700)
                 result = subprocess.run(['bash', '-e', '-c', body], capture_output=True, timeout=10,
                     env={'PATH': os.environ['PATH'], 'RUNNER_TEMP': tmp, 'GITHUB_WORKSPACE': os.getcwd(),
-                         'HF_TOKEN': 'NOT_A_REAL_TOKEN', 'GH_TOKEN': 'NOT_A_REAL_TOKEN',
+                         'NDT_KEY': 'NOT_A_REAL_TOKEN', 'GH_TOKEN': 'NOT_A_REAL_TOKEN',
                          'GITHUB_TOKEN': 'NOT_A_REAL_TOKEN'})
                 self.assertEqual(result.returncode, code, result.stderr.decode())
 
@@ -215,20 +215,20 @@ class ReviewBoundaryTest(unittest.TestCase):
         workflow = Path('.github/workflows/domovoy-review.yml').read_text()
         step = workflow.split('      - name: Check provider credential availability\n', 1)[1].split('      - name:', 1)[0]
         body = textwrap.dedent(step.split('        run: |\n', 1)[1])
-        for deepseek, hf, expected in [('', '', 'false'), ('FAKE_DEEPSEEK', '', 'false'),
-                                       ('', 'FAKE_HF', 'false'), ('FAKE_DEEPSEEK', 'FAKE_HF', 'true')]:
+        for deepseek, ndt, expected in [('', '', 'false'), ('FAKE_DEEPSEEK', '', 'false'),
+                                       ('', 'FAKE_NDT', 'false'), ('FAKE_DEEPSEEK', 'FAKE_NDT', 'true')]:
             with tempfile.TemporaryDirectory() as tmp:
                 output, summary = Path(tmp)/'output', Path(tmp)/'summary'
                 result = subprocess.run(['bash', '-e', '-c', body], capture_output=True,
                     env={'PATH': os.environ['PATH'], 'GITHUB_OUTPUT': str(output),
                          'GITHUB_STEP_SUMMARY': str(summary), 'DEEPSEEK_API_KEY': deepseek,
-                         'HF_TOKEN': hf}, timeout=5)
+                         'NDT_KEY': ndt}, timeout=5)
                 self.assertEqual(result.returncode, 0)
                 self.assertEqual(output.read_text().strip(), f'ready={expected}')
                 reported = output.read_text() + (summary.read_text() if summary.exists() else '')
                 reported += result.stdout.decode() + result.stderr.decode()
                 self.assertNotIn('FAKE_DEEPSEEK', reported)
-                self.assertNotIn('FAKE_HF', reported)
+                self.assertNotIn('FAKE_NDT', reported)
 
     def test_api_errors_expose_only_operation_and_bounded_numeric_status(self):
         secret = b'FAKE_SECRET_NOT_A_CREDENTIAL'

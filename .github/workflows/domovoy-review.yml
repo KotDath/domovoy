@@ -33,15 +33,15 @@ jobs:
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          NDT_KEY: ${{ secrets.NDT_KEY }}
         shell: bash
         run: |
           if [[ -z "$DEEPSEEK_API_KEY" ]]; then
             echo 'ready=false' >> "$GITHUB_OUTPUT"
             echo 'SKIPPED — DEEPSEEK_API_KEY repository secret is unavailable; no review produced.' >> "$GITHUB_STEP_SUMMARY"
-          elif [[ -z "$HF_TOKEN" ]]; then
+          elif [[ -z "$NDT_KEY" ]]; then
             echo 'ready=false' >> "$GITHUB_OUTPUT"
-            echo 'SKIPPED — HF_TOKEN repository secret is unavailable; remote embeddings require Inference Providers permission; no review produced.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'SKIPPED — NDT_KEY repository secret is unavailable; NeuralDeep embeddings require a valid API key; no review produced.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'ready=true' >> "$GITHUB_OUTPUT"
           fi
@@ -81,23 +81,23 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/domovoy-model-cache
-          key: domovoy-rag-hf-v1-${{ runner.os }}-${{ hashFiles('tool/rag_model_service/models.lock.json', 'tool/rag_model_service/requirements.lock', 'tool/headless/bootstrap_rag_ci.sh') }}
-      - name: Bootstrap gateway with Hugging Face remote embeddings
+          key: domovoy-rag-neuraldeep-v1-${{ runner.os }}-${{ hashFiles('tool/rag_model_service/models.lock.json', 'tool/rag_model_service/requirements.lock', 'tool/headless/bootstrap_rag_ci.sh') }}
+      - name: Bootstrap gateway with NeuralDeep remote embeddings
         if: steps.credential.outputs.ready == 'true'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          RAG_EMBEDDING_BACKEND: hf-deepinfra
+          NDT_KEY: ${{ secrets.NDT_KEY }}
+          RAG_EMBEDDING_BACKEND: neuraldeep
         run: bash tool/headless/bootstrap_rag_ci.sh
       - name: Run Domovoy production runtime with read-only tools
         if: steps.credential.outputs.ready == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          env -u HF_TOKEN -u DEEPSEEK_API_KEY -u GH_TOKEN -u GITHUB_TOKEN python3 tool/headless/github_review.py progress \
+          env -u HF_TOKEN -u NDT_KEY -u DEEPSEEK_API_KEY -u GH_TOKEN -u GITHUB_TOKEN python3 tool/headless/github_review.py progress \
             --events "$RUNNER_TEMP/review-events.jsonl" &
           review_progress_pid=$!
           trap 'review_exit=$?; kill "$review_progress_pid" 2>/dev/null || true; wait "$review_progress_pid" 2>/dev/null || true; exit "$review_exit"' EXIT
-          env -u HF_TOKEN -u GH_TOKEN -u GITHUB_TOKEN "$RUNNER_TEMP/headless/bundle/bin/domovoy" review \
+          env -u HF_TOKEN -u NDT_KEY -u GH_TOKEN -u GITHUB_TOKEN "$RUNNER_TEMP/headless/bundle/bin/domovoy" review \
             --project "$RUNNER_TEMP/pr-input/sources" --review-context "$RUNNER_TEMP/pr-input/review.json" \
             --system-prompt-file "$GITHUB_WORKSPACE/prompts/review-v2.md" --rag-url http://127.0.0.1:8765 \
             --state-dir "$RUNNER_TEMP/domovoy-state" --output-format jsonl --reasoning enabled \
