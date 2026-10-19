@@ -346,7 +346,7 @@ class SupportTicketPage extends StatelessWidget {
                                                   12,
                                                 ),
                                                 child: SelectableText(
-                                                  '${candidate['chunk']['source']}\n${candidate['chunk']['section']}\nРевизия: ${candidate['chunk']['revision']}\n${candidate['chunk']['text']}',
+                                                  '${candidate['chunk']['source']}\n${candidate['chunk']['section']}\nРевизия: ${candidate['chunk']['revision']}\nФрагмент: ${candidate['chunk']['id']} · UTF-16 ${candidate['chunk']['start']}–${candidate['chunk']['end']}\n${candidate['retrieval_kind'] == 'support_document_neighbor' ? 'Соседний фрагмент · основание: ${candidate['seed_chunk_id']} · поколение: ${candidate['generation']}' : 'Dense · ранг: ${candidate['dense_rank']} · cosine: ${candidate['cosine']}'}\n${candidate['chunk']['text']}',
                                                 ),
                                               ),
                                         ],

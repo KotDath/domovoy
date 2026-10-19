@@ -1,11 +1,96 @@
 import 'package:domovoy/design_system/design_system.dart';
 import 'package:domovoy/core/support/support.dart';
+import 'package:domovoy/core/llm/cancellation.dart';
+import 'package:domovoy/core/rag/models.dart';
+import 'package:domovoy/features/support/application/support_evidence_context.dart';
+import 'package:domovoy/features/support/application/support_run_preparer.dart';
 import 'package:domovoy/features/support/presentation/support_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import '../../../support/support_harness.dart';
+import '../../../support/support_evidence_fixture.dart';
 
 void main() {
+  testWidgets(
+    'saved dense and supplemental source bodies expose distinct provenance',
+    (tester) async {
+      final h = SupportHarness(withMcp: false);
+      addTearDown(h.close);
+      await tester.binding.setSurfaceSize(const Size(1280, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final ticket = await h.create();
+      final index = fixture(
+        texts: ['Previous body\n', 'Dense body\n', 'Supplemental body\n'],
+      );
+      final coverage = await expandSupportEvidence(
+        FrozenRepository(index),
+        prepared(index, [RagHit(index.chunks[1], .81)]),
+        CancellationSource().token,
+      );
+      await h.preparer.traces.saveRequest(
+        supportRagProject,
+        ticket.sessionId.value,
+        'source-test',
+        coverage.toJson(),
+      );
+      await h.controller.initialize();
+      await h.controller.select(ticket);
+      expect(h.controller.sources.single['context'], coverage.context);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DomovoyTheme.light(),
+          home: SupportTicketPage(controller: h.controller),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Источники руководства'));
+      await tester.pumpAndSettle();
+      final query = find.text(coverage.turn.request.query);
+      await tester.ensureVisible(query);
+      await tester.tap(query);
+      await tester.pumpAndSettle();
+      final dense = find.ancestor(
+        of: find.textContaining('Dense body'),
+        matching: find.byType(SelectableText),
+      );
+      final supplemental = find.ancestor(
+        of: find.textContaining('Supplemental body'),
+        matching: find.byType(SelectableText),
+      );
+      expect(dense, findsOneWidget);
+      expect(supplemental, findsOneWidget);
+      await tester.ensureVisible(supplemental);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .getRect(supplemental)
+            .intersect(
+              tester.getRect(
+                find.byKey(const ValueKey('support-details-scroll')),
+              ),
+            )
+            .height,
+        greaterThan(20),
+      );
+      final text = tester.widget<SelectableText>(supplemental).data!;
+      expect(text, contains('Соседний фрагмент'));
+      expect(text, contains(index.chunks[1].id));
+      expect(text, contains(index.generation));
+      expect(text, contains(index.documents.first.revision));
+      expect(
+        text,
+        contains('UTF-16 ${index.chunks[2].start}–${index.chunks[2].end}'),
+      );
+      expect(
+        tester.widget<SelectableText>(dense).data,
+        contains('Dense · ранг: 1 · cosine: 0.81'),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    },
+  );
+
   for (final size in [const Size(390, 844), const Size(1280, 900)]) {
     testWidgets(
       'support list/create/snapshot/explicit status/reopen works without project at $size',

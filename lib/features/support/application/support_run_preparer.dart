@@ -9,6 +9,7 @@ import '../../../core/support/support.dart';
 import '../../../core/support/manual.dart';
 import '../../chat/application/chat_run_preparer.dart';
 import 'support_context_precondition.dart';
+import 'support_evidence_context.dart';
 
 /// A namespace in a dedicated repository, independent of any checkout/project.
 const supportRagProject = 'product-support';
@@ -40,7 +41,7 @@ final class SupportRunPreparer extends ChangeNotifier
   String? fingerprint;
   DateTime? modelObservedAt;
   String packageVersion = 'Неизвестна';
-  RagPreparedTurn? evidence;
+  SupportEvidenceContext? evidence;
   bool _disposed = false;
   void _notify() {
     if (!_disposed) notifyListeners();
@@ -150,7 +151,15 @@ final class SupportRunPreparer extends ChangeNotifier
           'Руководство не дало фрагментов для ответа. Уточните вопрос.',
         );
       }
-      evidence = turn;
+      if (turn.generation != identity) {
+        throw StateError('Support manual generation changed during retrieval');
+      }
+      final coverage = await expandSupportEvidence(
+        repository,
+        turn,
+        cancellation,
+      );
+      evidence = coverage;
       progress = 'Подключение MCP поддержки';
       _notify();
       await ensureMcpReady();
@@ -164,7 +173,7 @@ final class SupportRunPreparer extends ChangeNotifier
         supportRagProject,
         snapshot.id.value,
         turn.request.id,
-        turn.toJson(),
+        coverage.toJson(),
       );
       checkRagCancellation(cancellation.isCancelled);
       context = scopes.begin(ticket);
@@ -192,7 +201,7 @@ final class SupportRunPreparer extends ChangeNotifier
               }
             },
             contribution: AgentDynamicContext(
-              systemPromptText: '$ragAnswerInstructions\n${turn.context}',
+              systemPromptText: '$ragAnswerInstructions\n${coverage.context}',
             ),
           ),
         ),
